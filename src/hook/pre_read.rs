@@ -6,7 +6,7 @@ pub fn run() -> Result<(), AppError> {
 
     // AC-5: No .waypoint directory — exit silently
     if !ctx.wp_dir.exists() {
-        super::emit_hook_output("PreToolUse", None, "");
+        super::emit_hook_output(super::HookEvent::PreToolUse, None, "");
         return Ok(());
     }
 
@@ -40,6 +40,6 @@ pub fn run() -> Result<(), AppError> {
         String::new()
     };
 
-    super::emit_hook_output("PreToolUse", None, &context);
+    super::emit_hook_output(super::HookEvent::PreToolUse, None, &context);
     Ok(())
 }

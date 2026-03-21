@@ -47,22 +47,12 @@ human-readable source of truth; the index is a cache.
 
 ---
 
-## 4. Hook event name enums
+## ~~4. Hook event name enums~~ (done 2026-03-21)
 
-**Smell:** Stringly-typed code (12+ occurrences)
-**Files:** All `src/hook/*.rs`, `src/hook/mod.rs`
-
-`"PreToolUse"` and `"PostToolUse"` appear as raw string literals in 12+
-locations. `emit_hook_output` also accepts `permission: Option<&str>` where
-only `"allow"`, `"deny"`, `"ask"`, or `None` are valid.
-
-**Proposal:** Introduce `HookEventName` and `PermissionDecision` enums
-with `as_str()` methods. Makes invalid values unrepresentable.
-
-**Considerations:**
-- Changes the internal API surface of all hook files
-- JSON serialization must produce the same wire format
-- Could combine with the HookContext refactor (#1)
+Introduced `HookEvent` and `PermissionDecision` enums in `hook/mod.rs` with
+`as_str()` methods. `emit_hook_output` now takes typed parameters instead of
+`&str`. All 12+ call sites across 5 hook files updated. Wire format unchanged.
+`emit_hook_output` narrowed to `pub(crate)`.
 
 ---
 

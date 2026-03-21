@@ -52,6 +52,46 @@ impl HookContext {
     }
 }
 
+/// Hook event types for Claude Code hook responses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HookEvent {
+    PreToolUse,
+    PostToolUse,
+}
+
+impl HookEvent {
+    #[must_use]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::PreToolUse => "PreToolUse",
+            Self::PostToolUse => "PostToolUse",
+        }
+    }
+}
+
+/// Permission decisions for hook responses.
+///
+/// `None` defers to Claude Code's permission system (preferred).
+/// Avoid `Allow` as it bypasses normal permission checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // variants represent valid wire protocol values
+pub(crate) enum PermissionDecision {
+    Allow,
+    Deny,
+    Ask,
+}
+
+impl PermissionDecision {
+    #[must_use]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+            Self::Ask => "ask",
+        }
+    }
+}
+
 /// Read full stdin and parse as JSON.
 pub fn read_stdin() -> Result<serde_json::Value, crate::AppError> {
     let input = std::io::read_to_string(std::io::stdin())?;
@@ -75,25 +115,23 @@ pub fn extract_cwd(payload: &serde_json::Value) -> Option<&str> {
 }
 
 /// Emit a JSON hook response to stdout.
-///
-/// `event_name`: `"PreToolUse"` or `"PostToolUse"`
-/// `permission`: `None` to defer to Claude Code's permission system (preferred),
-///               or `Some("deny")` / `Some("ask")` to override. Avoid `Some("allow")`
-///               as it bypasses normal permission checks.
-/// `context`: additional context string (omitted when empty)
-pub fn emit_hook_output(event_name: &str, permission: Option<&str>, context: &str) {
-    let json = build_hook_output(event_name, permission, context);
+pub(crate) fn emit_hook_output(
+    event: HookEvent,
+    permission: Option<PermissionDecision>,
+    context: &str,
+) {
+    let json = build_hook_output(event, permission, context);
     println!("{}", serde_json::to_string(&json).unwrap_or_default());
 }
 
 fn build_hook_output(
-    event_name: &str,
-    permission: Option<&str>,
+    event: HookEvent,
+    permission: Option<PermissionDecision>,
     context: &str,
 ) -> serde_json::Value {
-    let mut hook = serde_json::json!({ "hookEventName": event_name });
+    let mut hook = serde_json::json!({ "hookEventName": event.as_str() });
     if let Some(decision) = permission {
-        hook["permissionDecision"] = serde_json::json!(decision);
+        hook["permissionDecision"] = serde_json::json!(decision.as_str());
     }
     if !context.is_empty() {
         hook["additionalContext"] = serde_json::json!(context);
@@ -134,7 +172,11 @@ mod tests {
 
     #[test]
     fn build_pre_tool_use_allow_with_context() {
-        let output = build_hook_output("PreToolUse", Some("allow"), "some context");
+        let output = build_hook_output(
+            HookEvent::PreToolUse,
+            Some(PermissionDecision::Allow),
+            "some context",
+        );
         let hook = &output["hookSpecificOutput"];
 
         assert_eq!(hook["hookEventName"], "PreToolUse");
@@ -144,7 +186,11 @@ mod tests {
 
     #[test]
     fn build_pre_tool_use_allow_empty_context() {
-        let output = build_hook_output("PreToolUse", Some("allow"), "");
+        let output = build_hook_output(
+            HookEvent::PreToolUse,
+            Some(PermissionDecision::Allow),
+            "",
+        );
         let hook = &output["hookSpecificOutput"];
 
         assert_eq!(hook["hookEventName"], "PreToolUse");
@@ -154,7 +200,7 @@ mod tests {
 
     #[test]
     fn build_post_tool_use_no_permission() {
-        let output = build_hook_output("PostToolUse", None, "updated file");
+        let output = build_hook_output(HookEvent::PostToolUse, None, "updated file");
         let hook = &output["hookSpecificOutput"];
 
         assert_eq!(hook["hookEventName"], "PostToolUse");
@@ -164,7 +210,7 @@ mod tests {
 
     #[test]
     fn build_post_tool_use_empty() {
-        let output = build_hook_output("PostToolUse", None, "");
+        let output = build_hook_output(HookEvent::PostToolUse, None, "");
         let hook = &output["hookSpecificOutput"];
 
         assert_eq!(hook["hookEventName"], "PostToolUse");

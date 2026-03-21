@@ -10,6 +10,6 @@ pub fn run() -> Result<(), AppError> {
          If this is a known issue, check: waypoint trap search \"<error>\""
     );
 
-    super::emit_hook_output("PostToolUse", None, &context);
+    super::emit_hook_output(super::HookEvent::PostToolUse, None, &context);
     Ok(())
 }

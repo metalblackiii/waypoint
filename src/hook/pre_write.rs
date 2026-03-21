@@ -5,12 +5,12 @@ pub fn run() -> Result<(), AppError> {
     let ctx = super::HookContext::from_stdin()?;
 
     if !ctx.wp_dir.exists() {
-        super::emit_hook_output("PreToolUse", None, "");
+        super::emit_hook_output(super::HookEvent::PreToolUse, None, "");
         return Ok(());
     }
 
     let Some(relative) = ctx.relative_path() else {
-        super::emit_hook_output("PreToolUse", None, "");
+        super::emit_hook_output(super::HookEvent::PreToolUse, None, "");
         return Ok(());
     };
 
@@ -39,6 +39,6 @@ pub fn run() -> Result<(), AppError> {
         )
     };
 
-    super::emit_hook_output("PreToolUse", None, &context);
+    super::emit_hook_output(super::HookEvent::PreToolUse, None, &context);
     Ok(())
 }

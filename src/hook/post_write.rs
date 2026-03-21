@@ -7,18 +7,18 @@ pub fn run() -> Result<(), AppError> {
     let ctx = super::HookContext::from_stdin()?;
 
     if !ctx.wp_dir.exists() || !ctx.wp_dir.join("map.md").exists() {
-        super::emit_hook_output("PostToolUse", None, "");
+        super::emit_hook_output(super::HookEvent::PostToolUse, None, "");
         return Ok(());
     }
 
     let Some(relative) = ctx.relative_path() else {
-        super::emit_hook_output("PostToolUse", None, "");
+        super::emit_hook_output(super::HookEvent::PostToolUse, None, "");
         return Ok(());
     };
 
     let rel_path = Path::new(&relative);
     if !map::scan::should_map_file(rel_path) {
-        super::emit_hook_output("PostToolUse", None, "");
+        super::emit_hook_output(super::HookEvent::PostToolUse, None, "");
         return Ok(());
     }
 
@@ -45,7 +45,7 @@ pub fn run() -> Result<(), AppError> {
     }
 
     super::emit_hook_output(
-        "PostToolUse",
+        super::HookEvent::PostToolUse,
         None,
         &format!("[waypoint] map updated: {relative}"),
     );
