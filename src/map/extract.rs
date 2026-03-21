@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use regex::Regex;
@@ -69,6 +70,15 @@ fn known_file_description(filename: &str) -> Option<String> {
 // Tree-sitter extraction
 // ---------------------------------------------------------------------------
 
+const COLLECTION_CAP: usize = 30;
+const DISPLAY_BUDGET: usize = 8;
+
+struct Declaration {
+    name: String,
+    text: String,
+    exported: bool,
+}
+
 fn tree_sitter_extract(ext: &str, content: &str) -> Option<String> {
     let language = match ext {
         "rs" => tree_sitter_rust::LANGUAGE,
@@ -85,26 +95,55 @@ fn tree_sitter_extract(ext: &str, content: &str) -> Option<String> {
     let tree = parser.parse(content, None)?;
     let root = tree.root_node();
 
-    let mut declarations = Vec::new();
-    let mut cursor = root.walk();
+    let is_js = matches!(ext, "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs");
 
+    // Pass 1: collect export names from `export { ... }` clauses and
+    // `module.exports = { ... }` / `module.exports = Identifier` patterns.
+    let mut export_names: HashSet<String> = HashSet::new();
+    if is_js {
+        let mut cursor = root.walk();
+        for child in root.children(&mut cursor) {
+            collect_export_names(child, content, &mut export_names);
+        }
+    }
+
+    // Pass 2: collect declarations from top-level nodes.
+    let mut declarations: Vec<Declaration> = Vec::new();
+    let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
         if let Some(decl) = extract_declaration(child, ext, content) {
             declarations.push(decl);
-            if declarations.len() >= 5 {
+            if declarations.len() >= COLLECTION_CAP {
                 break;
             }
         }
     }
 
+    // Mark declarations whose names appear in export clauses / module.exports.
+    for decl in &mut declarations {
+        if !decl.exported && export_names.contains(&decl.name) {
+            decl.exported = true;
+            decl.text = format!("export {}", decl.text);
+        }
+    }
+
+    // Stable sort: exports first, preserve source order within each group.
+    declarations.sort_by_key(|d| !d.exported);
+
     if declarations.is_empty() {
         return None;
     }
 
-    Some(declarations.join(", "))
+    let result: Vec<&str> = declarations
+        .iter()
+        .take(DISPLAY_BUDGET)
+        .map(|d| d.text.as_str())
+        .collect();
+
+    Some(result.join(", "))
 }
 
-fn extract_declaration(node: tree_sitter::Node, ext: &str, source: &str) -> Option<String> {
+fn extract_declaration(node: tree_sitter::Node, ext: &str, source: &str) -> Option<Declaration> {
     let kind = node.kind();
     match ext {
         "rs" => extract_rust(node, kind, source),
@@ -115,105 +154,475 @@ fn extract_declaration(node: tree_sitter::Node, ext: &str, source: &str) -> Opti
     }
 }
 
-fn extract_rust(node: tree_sitter::Node, kind: &str, source: &str) -> Option<String> {
+// ---------------------------------------------------------------------------
+// Rust
+// ---------------------------------------------------------------------------
+
+fn extract_rust(node: tree_sitter::Node, kind: &str, source: &str) -> Option<Declaration> {
+    let is_pub = has_child_kind(node, "visibility_modifier");
+    let prefix = if is_pub { "pub " } else { "" };
+
     match kind {
         "function_item" => {
             let name = child_text(node, "identifier", source)?;
-            Some(format!("fn {name}()"))
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("{prefix}fn {name}()"),
+                exported: is_pub,
+            })
         }
         "struct_item" => {
             let name = child_text(node, "type_identifier", source)?;
-            Some(format!("struct {name}"))
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("{prefix}struct {name}"),
+                exported: is_pub,
+            })
         }
         "enum_item" => {
             let name = child_text(node, "type_identifier", source)?;
-            Some(format!("enum {name}"))
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("{prefix}enum {name}"),
+                exported: is_pub,
+            })
         }
         "trait_item" => {
             let name = child_text(node, "type_identifier", source)?;
-            Some(format!("trait {name}"))
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("{prefix}trait {name}"),
+                exported: is_pub,
+            })
         }
         "impl_item" => {
             let name = child_text(node, "type_identifier", source)?;
-            Some(format!("impl {name}"))
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("impl {name}"),
+                exported: false,
+            })
         }
         "mod_item" => {
             let name = child_text(node, "identifier", source)?;
-            Some(format!("mod {name}"))
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("{prefix}mod {name}"),
+                exported: is_pub,
+            })
         }
         "const_item" | "static_item" => {
             let name = child_text(node, "identifier", source)?;
-            Some(format!("const {name}"))
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("{prefix}const {name}"),
+                exported: is_pub,
+            })
         }
         _ => None,
     }
 }
 
-fn extract_js(node: tree_sitter::Node, kind: &str, source: &str) -> Option<String> {
+// ---------------------------------------------------------------------------
+// JavaScript / TypeScript
+// ---------------------------------------------------------------------------
+
+fn extract_js(node: tree_sitter::Node, kind: &str, source: &str) -> Option<Declaration> {
     match kind {
         "function_declaration" => {
             let name = child_text(node, "identifier", source)?;
-            Some(format!("function {name}()"))
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("function {name}()"),
+                exported: false,
+            })
         }
         "class_declaration" => {
             let name = child_text(node, "identifier", source)?;
-            let text = node_text(node, source);
-            if text.contains("HTMLElement")
-                || text.contains("LitElement")
-                || text.contains("customElement")
+            let full_text = node_text(node, source);
+            let label = if full_text.contains("HTMLElement")
+                || full_text.contains("LitElement")
+                || full_text.contains("customElement")
             {
-                Some(format!("class {name} (web component)"))
+                format!("class {name} (web component)")
             } else {
-                Some(format!("class {name}"))
-            }
+                format!("class {name}")
+            };
+            Some(Declaration {
+                name: name.clone(),
+                text: label,
+                exported: false,
+            })
         }
-        "export_statement" => {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if let Some(decl) = extract_js(child, child.kind(), source) {
-                    return Some(format!("export {decl}"));
-                }
-            }
-            let text = node_text(node, source);
-            if text.starts_with("export default") {
-                Some("export default".to_string())
-            } else {
-                None
-            }
-        }
-        "lexical_declaration" => {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "variable_declarator"
-                    && let Some(name) = child_text(child, "identifier", source)
-                {
-                    let text = node_text(node, source);
-                    if text.contains("=>") || text.contains("function") {
-                        return Some(format!("{name}()"));
-                    }
-                    return Some(name);
-                }
-            }
-            None
-        }
+        "export_statement" => extract_js_export(node, source),
+        "lexical_declaration" | "variable_declaration" => extract_js_lexical(node, source),
+        "expression_statement" => extract_js_commonjs(node, source),
         "interface_declaration" | "type_alias_declaration" => {
             let name = child_text(node, "type_identifier", source)
                 .or_else(|| child_text(node, "identifier", source))?;
-            Some(format!("type {name}"))
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("type {name}"),
+                exported: false,
+            })
+        }
+        "enum_declaration" => {
+            let name = child_text(node, "identifier", source)?;
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("enum {name}"),
+                exported: false,
+            })
         }
         _ => None,
     }
 }
 
-fn extract_python(node: tree_sitter::Node, kind: &str, source: &str) -> Option<String> {
+/// Handle `export <declaration>`, `export default <expr>`, and
+/// `export { ... }` (the last is skipped — names collected in pass 1).
+fn extract_js_export(node: tree_sitter::Node, source: &str) -> Option<Declaration> {
+    let text = node_text(node, source);
+    let is_default = text.starts_with("export default");
+    let prefix = if is_default {
+        "export default "
+    } else {
+        "export "
+    };
+
+    let mut cursor = node.walk();
+
+    // Try to find a wrapped declaration (export function/class/const/type).
+    for child in node.children(&mut cursor) {
+        if let Some(mut decl) = extract_js(child, child.kind(), source) {
+            decl.text = format!("{prefix}{}", decl.text);
+            decl.exported = true;
+            return Some(decl);
+        }
+    }
+
+    // Bare default export without a named declaration child.
+    if is_default {
+        return Some(describe_default_export(node, source));
+    }
+
+    // `export { ... }` handled in pass 1 — skip here.
+    None
+}
+
+/// Produce a richer description for `export default <expression>`.
+fn describe_default_export(export_node: tree_sitter::Node, source: &str) -> Declaration {
+    let mut cursor = export_node.walk();
+    for child in export_node.children(&mut cursor) {
+        match child.kind() {
+            "arrow_function" | "function_expression" => {
+                let name = child_text(child, "identifier", source).unwrap_or_default();
+                return if name.is_empty() {
+                    Declaration {
+                        name: String::new(),
+                        text: "export default function".to_string(),
+                        exported: true,
+                    }
+                } else {
+                    Declaration {
+                        name: name.clone(),
+                        text: format!("export default function {name}()"),
+                        exported: true,
+                    }
+                };
+            }
+            "class" | "class_declaration" => {
+                let name = child_text(child, "identifier", source).unwrap_or_default();
+                let full_text = node_text(child, source);
+                let wc = full_text.contains("HTMLElement")
+                    || full_text.contains("LitElement")
+                    || full_text.contains("customElement");
+                let suffix = if wc { " (web component)" } else { "" };
+                return if name.is_empty() {
+                    Declaration {
+                        name: String::new(),
+                        text: format!("export default class{suffix}"),
+                        exported: true,
+                    }
+                } else {
+                    Declaration {
+                        name: name.clone(),
+                        text: format!("export default class {name}{suffix}"),
+                        exported: true,
+                    }
+                };
+            }
+            "identifier" => {
+                let name = node_text(child, source).to_string();
+                return Declaration {
+                    name: name.clone(),
+                    text: format!("export default {name}"),
+                    exported: true,
+                };
+            }
+            "call_expression" => {
+                if let Some(func) = child.child_by_field_name("function") {
+                    let func_name = node_text(func, source);
+                    return Declaration {
+                        name: String::new(),
+                        text: format!("export default {func_name}(...)"),
+                        exported: true,
+                    };
+                }
+            }
+            "object" => {
+                return Declaration {
+                    name: String::new(),
+                    text: "export default {...}".to_string(),
+                    exported: true,
+                };
+            }
+            _ => {}
+        }
+    }
+    Declaration {
+        name: String::new(),
+        text: "export default".to_string(),
+        exported: true,
+    }
+}
+
+/// Handle `const`/`let`/`var` declarations.
+/// Filters out `require()` imports and uses tree-sitter node types for
+/// accurate function detection (no false-positive `()` on objects).
+fn extract_js_lexical(node: tree_sitter::Node, source: &str) -> Option<Declaration> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "variable_declarator" {
+            continue;
+        }
+        let name = child_text(child, "identifier", source)?;
+
+        if let Some(value) = child.child_by_field_name("value") {
+            // Skip require() imports (direct or chained like require('x').Foo).
+            if is_require_call(value, source) {
+                return None;
+            }
+
+            let is_fn = matches!(value.kind(), "arrow_function" | "function_expression");
+            let text = if is_fn {
+                format!("{name}()")
+            } else {
+                name.clone()
+            };
+            return Some(Declaration {
+                name,
+                text,
+                exported: false,
+            });
+        }
+
+        return Some(Declaration {
+            name: name.clone(),
+            text: name,
+            exported: false,
+        });
+    }
+    None
+}
+
+/// Handle CommonJS exports:
+/// - `module.exports = { a, b }` → handled in pass 1 (names collected), skip here
+/// - `module.exports = <identifier>` → handled in pass 1, skip here
+/// - `module.exports = function/class/arrow` → create Declaration
+/// - `exports.X = ...` → create Declaration
+fn extract_js_commonjs(node: tree_sitter::Node, source: &str) -> Option<Declaration> {
+    let mut cursor = node.walk();
+    let assignment = node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "assignment_expression")?;
+
+    let left = assignment.child_by_field_name("left")?;
+    if left.kind() != "member_expression" {
+        return None;
+    }
+
+    let obj = left.child_by_field_name("object")?;
+    let prop = left.child_by_field_name("property")?;
+    let obj_text = node_text(obj, source);
+    let prop_text = node_text(prop, source);
+
+    if obj_text == "module" && prop_text == "exports" {
+        let right = assignment.child_by_field_name("right")?;
+        match right.kind() {
+            // Object and identifier cases handled in pass 1 via export_names.
+            "object" | "identifier" => None,
+            "function_expression" | "arrow_function" => Some(Declaration {
+                name: String::new(),
+                text: "export default function".to_string(),
+                exported: true,
+            }),
+            "class" => {
+                let name = child_text(right, "identifier", source).unwrap_or_default();
+                let text = if name.is_empty() {
+                    "export default class".to_string()
+                } else {
+                    format!("export default class {name}")
+                };
+                Some(Declaration {
+                    name,
+                    text,
+                    exported: true,
+                })
+            }
+            _ => Some(Declaration {
+                name: String::new(),
+                text: "export default".to_string(),
+                exported: true,
+            }),
+        }
+    } else if obj_text == "exports" {
+        let right = assignment.child_by_field_name("right")?;
+        let is_fn = matches!(right.kind(), "function_expression" | "arrow_function");
+        let text = if is_fn {
+            format!("export {prop_text}()")
+        } else {
+            format!("export {prop_text}")
+        };
+        Some(Declaration {
+            name: prop_text.to_string(),
+            text,
+            exported: true,
+        })
+    } else {
+        None
+    }
+}
+
+/// Collect export names from `export { a, b }` clauses and CommonJS
+/// `module.exports = { a, b }` / `module.exports = Identifier`.
+fn collect_export_names(node: tree_sitter::Node, source: &str, names: &mut HashSet<String>) {
+    match node.kind() {
+        "export_statement" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "export_clause" {
+                    let mut clause_cursor = child.walk();
+                    for spec in child.children(&mut clause_cursor) {
+                        if spec.kind() == "export_specifier" {
+                            // Use the `name` field (local identifier) for matching.
+                            if let Some(name_node) = spec.child_by_field_name("name") {
+                                names.insert(node_text(name_node, source).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        "expression_statement" => {
+            collect_cjs_export_names(node, source, names);
+        }
+        _ => {}
+    }
+}
+
+/// Extract names from `module.exports = { a, b }` or `module.exports = X`.
+fn collect_cjs_export_names(
+    expr_stmt: tree_sitter::Node,
+    source: &str,
+    names: &mut HashSet<String>,
+) {
+    let mut cursor = expr_stmt.walk();
+    let Some(assignment) = expr_stmt
+        .children(&mut cursor)
+        .find(|c| c.kind() == "assignment_expression")
+    else {
+        return;
+    };
+
+    let Some(left) = assignment.child_by_field_name("left") else {
+        return;
+    };
+    if left.kind() != "member_expression" {
+        return;
+    }
+
+    let Some(obj) = left.child_by_field_name("object") else {
+        return;
+    };
+    let Some(prop) = left.child_by_field_name("property") else {
+        return;
+    };
+    if node_text(obj, source) != "module" || node_text(prop, source) != "exports" {
+        return;
+    }
+
+    let Some(right) = assignment.child_by_field_name("right") else {
+        return;
+    };
+
+    match right.kind() {
+        "object" => {
+            let mut obj_cursor = right.walk();
+            for child in right.children(&mut obj_cursor) {
+                match child.kind() {
+                    "shorthand_property_identifier" => {
+                        names.insert(node_text(child, source).to_string());
+                    }
+                    "pair" => {
+                        // { save: saveImage } → use value (local name) for matching.
+                        if let Some(value) = child.child_by_field_name("value")
+                            && value.kind() == "identifier"
+                        {
+                            names.insert(node_text(value, source).to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        "identifier" => {
+            names.insert(node_text(right, source).to_string());
+        }
+        _ => {}
+    }
+}
+
+/// Detect `require()` calls, including chained: `require('x').Foo`.
+fn is_require_call(node: tree_sitter::Node, source: &str) -> bool {
+    match node.kind() {
+        "call_expression" => node
+            .child_by_field_name("function")
+            .is_some_and(|func| node_text(func, source) == "require"),
+        "member_expression" => node
+            .child_by_field_name("object")
+            .is_some_and(|obj| is_require_call(obj, source)),
+        "await_expression" => {
+            let mut cursor = node.walk();
+            node.children(&mut cursor)
+                .any(|c| is_require_call(c, source))
+        }
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Python
+// ---------------------------------------------------------------------------
+
+fn extract_python(node: tree_sitter::Node, kind: &str, source: &str) -> Option<Declaration> {
     match kind {
         "function_definition" => {
             let name = child_text(node, "identifier", source)?;
-            Some(format!("def {name}()"))
+            let exported = !name.starts_with('_');
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("def {name}()"),
+                exported,
+            })
         }
         "class_definition" => {
             let name = child_text(node, "identifier", source)?;
-            Some(format!("class {name}"))
+            let exported = !name.starts_with('_');
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("class {name}"),
+                exported,
+            })
         }
         "decorated_definition" => {
             let mut cursor = node.walk();
@@ -228,15 +637,29 @@ fn extract_python(node: tree_sitter::Node, kind: &str, source: &str) -> Option<S
     }
 }
 
-fn extract_go(node: tree_sitter::Node, kind: &str, source: &str) -> Option<String> {
+// ---------------------------------------------------------------------------
+// Go
+// ---------------------------------------------------------------------------
+
+fn extract_go(node: tree_sitter::Node, kind: &str, source: &str) -> Option<Declaration> {
     match kind {
         "function_declaration" => {
             let name = child_text(node, "identifier", source)?;
-            Some(format!("func {name}()"))
+            let exported = name.starts_with(|c: char| c.is_uppercase());
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("func {name}()"),
+                exported,
+            })
         }
         "method_declaration" => {
             let name = child_text(node, "field_identifier", source)?;
-            Some(format!("func {name}()"))
+            let exported = name.starts_with(|c: char| c.is_uppercase());
+            Some(Declaration {
+                name: name.clone(),
+                text: format!("func {name}()"),
+                exported,
+            })
         }
         "type_declaration" => {
             let mut cursor = node.walk();
@@ -244,7 +667,12 @@ fn extract_go(node: tree_sitter::Node, kind: &str, source: &str) -> Option<Strin
                 if child.kind() == "type_spec"
                     && let Some(name) = child_text(child, "type_identifier", source)
                 {
-                    return Some(format!("type {name}"));
+                    let exported = name.starts_with(|c: char| c.is_uppercase());
+                    return Some(Declaration {
+                        name: name.clone(),
+                        text: format!("type {name}"),
+                        exported,
+                    });
                 }
             }
             None
@@ -252,6 +680,10 @@ fn extract_go(node: tree_sitter::Node, kind: &str, source: &str) -> Option<Strin
         _ => None,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 fn child_text(node: tree_sitter::Node, child_kind: &str, source: &str) -> Option<String> {
     let mut cursor = node.walk();
@@ -265,6 +697,11 @@ fn child_text(node: tree_sitter::Node, child_kind: &str, source: &str) -> Option
 
 fn node_text<'a>(node: tree_sitter::Node, source: &'a str) -> &'a str {
     &source[node.byte_range()]
+}
+
+fn has_child_kind(node: tree_sitter::Node, kind: &str) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor).any(|c| c.kind() == kind)
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +967,8 @@ fn extract_proto(content: &str) -> String {
 mod tests {
     use super::*;
 
+    // -- Existing tests (preserved) --
+
     #[test]
     fn known_files() {
         assert_eq!(
@@ -574,5 +1013,278 @@ enum State {}
         let src = "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest";
         let desc = extract_description(Path::new("ci.yml"), src);
         assert!(desc.contains("GHA: CI"), "got: {desc}");
+    }
+
+    // -- New tests for extraction heuristic fixes --
+
+    #[test]
+    fn js_export_priority() {
+        let src = r#"
+const INTERNAL_A = 1;
+const INTERNAL_B = 2;
+const INTERNAL_C = 3;
+export function publicFn() {}
+export class PublicClass {}
+"#;
+        let desc = extract_description(Path::new("test.js"), src);
+        // Exports must appear before internals.
+        let pos_fn = desc.find("export function publicFn()");
+        let pos_cls = desc.find("export class PublicClass");
+        let pos_int = desc.find("INTERNAL_A");
+        assert!(pos_fn.is_some(), "missing publicFn in: {desc}");
+        assert!(pos_cls.is_some(), "missing PublicClass in: {desc}");
+        assert!(pos_int.is_some(), "missing INTERNAL_A in: {desc}");
+        assert!(
+            pos_fn.unwrap() < pos_int.unwrap(),
+            "export should precede internal in: {desc}"
+        );
+    }
+
+    #[test]
+    fn js_require_filtered() {
+        let src = r#"
+const fs = require('fs');
+const path = require('path');
+const Model = require('sequelize').Model;
+function doWork() {}
+"#;
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(
+            !desc.contains(" fs"),
+            "require('fs') should be filtered, got: {desc}"
+        );
+        assert!(
+            !desc.contains("path"),
+            "require('path') should be filtered, got: {desc}"
+        );
+        assert!(
+            !desc.contains("Model"),
+            "chained require should be filtered, got: {desc}"
+        );
+        assert!(
+            desc.contains("doWork"),
+            "function should remain, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn js_no_false_positive_parens() {
+        let src = r#"
+const CONFIG = {
+    handler: function() {},
+    name: 'test'
+};
+"#;
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(
+            !desc.contains("CONFIG()"),
+            "object should not get () suffix, got: {desc}"
+        );
+        assert!(
+            desc.contains("CONFIG"),
+            "CONFIG should be present, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn js_arrow_function_gets_parens() {
+        let src = "const handler = (req, res) => {};\n";
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(
+            desc.contains("handler()"),
+            "arrow fn should get (), got: {desc}"
+        );
+    }
+
+    #[test]
+    fn js_export_default_class() {
+        let src = "export default class Foo extends LitElement {}\n";
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(desc.contains("export default class Foo"), "got: {desc}");
+        assert!(
+            desc.contains("(web component)"),
+            "LitElement should be detected, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn js_export_default_function() {
+        let src = "export default function createApp() {}\n";
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(desc.contains("export"), "got: {desc}");
+        assert!(desc.contains("createApp"), "got: {desc}");
+    }
+
+    #[test]
+    fn js_export_default_identifier() {
+        let src = r#"
+class Router {}
+export default Router;
+"#;
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(desc.contains("export default Router"), "got: {desc}");
+    }
+
+    #[test]
+    fn js_export_default_object() {
+        let src = "export default { a: 1, b: 2 };\n";
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(desc.contains("export default {...}"), "got: {desc}");
+    }
+
+    #[test]
+    fn js_commonjs_module_exports_object() {
+        let src = r#"
+function saveImage() {}
+function deleteImage() {}
+function internal() {}
+module.exports = { saveImage, deleteImage };
+"#;
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(desc.contains("export function saveImage()"), "got: {desc}");
+        assert!(
+            desc.contains("export function deleteImage()"),
+            "got: {desc}"
+        );
+        // Exports should appear before internals.
+        let pos_save = desc.find("saveImage").unwrap();
+        let pos_int = desc.find("internal").unwrap();
+        assert!(
+            pos_save < pos_int,
+            "export should precede internal in: {desc}"
+        );
+    }
+
+    #[test]
+    fn js_commonjs_module_exports_function() {
+        let src = "module.exports = function handler() {};\n";
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(desc.contains("export default function"), "got: {desc}");
+    }
+
+    #[test]
+    fn js_commonjs_exports_dot() {
+        let src = r#"
+exports.saveImage = async function saveImage() {};
+exports.deleteImage = async function deleteImage() {};
+"#;
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(desc.contains("export saveImage()"), "got: {desc}");
+        assert!(desc.contains("export deleteImage()"), "got: {desc}");
+    }
+
+    #[test]
+    fn js_export_clause_resolution() {
+        let src = r#"
+function saveImage() {}
+function deleteImage() {}
+function internalHelper() {}
+export { saveImage, deleteImage };
+"#;
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(desc.contains("export function saveImage()"), "got: {desc}");
+        assert!(
+            desc.contains("export function deleteImage()"),
+            "got: {desc}"
+        );
+        // Exports should appear before internal.
+        let pos_save = desc.find("saveImage").unwrap();
+        let pos_int = desc.find("internalHelper").unwrap();
+        assert!(pos_save < pos_int, "exports first in: {desc}");
+    }
+
+    #[test]
+    fn js_budget_8() {
+        let src = r#"
+export function a() {}
+export function b() {}
+export function c() {}
+export function d() {}
+export function e() {}
+export function f() {}
+export function g() {}
+export function h() {}
+export function i() {}
+export function j() {}
+"#;
+        let desc = extract_description(Path::new("test.js"), src);
+        let count = desc.split(", ").count();
+        assert_eq!(count, 8, "budget should cap at 8, got {count}: {desc}");
+    }
+
+    #[test]
+    fn rust_pub_priority() {
+        let src = r#"
+fn private_fn() {}
+struct PrivateStruct {}
+pub fn public_fn() {}
+pub struct PublicStruct {}
+"#;
+        let desc = extract_description(Path::new("lib.rs"), src);
+        let pos_pub = desc.find("pub fn public_fn()").unwrap();
+        let pos_priv = desc.find("fn private_fn()").unwrap();
+        assert!(
+            pos_pub < pos_priv,
+            "pub items should precede private in: {desc}"
+        );
+    }
+
+    #[test]
+    fn python_public_priority() {
+        let src = r#"
+def _private_helper():
+    pass
+
+class _InternalParser:
+    pass
+
+def public_api():
+    pass
+
+class PublicService:
+    pass
+"#;
+        let desc = extract_description(Path::new("main.py"), src);
+        let pos_pub = desc.find("def public_api()").unwrap();
+        let pos_priv = desc.find("def _private_helper()").unwrap();
+        assert!(pos_pub < pos_priv, "public items first in: {desc}");
+    }
+
+    #[test]
+    fn go_exported_priority() {
+        let src = r#"
+package main
+
+func helper() {}
+func Handler() {}
+type config struct {}
+type Service struct {}
+"#;
+        let desc = extract_description(Path::new("main.go"), src);
+        let pos_handler = desc.find("func Handler()").unwrap();
+        let pos_helper = desc.find("func helper()").unwrap();
+        assert!(pos_handler < pos_helper, "exported items first in: {desc}");
+    }
+
+    #[test]
+    fn ts_enum_declaration() {
+        let src = r#"
+export enum Status {
+    Active,
+    Inactive,
+}
+"#;
+        let desc = extract_description(Path::new("types.ts"), src);
+        assert!(desc.contains("export enum Status"), "got: {desc}");
+    }
+
+    #[test]
+    fn js_commonjs_module_exports_identifier() {
+        let src = r#"
+class Router {}
+module.exports = Router;
+"#;
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(desc.contains("export class Router"), "got: {desc}");
     }
 }
