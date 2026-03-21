@@ -42,10 +42,7 @@ pub fn run(project_root: &Path) -> Result<(), AppError> {
     // Ledger (silent failure)
     match ledger::gain_stats(Some(&project_root.to_string_lossy())) {
         Ok(stats) => {
-            println!(
-                "Ledger:  {} events, {:.0}% map hit rate, ~{} tokens saved",
-                stats.total_events, stats.map_hit_rate, stats.estimated_tokens_saved
-            );
+            println!("Ledger:  {}", stats.summary_line());
         }
         Err(e) => {
             println!("Ledger:  unavailable ({e})");

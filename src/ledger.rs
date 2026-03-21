@@ -1,6 +1,8 @@
+use std::fmt;
 use std::path::PathBuf;
 
 use chrono::Utc;
+use colored::{Color, Colorize};
 use rusqlite::{Connection, params};
 
 use crate::AppError;
@@ -43,6 +45,156 @@ pub struct DayStats {
     pub date: String,
     pub events: i64,
     pub tokens_saved: i64,
+}
+
+const DISPLAY_WIDTH: usize = 68;
+const METER_WIDTH: usize = 24;
+const IMPACT_BAR_WIDTH: usize = 10;
+const LABEL_PAD: usize = 16;
+const VALUE_PAD: usize = 7;
+
+/// Format a token count for human display (e.g., 1.5M, 350.2K, 42).
+fn format_tokens(n: i64) -> String {
+    let abs = n.unsigned_abs();
+    #[allow(clippy::cast_precision_loss)]
+    let value = n as f64;
+    // 999_950+ rounds to "1000.0K" at one decimal, so promote to M
+    if abs >= 999_950 {
+        format!("{:.1}M", value / 1_000_000.0)
+    } else if abs >= 1_000 {
+        format!("{:.1}K", value / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+/// Render a filled/empty bar chart at the given width.
+fn bar(ratio: f64, width: usize) -> String {
+    let clamped = ratio.clamp(0.0, 1.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    let filled = (clamped * width as f64).round() as usize;
+    let empty = width.saturating_sub(filled);
+    format!("{}{}", "█".repeat(filled), "░".repeat(empty))
+}
+
+/// Choose a meter color based on hit-rate percentage.
+fn rate_color(pct: f64) -> Color {
+    if pct >= 75.0 {
+        Color::Green
+    } else if pct >= 50.0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    }
+}
+
+impl fmt::Display for GainStats {
+    #[allow(clippy::cast_precision_loss)]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let sep_double = "═".repeat(DISPLAY_WIDTH);
+        let sep_single = "─".repeat(DISPLAY_WIDTH);
+
+        writeln!(f, "{}", sep_double.dimmed())?;
+        writeln!(f)?;
+
+        // Summary stats — pad label, right-align value
+        let lines: &[(&str, String, Option<Color>)] = &[
+            ("Total events:", self.total_events.to_string(), None),
+            ("Map hits:", self.map_hits.to_string(), Some(Color::Green)),
+            (
+                "Map misses:",
+                self.map_misses.to_string(),
+                Some(Color::Yellow),
+            ),
+            ("Trap hits:", self.trap_hits.to_string(), Some(Color::Cyan)),
+            (
+                "Tokens saved:",
+                format_tokens(self.estimated_tokens_saved),
+                Some(Color::BrightGreen),
+            ),
+        ];
+
+        for (label, value, color) in lines {
+            let padded_label = format!("{label:<LABEL_PAD$}");
+            let padded_val = format!("{value:>VALUE_PAD$}");
+            let styled_val = match color {
+                Some(c) => format!("{}", padded_val.color(*c)),
+                None => padded_val,
+            };
+            writeln!(f, "{} {styled_val}", padded_label.bold())?;
+        }
+
+        // Hit rate meter
+        let ratio = self.map_hit_rate / 100.0;
+        let meter = bar(ratio, METER_WIDTH);
+        let color = rate_color(self.map_hit_rate);
+        let padded_label = format!("{:<LABEL_PAD$}", "Hit rate:");
+        writeln!(
+            f,
+            "{} {} {}",
+            padded_label.bold(),
+            meter.color(color),
+            format!("{:.1}%", self.map_hit_rate).bold(),
+        )?;
+
+        // Daily breakdown table
+        if !self.daily.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "{}", "Daily Breakdown".bold())?;
+            writeln!(f, "{}", sep_single.dimmed())?;
+            writeln!(
+                f,
+                "  {}  {:<12} {:>7}  {:>8}  {}",
+                "#".dimmed(),
+                "Date".dimmed(),
+                "Events".dimmed(),
+                "Saved".dimmed(),
+                "Impact".dimmed(),
+            )?;
+            writeln!(f, "{}", sep_single.dimmed())?;
+
+            let max_saved = self
+                .daily
+                .iter()
+                .map(|d| d.tokens_saved)
+                .max()
+                .unwrap_or(1)
+                .max(1);
+
+            for (i, day) in self.daily.iter().enumerate() {
+                let impact_ratio = day.tokens_saved as f64 / max_saved as f64;
+                writeln!(
+                    f,
+                    " {:>2}.  {:<12} {:>7}  {:>8}  {}",
+                    (i + 1).to_string().dimmed(),
+                    day.date,
+                    day.events,
+                    format_tokens(day.tokens_saved),
+                    bar(impact_ratio, IMPACT_BAR_WIDTH).green(),
+                )?;
+            }
+            writeln!(f, "{}", sep_single.dimmed())?;
+        }
+
+        Ok(())
+    }
+}
+
+impl GainStats {
+    /// One-line summary for status display.
+    #[must_use]
+    pub fn summary_line(&self) -> String {
+        format!(
+            "{} events, {:.1}% hit rate, ~{} tokens saved",
+            self.total_events,
+            self.map_hit_rate,
+            format_tokens(self.estimated_tokens_saved)
+        )
+    }
 }
 
 /// Get the platform-native database path.
@@ -301,5 +453,112 @@ mod tests {
         assert_eq!(EventKind::MapHit.as_str(), "map_hit");
         assert_eq!(EventKind::MapMiss.as_str(), "map_miss");
         assert_eq!(EventKind::TrapHit.as_str(), "trap_hit");
+    }
+
+    #[test]
+    fn format_tokens_millions() {
+        assert_eq!(format_tokens(1_500_000), "1.5M");
+        assert_eq!(format_tokens(1_000_000), "1.0M");
+        assert_eq!(format_tokens(42_300_000), "42.3M");
+    }
+
+    #[test]
+    fn format_tokens_thousands() {
+        assert_eq!(format_tokens(250_000), "250.0K");
+        assert_eq!(format_tokens(1_000), "1.0K");
+        assert_eq!(format_tokens(999_999), "1.0M");
+    }
+
+    #[test]
+    fn format_tokens_small() {
+        assert_eq!(format_tokens(999), "999");
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(1), "1");
+    }
+
+    #[test]
+    fn bar_full_half_empty() {
+        assert_eq!(bar(1.0, 10), "██████████");
+        assert_eq!(bar(0.0, 10), "░░░░░░░░░░");
+        assert_eq!(bar(0.5, 10), "█████░░░░░");
+    }
+
+    #[test]
+    fn bar_clamps_out_of_range() {
+        assert_eq!(bar(1.5, 10), "██████████");
+        assert_eq!(bar(-0.5, 10), "░░░░░░░░░░");
+    }
+
+    #[test]
+    fn rate_color_thresholds() {
+        assert_eq!(rate_color(80.0), Color::Green);
+        assert_eq!(rate_color(75.0), Color::Green);
+        assert_eq!(rate_color(60.0), Color::Yellow);
+        assert_eq!(rate_color(50.0), Color::Yellow);
+        assert_eq!(rate_color(25.0), Color::Red);
+        assert_eq!(rate_color(0.0), Color::Red);
+    }
+
+    #[test]
+    fn summary_line_format() {
+        let stats = GainStats {
+            total_events: 100,
+            map_hits: 75,
+            map_misses: 25,
+            trap_hits: 3,
+            map_hit_rate: 75.0,
+            estimated_tokens_saved: 500_000,
+            daily: vec![],
+        };
+        let line = stats.summary_line();
+        assert!(line.contains("100 events"));
+        assert!(line.contains("75.0% hit rate"));
+        assert!(line.contains("500.0K tokens saved"));
+    }
+
+    #[test]
+    fn display_includes_all_sections() {
+        let stats = GainStats {
+            total_events: 452,
+            map_hits: 325,
+            map_misses: 101,
+            trap_hits: 7,
+            map_hit_rate: 76.3,
+            estimated_tokens_saved: 1_025_558,
+            daily: vec![DayStats {
+                date: "2026-03-21".into(),
+                events: 452,
+                tokens_saved: 1_025_558,
+            }],
+        };
+        let output = format!("{stats}");
+
+        assert!(output.contains("Total events:"));
+        assert!(output.contains("452"));
+        assert!(output.contains("Map hits:"));
+        assert!(output.contains("325"));
+        assert!(output.contains("Tokens saved:"));
+        assert!(output.contains("1.0M"));
+        assert!(output.contains("76.3%"));
+        assert!(output.contains("Daily Breakdown"));
+        assert!(output.contains("2026-03-21"));
+        assert!(output.contains("█"));
+    }
+
+    #[test]
+    fn display_no_daily_omits_table() {
+        let stats = GainStats {
+            total_events: 10,
+            map_hits: 8,
+            map_misses: 2,
+            trap_hits: 0,
+            map_hit_rate: 80.0,
+            estimated_tokens_saved: 5_000,
+            daily: vec![],
+        };
+        let output = format!("{stats}");
+
+        assert!(output.contains("Total events:"));
+        assert!(!output.contains("Daily Breakdown"));
     }
 }

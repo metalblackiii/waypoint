@@ -9,6 +9,8 @@ pub mod trap;
 
 use thiserror::Error;
 
+use colored::Colorize;
+
 use crate::cli::{Cli, Command, HookCommand, JournalCommand, TrapCommand};
 
 #[derive(Debug, Error)]
@@ -53,23 +55,13 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             let project_root = resolve_project_root()?;
             let stats = ledger::gain_stats(Some(&project_root.to_string_lossy()))?;
 
-            println!("Waypoint Gain — {}\n", project_root.display());
-            println!("Total events:        {}", stats.total_events);
-            println!("Map hits:            {}", stats.map_hits);
-            println!("Map misses:          {}", stats.map_misses);
-            println!("Map hit rate:        {:.1}%", stats.map_hit_rate);
-            println!("Trap hits:           {}", stats.trap_hits);
-            println!("Est. tokens saved:   {}", stats.estimated_tokens_saved);
-
-            if !stats.daily.is_empty() {
-                println!("\nDaily breakdown:");
-                for day in &stats.daily {
-                    println!(
-                        "  {} — {} events, ~{} tokens saved",
-                        day.date, day.events, day.tokens_saved
-                    );
-                }
-            }
+            println!(
+                "{} {} {}",
+                "Waypoint Gain".bold(),
+                "—".dimmed(),
+                project_root.display().to_string().cyan()
+            );
+            print!("{stats}");
             Ok(())
         }
 

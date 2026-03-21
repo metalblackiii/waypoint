@@ -64,16 +64,14 @@ Hook equivalents left as-is — they get cwd from stdin payload, not env.
 
 ---
 
-## 6. Feature Envy — GainStats display
+## ~~6. Feature Envy — GainStats display~~ (done 2026-03-21)
 
-**Smell:** Feature Envy (2 locations format the same struct)
-**Files:** `src/lib.rs` (Command::Gain arm), `src/status.rs`
-
-Both reach into `GainStats` fields to format display output. The
-formatting logic belongs closer to the data.
-
-**Proposal:** Implement `Display` for `GainStats` (verbose output) and
-add `GainStats::summary_line()` (one-liner for status). Low priority.
+Implemented `Display` for `GainStats` with RTK-style rich output: Unicode
+box-drawing, `colored` crate for terminal colors, human-readable token
+counts (1.0M/250.0K), hit rate meter bar with threshold colors, and daily
+breakdown table with impact bars. Added `summary_line()` for status display.
+Both `lib.rs` (Command::Gain) and `status.rs` now delegate to GainStats.
+9 new unit tests for helpers and display.
 
 ---
 
