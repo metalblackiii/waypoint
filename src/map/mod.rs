@@ -205,7 +205,9 @@ pub fn estimate_tokens(content: &str, path: &Path) -> usize {
         clippy::cast_precision_loss
     )]
     // ceil() guarantees non-negative; content.len() / 3.5 fits in usize
-    { (content.len() as f64 / ratio).ceil() as usize }
+    {
+        (content.len() as f64 / ratio).ceil() as usize
+    }
 }
 
 #[cfg(test)]

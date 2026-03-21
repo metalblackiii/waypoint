@@ -117,10 +117,7 @@ pub fn gain_stats(project_path: Option<&str>) -> Result<GainStats, AppError> {
     gain_stats_with(&conn, project_path)
 }
 
-fn gain_stats_with(
-    conn: &Connection,
-    project_path: Option<&str>,
-) -> Result<GainStats, AppError> {
+fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<GainStats, AppError> {
     let (filter, param): (&str, Option<String>) = match project_path {
         Some(p) => ("WHERE project_path = ?1", Some(p.to_string())),
         None => ("", None),
@@ -176,11 +173,7 @@ fn query_count(conn: &Connection, sql: &str, param: Option<&str>) -> Result<i64,
     Ok(count)
 }
 
-fn query_count_kind(
-    conn: &Connection,
-    kind: &str,
-    param: Option<&str>,
-) -> Result<i64, AppError> {
+fn query_count_kind(conn: &Connection, kind: &str, param: Option<&str>) -> Result<i64, AppError> {
     let (sql, values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match param {
         Some(p) => (
             "SELECT COUNT(*) FROM events WHERE event_kind = ?1 AND project_path = ?2".into(),
@@ -192,8 +185,7 @@ fn query_count_kind(
         ),
     };
     let mut stmt = conn.prepare(&sql)?;
-    let params_vec: Vec<&dyn rusqlite::types::ToSql> =
-        values.iter().map(AsRef::as_ref).collect();
+    let params_vec: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(AsRef::as_ref).collect();
     let count = stmt.query_row(params_vec.as_slice(), |row| row.get(0))?;
     Ok(count)
 }
@@ -216,8 +208,7 @@ fn query_daily(conn: &Connection, param: Option<&str>) -> Result<Vec<DayStats>, 
     };
 
     let mut stmt = conn.prepare(&sql)?;
-    let params_vec: Vec<&dyn rusqlite::types::ToSql> =
-        values.iter().map(AsRef::as_ref).collect();
+    let params_vec: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(AsRef::as_ref).collect();
     let rows = stmt.query_map(params_vec.as_slice(), |row| {
         Ok(DayStats {
             date: row.get(0)?,

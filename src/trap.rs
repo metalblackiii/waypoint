@@ -54,10 +54,7 @@ pub struct NewTrap<'a> {
 }
 
 /// Log a new trap. Returns a warning message if a duplicate was detected.
-pub fn log_trap(
-    waypoint_dir: &Path,
-    trap: &NewTrap<'_>,
-) -> Result<Option<String>, AppError> {
+pub fn log_trap(waypoint_dir: &Path, trap: &NewTrap<'_>) -> Result<Option<String>, AppError> {
     let mut traps = read_traps(waypoint_dir)?;
     let tags: Vec<String> = trap
         .tags_str
@@ -188,7 +185,9 @@ fn jaccard_similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
         return 0.0;
     }
     #[allow(clippy::cast_precision_loss)] // small set sizes — precision loss irrelevant
-    { intersection as f64 / union as f64 }
+    {
+        intersection as f64 / union as f64
+    }
 }
 
 #[cfg(test)]

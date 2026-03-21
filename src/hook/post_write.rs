@@ -54,6 +54,10 @@ pub fn run() -> Result<(), AppError> {
         map::write_map(&wp_dir, &entries)?;
     }
 
-    super::emit_hook_output("PostToolUse", None, &format!("[waypoint] map updated: {relative}"));
+    super::emit_hook_output(
+        "PostToolUse",
+        None,
+        &format!("[waypoint] map updated: {relative}"),
+    );
     Ok(())
 }

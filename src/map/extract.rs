@@ -765,8 +765,7 @@ fn regex_extract(ext: &str, content: &str, filename: &str) -> String {
 
 fn extract_shell(content: &str) -> String {
     // Shell functions can match in group 1 or group 2, so we can't use regex_collect directly
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r"(?m)^(?:function\s+(\w+)|(\w+)\s*\(\))"));
+    static RE: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^(?:function\s+(\w+)|(\w+)\s*\(\))"));
     let funcs: Vec<&str> = RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).or(cap.get(2)).map(|m| m.as_str()))
@@ -789,8 +788,7 @@ fn extract_markdown(content: &str) -> String {
 }
 
 fn extract_html(content: &str) -> String {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r"<title>([^<]+)</title>"));
+    static RE: LazyLock<Regex> = LazyLock::new(|| re(r"<title>([^<]+)</title>"));
     if let Some(cap) = RE.captures(content) {
         return cap[1].trim().to_string();
     }
@@ -798,23 +796,19 @@ fn extract_html(content: &str) -> String {
 }
 
 fn extract_css(content: &str) -> String {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r"(?m)^([.#]?[\w-]+)\s*\{"));
+    static RE: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^([.#]?[\w-]+)\s*\{"));
     regex_collect(&RE, content, 5, "styles", "stylesheet")
 }
 
 fn extract_sql(content: &str) -> String {
-    static RE: LazyLock<Regex> = LazyLock::new(|| {
-        re(r#"(?mi)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)"#)
-    });
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| re(r#"(?mi)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)"#));
     regex_collect(&RE, content, 5, "tables", "SQL script")
 }
 
 fn extract_yaml(content: &str, filename: &str) -> String {
-    static SVC_RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r"(?m)^\s{2}(\w[\w-]+):$"));
-    static NAME_RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r"(?m)^name:\s*(.+)"));
+    static SVC_RE: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^\s{2}(\w[\w-]+):$"));
+    static NAME_RE: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^name:\s*(.+)"));
 
     let lower = filename.to_lowercase();
 
@@ -847,14 +841,12 @@ fn extract_json(filename: &str) -> String {
 }
 
 fn extract_graphql(content: &str) -> String {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r"(?m)^type\s+(\w+)"));
+    static RE: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^type\s+(\w+)"));
     regex_collect(&RE, content, 5, "types", "GraphQL schema")
 }
 
 fn extract_terraform(content: &str) -> String {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r#"(?m)^resource\s+"(\w+)"\s+"(\w+)""#));
+    static RE: LazyLock<Regex> = LazyLock::new(|| re(r#"(?m)^resource\s+"(\w+)"\s+"(\w+)""#));
     let resources: Vec<String> = RE
         .captures_iter(content)
         .map(|cap| format!("{}.{}", &cap[1], &cap[2]))
@@ -868,8 +860,7 @@ fn extract_terraform(content: &str) -> String {
 }
 
 fn extract_xml(content: &str) -> String {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r"<(\w+)[\s>]"));
+    static RE: LazyLock<Regex> = LazyLock::new(|| re(r"<(\w+)[\s>]"));
     if let Some(cap) = RE.captures(content) {
         let tag = &cap[1];
         if tag != "xml" {
@@ -880,8 +871,7 @@ fn extract_xml(content: &str) -> String {
 }
 
 fn extract_vue(content: &str) -> String {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r#"(?m)name:\s*['"](\w+)['"]"#));
+    static RE: LazyLock<Regex> = LazyLock::new(|| re(r#"(?m)name:\s*['"](\w+)['"]"#));
     if let Some(cap) = RE.captures(content) {
         return format!("Vue: {}", &cap[1]);
     }
@@ -897,22 +887,19 @@ fn extract_svelte(content: &str) -> String {
 }
 
 fn extract_ruby(content: &str) -> String {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r"(?m)^(?:class|module)\s+(\w+)"));
+    static RE: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^(?:class|module)\s+(\w+)"));
     regex_collect(&RE, content, 3, "", "Ruby source")
 }
 
 fn extract_jvm(content: &str) -> String {
-    static RE: LazyLock<Regex> = LazyLock::new(|| {
-        re(r"(?m)^(?:public\s+)?(?:class|interface|enum)\s+(\w+)")
-    });
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| re(r"(?m)^(?:public\s+)?(?:class|interface|enum)\s+(\w+)"));
     regex_collect(&RE, content, 3, "", "JVM source")
 }
 
 fn extract_c(content: &str) -> String {
     // Custom filter needed to exclude control-flow keywords that match the function pattern
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r"(?m)^\w[\w\s*]+\s+(\w+)\s*\("));
+    static RE: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^\w[\w\s*]+\s+(\w+)\s*\("));
     let funcs: Vec<&str> = RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str()))
@@ -933,10 +920,8 @@ fn extract_swift(content: &str) -> String {
 }
 
 fn extract_proto(content: &str) -> String {
-    static MSG_RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r"(?m)^message\s+(\w+)"));
-    static SVC_RE: LazyLock<Regex> =
-        LazyLock::new(|| re(r"(?m)^service\s+(\w+)"));
+    static MSG_RE: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^message\s+(\w+)"));
+    static SVC_RE: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^service\s+(\w+)"));
     let messages: Vec<&str> = MSG_RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str()))

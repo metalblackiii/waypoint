@@ -37,7 +37,9 @@ pub fn scan_project(project_root: &Path) -> Result<Vec<MapEntry>, AppError> {
             continue;
         }
 
-        let Ok(content) = std::fs::read_to_string(path) else { continue };
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
 
         if content.trim().is_empty() {
             continue;
