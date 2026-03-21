@@ -1,0 +1,42 @@
+# Security Audit
+#
+# Checks dependencies for known vulnerabilities using cargo-audit.
+# Runs on dependency changes, weekly, and on-demand.
+#
+# Required permissions:
+#   - contents: read
+#   - issues: write (for creating advisories)
+
+name: Security Audit
+
+on:
+  push:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/audit.yml'
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/audit.yml'
+  schedule:
+    - cron: '0 6 * * 1' # Mondays at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run cargo-audit
+        uses: actions-rust-lang/audit@72c09e02f132669d52284a3323acdb503cfc1a24 # v1.2.7
