@@ -18,7 +18,8 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 
 ```
 .waypoint/           ← per-project, gitignored
-  map.md             ← file descriptions + token estimates
+  map.md             ← file descriptions + token estimates (human-readable source of truth)
+  map_index.db       ← SQLite index for O(1) map lookups (cache, rebuilt on scan)
   journal.md         ← cross-session memory (preferences, learnings, do-not-repeat)
   traps.json         ← bug fix log with dedup
 

@@ -62,13 +62,34 @@ fn update_entry(bencher: Bencher, n: usize) {
     bencher.bench(|| map::update_entry(tmp.path(), updated.clone()).unwrap());
 }
 
-// --- lookup ---
+// --- lookup (linear scan on Vec) ---
 
-#[divan::bench(args = [1000, 3000, 5000])]
+#[divan::bench(args = [1000, 3000, 5000, 9000])]
 fn lookup(bencher: Bencher, n: usize) {
     let entries = synthetic_entries(n);
     let target = format!("src/module_050/file_{:05}.rs", n / 2);
     bencher.bench(|| map::lookup(&entries, &target));
+}
+
+// --- index_lookup (SQLite O(1)) ---
+
+#[divan::bench(args = [1000, 3000, 5000, 9000])]
+fn index_lookup(bencher: Bencher, n: usize) {
+    let (tmp, _entries) = prepared_dir(n);
+    let target = format!("src/module_050/file_{:05}.rs", n / 2);
+    bencher.bench(|| map::index::lookup(tmp.path(), &target).unwrap());
+}
+
+// --- pre_read full path: read_map + lookup (what pre_read did before) ---
+
+#[divan::bench(args = [1000, 3000, 5000, 9000])]
+fn read_map_then_lookup(bencher: Bencher, n: usize) {
+    let (tmp, _entries) = prepared_dir(n);
+    let target = format!("src/module_050/file_{:05}.rs", n / 2);
+    bencher.bench(|| {
+        let entries = map::read_map(tmp.path()).unwrap();
+        map::lookup(&entries, &target).cloned()
+    });
 }
 
 // --- extract_description (tree-sitter) ---

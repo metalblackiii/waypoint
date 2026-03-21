@@ -15,9 +15,18 @@ pub fn run() -> Result<(), AppError> {
         return Ok(());
     };
 
-    let entries = map::read_map(&ctx.wp_dir)?;
+    // O(1) indexed lookup; fall back to full parse if index is unavailable
+    let entry = match map::index::lookup(&ctx.wp_dir, &relative) {
+        Ok(Some(e)) => Some(e),
+        Ok(None) => None,
+        Err(_) => {
+            // Index unavailable — fall back to full parse (propagates read errors)
+            let entries = map::read_map(&ctx.wp_dir)?;
+            map::lookup(&entries, &relative).cloned()
+        }
+    };
 
-    let context = if let Some(entry) = map::lookup(&entries, &relative) {
+    let context = if let Some(entry) = entry {
         let _ = ledger::record_event(
             ledger::EventKind::MapHit,
             &ctx.project_root.to_string_lossy(),

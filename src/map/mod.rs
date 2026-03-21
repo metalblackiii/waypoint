@@ -1,4 +1,5 @@
 pub mod extract;
+pub mod index;
 pub mod scan;
 
 use std::collections::BTreeMap;
@@ -119,7 +120,15 @@ pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppErr
         }
 
         Ok(())
-    })
+    })?;
+
+    // Rebuild SQLite index alongside map.md — if rebuild fails, remove
+    // the stale DB so pre_read falls back to map.md instead of serving old data
+    if index::rebuild(waypoint_dir, entries).is_err() {
+        let _ = std::fs::remove_file(waypoint_dir.join("map_index.db"));
+    }
+
+    Ok(())
 }
 
 /// Look up a file in the map by relative path.
@@ -200,7 +209,8 @@ pub fn check_staleness(current: &[MapEntry], existing: &[MapEntry]) -> Staleness
     }
 }
 
-/// Update a single entry in map.md (parse, replace or insert, write).
+/// Update a single entry in `map.md` (parse, replace or insert, write).
+/// The `SQLite` index is rebuilt via `write_map`.
 pub fn update_entry(waypoint_dir: &Path, new_entry: MapEntry) -> Result<(), AppError> {
     let mut entries = read_map(waypoint_dir)?;
 
@@ -363,6 +373,55 @@ mod tests {
         assert_eq!(report.removed, 1);
         assert_eq!(report.modified, 0);
         assert_eq!(format!("{report}"), "1 added, 1 removed");
+    }
+
+    #[test]
+    fn write_map_builds_index() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![MapEntry {
+            path: "src/main.rs".into(),
+            description: "entry point".into(),
+            token_estimate: 45,
+        }];
+
+        write_map(tmp.path(), &entries).unwrap();
+
+        // Index should be queryable after write_map
+        let found = index::lookup(tmp.path(), "src/main.rs").unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().description, "entry point");
+    }
+
+    #[test]
+    fn write_map_removes_stale_index_on_rebuild_failure() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![MapEntry {
+            path: "src/main.rs".into(),
+            description: "original".into(),
+            token_estimate: 45,
+        }];
+        write_map(tmp.path(), &entries).unwrap();
+
+        // Corrupt the index by replacing the DB file with a directory
+        let db_path = tmp.path().join("map_index.db");
+        std::fs::remove_file(&db_path).unwrap();
+        std::fs::create_dir(&db_path).unwrap();
+
+        // write_map should succeed (map.md is written) even though rebuild fails
+        let new_entries = vec![MapEntry {
+            path: "src/new.rs".into(),
+            description: "new file".into(),
+            token_estimate: 100,
+        }];
+        write_map(tmp.path(), &new_entries).unwrap();
+
+        // map.md has the new data
+        let from_md = read_map(tmp.path()).unwrap();
+        assert_eq!(from_md.len(), 1);
+        assert_eq!(from_md[0].path, "src/new.rs");
+
+        // Index lookup should fail, triggering fallback to map.md
+        assert!(index::lookup(tmp.path(), "src/new.rs").is_err());
     }
 
     #[test]

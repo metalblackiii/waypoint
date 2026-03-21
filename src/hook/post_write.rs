@@ -38,7 +38,8 @@ pub fn run() -> Result<(), AppError> {
             map::update_entry(&ctx.wp_dir, entry)?;
         }
     } else {
-        // File was deleted — remove from map
+        // File was deleted — remove from map and index
+        let _ = map::index::remove(&ctx.wp_dir, &relative);
         let mut entries = map::read_map(&ctx.wp_dir)?;
         entries.retain(|e| e.path != relative);
         map::write_map(&ctx.wp_dir, &entries)?;
