@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use regex::Regex;
 
@@ -732,8 +733,9 @@ fn regex_extract(ext: &str, content: &str, filename: &str) -> String {
 }
 
 fn extract_shell(content: &str) -> String {
-    let re = Regex::new(r"(?m)^(?:function\s+(\w+)|(\w+)\s*\(\))").unwrap();
-    let funcs: Vec<String> = re
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^(?:function\s+(\w+)|(\w+)\s*\(\))").unwrap());
+    let funcs: Vec<String> = RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).or(cap.get(2)).map(|m| m.as_str().to_string()))
         .take(5)
@@ -755,16 +757,18 @@ fn extract_markdown(content: &str) -> String {
 }
 
 fn extract_html(content: &str) -> String {
-    let title_re = Regex::new(r"<title>([^<]+)</title>").unwrap();
-    if let Some(cap) = title_re.captures(content) {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"<title>([^<]+)</title>").unwrap());
+    if let Some(cap) = RE.captures(content) {
         return cap[1].trim().to_string();
     }
     "HTML document".to_string()
 }
 
 fn extract_css(content: &str) -> String {
-    let selector_re = Regex::new(r"(?m)^([.#]?[\w-]+)\s*\{").unwrap();
-    let selectors: Vec<&str> = selector_re
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^([.#]?[\w-]+)\s*\{").unwrap());
+    let selectors: Vec<&str> = RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str()))
         .take(5)
@@ -777,9 +781,10 @@ fn extract_css(content: &str) -> String {
 }
 
 fn extract_sql(content: &str) -> String {
-    let table_re =
-        Regex::new(r#"(?mi)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)"#).unwrap();
-    let tables: Vec<&str> = table_re
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?mi)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)"#).unwrap()
+    });
+    let tables: Vec<&str> = RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str()))
         .take(5)
@@ -793,9 +798,13 @@ fn extract_sql(content: &str) -> String {
 
 fn extract_yaml(content: &str, filename: &str) -> String {
     let lower = filename.to_lowercase();
+    static SVC_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^\s{2}(\w[\w-]+):$").unwrap());
+    static NAME_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^name:\s*(.+)").unwrap());
+
     if lower.contains("docker-compose") || lower.contains("compose") {
-        let svc_re = Regex::new(r"(?m)^\s{2}(\w[\w-]+):$").unwrap();
-        let services: Vec<&str> = svc_re
+        let services: Vec<&str> = SVC_RE
             .captures_iter(content)
             .filter_map(|cap| cap.get(1).map(|m| m.as_str()))
             .take(5)
@@ -806,8 +815,7 @@ fn extract_yaml(content: &str, filename: &str) -> String {
     }
 
     if content.contains("on:") && (content.contains("jobs:") || content.contains("workflow")) {
-        let name_re = Regex::new(r"(?m)^name:\s*(.+)").unwrap();
-        if let Some(cap) = name_re.captures(content) {
+        if let Some(cap) = NAME_RE.captures(content) {
             return format!("GHA: {}", cap[1].trim());
         }
         return "GitHub Actions workflow".to_string();
@@ -824,8 +832,9 @@ fn extract_json(filename: &str) -> String {
 }
 
 fn extract_graphql(content: &str) -> String {
-    let type_re = Regex::new(r"(?m)^type\s+(\w+)").unwrap();
-    let types: Vec<&str> = type_re
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^type\s+(\w+)").unwrap());
+    let types: Vec<&str> = RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str()))
         .take(5)
@@ -838,8 +847,9 @@ fn extract_graphql(content: &str) -> String {
 }
 
 fn extract_terraform(content: &str) -> String {
-    let resource_re = Regex::new(r#"(?m)^resource\s+"(\w+)"\s+"(\w+)""#).unwrap();
-    let resources: Vec<String> = resource_re
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(?m)^resource\s+"(\w+)"\s+"(\w+)""#).unwrap());
+    let resources: Vec<String> = RE
         .captures_iter(content)
         .map(|cap| format!("{}.{}", &cap[1], &cap[2]))
         .take(5)
@@ -852,8 +862,9 @@ fn extract_terraform(content: &str) -> String {
 }
 
 fn extract_xml(content: &str) -> String {
-    let root_re = Regex::new(r"<(\w+)[\s>]").unwrap();
-    if let Some(cap) = root_re.captures(content) {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"<(\w+)[\s>]").unwrap());
+    if let Some(cap) = RE.captures(content) {
         let tag = &cap[1];
         if tag != "xml" {
             return format!("XML: <{tag}>");
@@ -863,8 +874,9 @@ fn extract_xml(content: &str) -> String {
 }
 
 fn extract_vue(content: &str) -> String {
-    let name_re = Regex::new(r#"(?m)name:\s*['"](\w+)['"]"#).unwrap();
-    if let Some(cap) = name_re.captures(content) {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(?m)name:\s*['"](\w+)['"]"#).unwrap());
+    if let Some(cap) = RE.captures(content) {
         return format!("Vue: {}", &cap[1]);
     }
     "Vue component".to_string()
@@ -879,8 +891,9 @@ fn extract_svelte(content: &str) -> String {
 }
 
 fn extract_ruby(content: &str) -> String {
-    let re = Regex::new(r"(?m)^(?:class|module)\s+(\w+)").unwrap();
-    let items: Vec<&str> = re
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^(?:class|module)\s+(\w+)").unwrap());
+    let items: Vec<&str> = RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str()))
         .take(3)
@@ -893,8 +906,10 @@ fn extract_ruby(content: &str) -> String {
 }
 
 fn extract_jvm(content: &str) -> String {
-    let re = Regex::new(r"(?m)^(?:public\s+)?(?:class|interface|enum)\s+(\w+)").unwrap();
-    let items: Vec<&str> = re
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?m)^(?:public\s+)?(?:class|interface|enum)\s+(\w+)").unwrap()
+    });
+    let items: Vec<&str> = RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str()))
         .take(3)
@@ -907,8 +922,9 @@ fn extract_jvm(content: &str) -> String {
 }
 
 fn extract_c(content: &str) -> String {
-    let fn_re = Regex::new(r"(?m)^\w[\w\s*]+\s+(\w+)\s*\(").unwrap();
-    let funcs: Vec<&str> = fn_re
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^\w[\w\s*]+\s+(\w+)\s*\(").unwrap());
+    let funcs: Vec<&str> = RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str()))
         .filter(|n| !matches!(*n, "if" | "for" | "while" | "switch" | "return"))
@@ -922,8 +938,9 @@ fn extract_c(content: &str) -> String {
 }
 
 fn extract_swift(content: &str) -> String {
-    let re = Regex::new(r"(?m)^(?:class|struct|enum|protocol)\s+(\w+)").unwrap();
-    let items: Vec<&str> = re
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^(?:class|struct|enum|protocol)\s+(\w+)").unwrap());
+    let items: Vec<&str> = RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str()))
         .take(3)
@@ -936,14 +953,16 @@ fn extract_swift(content: &str) -> String {
 }
 
 fn extract_proto(content: &str) -> String {
-    let msg_re = Regex::new(r"(?m)^message\s+(\w+)").unwrap();
-    let svc_re = Regex::new(r"(?m)^service\s+(\w+)").unwrap();
-    let messages: Vec<&str> = msg_re
+    static MSG_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^message\s+(\w+)").unwrap());
+    static SVC_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^service\s+(\w+)").unwrap());
+    let messages: Vec<&str> = MSG_RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str()))
         .take(3)
         .collect();
-    let services: Vec<&str> = svc_re
+    let services: Vec<&str> = SVC_RE
         .captures_iter(content)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str()))
         .take(2)

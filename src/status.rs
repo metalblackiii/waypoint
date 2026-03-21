@@ -47,10 +47,46 @@ pub fn run(project_root: &Path) -> Result<(), AppError> {
                 stats.total_events, stats.map_hit_rate, stats.estimated_tokens_saved
             );
         }
-        Err(_) => {
-            println!("Ledger:  unavailable");
+        Err(e) => {
+            println!("Ledger:  unavailable ({e})");
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn no_waypoint_dir_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        // No .waypoint/ directory — should print guidance and return Ok
+        assert!(run(tmp.path()).is_ok());
+    }
+
+    #[test]
+    fn initialized_project_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        let wp = project::ensure_initialized(tmp.path()).unwrap();
+
+        // Write a minimal map.md
+        std::fs::write(
+            wp.join("map.md"),
+            "# Waypoint Map\n\n## src\n\n- `main.rs` — fn main() (~45 tok)\n",
+        )
+        .unwrap();
+
+        assert!(run(tmp.path()).is_ok());
+    }
+
+    #[test]
+    fn no_map_file_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        project::ensure_initialized(tmp.path()).unwrap();
+        // journal.md and traps.json exist, but no map.md
+        assert!(run(tmp.path()).is_ok());
+    }
 }
