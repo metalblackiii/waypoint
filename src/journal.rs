@@ -43,9 +43,7 @@ pub fn add_entry(
 
     let updated = insert_after_section(&content, section_header, &new_entry);
 
-    let tmp_path = waypoint_dir.join("journal.md.tmp");
-    std::fs::write(&tmp_path, &updated)?;
-    std::fs::rename(&tmp_path, &path)?;
+    crate::project::atomic_write(&path, &updated)?;
 
     Ok(())
 }

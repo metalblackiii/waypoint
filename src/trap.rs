@@ -37,11 +37,8 @@ pub fn read_traps(waypoint_dir: &Path) -> Result<Vec<TrapEntry>, AppError> {
 /// Write traps to traps.json atomically.
 fn write_traps(waypoint_dir: &Path, traps: &[TrapEntry]) -> Result<(), AppError> {
     let path = waypoint_dir.join("traps.json");
-    let tmp_path = waypoint_dir.join("traps.json.tmp");
     let content = serde_json::to_string_pretty(traps)?;
-    std::fs::write(&tmp_path, &content)?;
-    std::fs::rename(&tmp_path, &path)?;
-    Ok(())
+    crate::project::atomic_write(&path, &content)
 }
 
 /// Fields for logging a new trap entry.

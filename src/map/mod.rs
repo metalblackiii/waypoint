@@ -2,7 +2,7 @@ pub mod extract;
 pub mod scan;
 
 use std::collections::BTreeMap;
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -83,7 +83,6 @@ fn parse_entry_tail(s: &str) -> (String, usize) {
 /// Write entries to map.md grouped by directory. Uses atomic write (temp + rename).
 pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppError> {
     let map_path = waypoint_dir.join("map.md");
-    let tmp_path = waypoint_dir.join("map.md.tmp");
 
     let mut grouped: BTreeMap<String, Vec<&MapEntry>> = BTreeMap::new();
     for entry in entries {
@@ -94,35 +93,32 @@ pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppErr
         grouped.entry(dir).or_default().push(entry);
     }
 
-    let mut file = BufWriter::new(std::fs::File::create(&tmp_path)?);
-
-    writeln!(file, "# Waypoint Map")?;
-    writeln!(file)?;
-    writeln!(
-        file,
-        "<!-- Generated: {} | Files: {} -->",
-        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        entries.len()
-    )?;
-
-    for (dir, dir_entries) in &grouped {
+    crate::project::atomic_write_with(&map_path, |file| {
+        writeln!(file, "# Waypoint Map")?;
         writeln!(file)?;
-        writeln!(file, "## {dir}")?;
-        writeln!(file)?;
-        for entry in dir_entries {
-            let filename = entry.path.rsplit('/').next().unwrap_or(&entry.path);
-            writeln!(
-                file,
-                "- `{filename}` — {} (~{} tok)",
-                entry.description, entry.token_estimate
-            )?;
+        writeln!(
+            file,
+            "<!-- Generated: {} | Files: {} -->",
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            entries.len()
+        )?;
+
+        for (dir, dir_entries) in &grouped {
+            writeln!(file)?;
+            writeln!(file, "## {dir}")?;
+            writeln!(file)?;
+            for entry in dir_entries {
+                let filename = entry.path.rsplit('/').next().unwrap_or(&entry.path);
+                writeln!(
+                    file,
+                    "- `{filename}` — {} (~{} tok)",
+                    entry.description, entry.token_estimate
+                )?;
+            }
         }
-    }
 
-    file.flush()?;
-    drop(file);
-    std::fs::rename(&tmp_path, &map_path)?;
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Look up a file in the map by relative path.
