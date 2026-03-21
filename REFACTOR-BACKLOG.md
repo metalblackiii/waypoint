@@ -3,23 +3,12 @@
 Follow-up items identified during repo-wide simplify review (2026-03-21).
 Each requires separate planning — not quick fixes.
 
-## 1. HookContext — extract shared hook preamble
+## ~~1. HookContext — extract shared hook preamble~~ (done 2026-03-21)
 
-**Smell:** Duplicated Code (Rule of Three met)
-**Files:** `src/hook/{pre_read,pre_write,post_write}.rs`
-
-All three hooks share an identical 11-line preamble: read stdin, extract
-file_path/cwd, find project root, derive waypoint dir. `session_start` is
-a partial fourth.
-
-**Proposal:** Extract a `HookContext` struct in `hook/mod.rs` with a
-`from_stdin()` constructor. Each hook's `run()` becomes context setup +
-domain logic.
-
-**Considerations:**
-- `session_start` uses `ensure_initialized` instead of `waypoint_dir`
-- The wp_dir-exists guard (3 occurrences) could fold into the constructor
-- Needs tests for missing/malformed stdin payloads
+Extracted `HookContext` struct with `from_stdin()` and `relative_path()` in
+`hook/mod.rs`. All four hooks (`pre_read`, `pre_write`, `post_write`,
+`session_start`) refactored. 6 unit tests added. Visibility narrowed to
+`pub(crate)`. Peer-reviewed clean.
 
 ---
 
@@ -77,22 +66,11 @@ with `as_str()` methods. Makes invalid values unrepresentable.
 
 ---
 
-## 5. `resolve_project_root` error propagation
+## ~~5. `resolve_project_root` error propagation~~ (done 2026-03-21)
 
-**Smell:** Silent failure
-**File:** `src/lib.rs:141-143`
-
-`std::env::current_dir().unwrap_or_default()` silently falls back to an
-empty `PathBuf` if the working directory is inaccessible. Downstream code
-will fail confusingly.
-
-**Proposal:** Change `resolve_project_root` to return
-`Result<PathBuf, AppError>` and surface a clear error message.
-
-**Considerations:**
-- Touches every `Command` arm in `run()` (6 call sites)
-- Needs a new `AppError` variant or use of the existing `Io` variant
-- Should also audit the hook equivalents (they use `unwrap_or(".")`)
+Changed `resolve_project_root()` to return `Result<PathBuf, AppError>`.
+All 6 call sites propagate via `?`. Uses existing `AppError::Io` variant.
+Hook equivalents left as-is — they get cwd from stdin payload, not env.
 
 ---
 

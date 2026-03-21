@@ -4,6 +4,54 @@ pub mod pre_read;
 pub mod pre_write;
 pub mod session_start;
 
+use std::path::{Path, PathBuf};
+
+use crate::{AppError, project};
+
+/// Shared context for hooks that resolve a project root from stdin.
+pub(crate) struct HookContext {
+    pub(crate) file_path: String,
+    pub(crate) project_root: PathBuf,
+    pub(crate) wp_dir: PathBuf,
+}
+
+impl HookContext {
+    /// Parse stdin, extract cwd/`file_path`, and resolve the project root.
+    pub(crate) fn from_stdin() -> Result<Self, AppError> {
+        let payload = read_stdin()?;
+        Ok(Self::from_payload(&payload))
+    }
+
+    /// Build context from an already-parsed JSON payload.
+    fn from_payload(payload: &serde_json::Value) -> Self {
+        let file_path = extract_file_path(payload).unwrap_or("").to_string();
+        let cwd = extract_cwd(payload).unwrap_or(".");
+        let cwd_path = Path::new(cwd);
+
+        let project_root = project::find_root(cwd_path)
+            .or_else(|| project::find_root(Path::new(&file_path)))
+            .unwrap_or_else(|| cwd_path.to_path_buf());
+
+        let wp_dir = project::waypoint_dir(&project_root);
+
+        Self {
+            file_path,
+            project_root,
+            wp_dir,
+        }
+    }
+
+    /// Strip the project root prefix from `file_path` to get a relative path.
+    /// Returns `None` if the file is outside this project.
+    #[must_use]
+    pub(crate) fn relative_path(&self) -> Option<String> {
+        Path::new(&self.file_path)
+            .strip_prefix(&self.project_root)
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+    }
+}
+
 /// Read full stdin and parse as JSON.
 pub fn read_stdin() -> Result<serde_json::Value, crate::AppError> {
     let input = std::io::read_to_string(std::io::stdin())?;
@@ -122,5 +170,77 @@ mod tests {
         assert_eq!(hook["hookEventName"], "PostToolUse");
         assert!(hook.get("permissionDecision").is_none());
         assert!(hook.get("additionalContext").is_none());
+    }
+
+    #[test]
+    fn hook_context_resolves_root_from_cwd() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let sub = tmp.path().join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let payload = serde_json::json!({
+            "cwd": sub.to_string_lossy(),
+            "tool_input": { "file_path": sub.join("main.rs").to_string_lossy().as_ref() }
+        });
+
+        let ctx = HookContext::from_payload(&payload);
+        assert_eq!(ctx.project_root, tmp.path());
+        assert_eq!(ctx.wp_dir, tmp.path().join(".waypoint"));
+    }
+
+    #[test]
+    fn hook_context_falls_back_to_file_path_for_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+
+        let payload = serde_json::json!({
+            "cwd": "/nonexistent",
+            "tool_input": { "file_path": tmp.path().join("foo.rs").to_string_lossy().as_ref() }
+        });
+
+        let ctx = HookContext::from_payload(&payload);
+        assert_eq!(ctx.project_root, tmp.path());
+    }
+
+    #[test]
+    fn hook_context_falls_back_to_cwd_when_no_root() {
+        let payload = serde_json::json!({
+            "cwd": "/tmp",
+            "tool_input": { "file_path": "/tmp/some_file.rs" }
+        });
+
+        let ctx = HookContext::from_payload(&payload);
+        assert_eq!(ctx.project_root, Path::new("/tmp"));
+    }
+
+    #[test]
+    fn relative_path_inside_project() {
+        let ctx = HookContext {
+            file_path: "/project/src/main.rs".into(),
+            project_root: PathBuf::from("/project"),
+            wp_dir: PathBuf::from("/project/.waypoint"),
+        };
+        assert_eq!(ctx.relative_path(), Some("src/main.rs".into()));
+    }
+
+    #[test]
+    fn relative_path_outside_project() {
+        let ctx = HookContext {
+            file_path: "/other/file.rs".into(),
+            project_root: PathBuf::from("/project"),
+            wp_dir: PathBuf::from("/project/.waypoint"),
+        };
+        assert_eq!(ctx.relative_path(), None);
+    }
+
+    #[test]
+    fn relative_path_empty_file_path() {
+        let ctx = HookContext {
+            file_path: String::new(),
+            project_root: PathBuf::from("/project"),
+            wp_dir: PathBuf::from("/project/.waypoint"),
+        };
+        assert_eq!(ctx.relative_path(), None);
     }
 }

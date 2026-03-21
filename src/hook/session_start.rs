@@ -1,21 +1,15 @@
-use std::path::Path;
-
 use crate::{AppError, journal, ledger, map, project};
 
 /// FR-7: `SessionStart` — inject journal context and auto-scan.
 ///
 /// `SessionStart` hooks use plain stdout for context injection.
 pub fn run() -> Result<(), AppError> {
-    let payload = super::read_stdin()?;
-    let cwd = super::extract_cwd(&payload).unwrap_or(".");
-    let cwd_path = Path::new(cwd);
-
-    let project_root = project::find_root(cwd_path).unwrap_or_else(|| cwd_path.to_path_buf());
-    let wp_dir = project::ensure_initialized(&project_root)?;
+    let ctx = super::HookContext::from_stdin()?;
+    let wp_dir = project::ensure_initialized(&ctx.project_root)?;
 
     // FR-22: Auto-scan if map.md doesn't exist
     if !wp_dir.join("map.md").exists() {
-        let entries = map::scan::scan_project(&project_root)?;
+        let entries = map::scan::scan_project(&ctx.project_root)?;
         map::write_map(&wp_dir, &entries)?;
     }
 
@@ -45,7 +39,7 @@ pub fn run() -> Result<(), AppError> {
     // FR-17: Record session start (silent failure)
     let _ = ledger::record_event(
         ledger::EventKind::SessionStart,
-        &project_root.to_string_lossy(),
+        &ctx.project_root.to_string_lossy(),
         0,
     );
 

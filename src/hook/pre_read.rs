@@ -1,40 +1,26 @@
-use std::path::Path;
-
-use crate::{AppError, ledger, map, project};
+use crate::{AppError, ledger, map};
 
 /// FR-2: PreToolUse:Read — inject file map context.
 pub fn run() -> Result<(), AppError> {
-    let payload = super::read_stdin()?;
-    let file_path = super::extract_file_path(&payload).unwrap_or("");
-    let cwd = super::extract_cwd(&payload).unwrap_or(".");
-    let cwd_path = Path::new(cwd);
-
-    let project_root = project::find_root(cwd_path)
-        .or_else(|| project::find_root(Path::new(file_path)))
-        .unwrap_or_else(|| cwd_path.to_path_buf());
-
-    let wp_dir = project::waypoint_dir(&project_root);
+    let ctx = super::HookContext::from_stdin()?;
 
     // AC-5: No .waypoint directory — exit silently
-    if !wp_dir.exists() {
+    if !ctx.wp_dir.exists() {
         super::emit_hook_output("PreToolUse", None, "");
         return Ok(());
     }
 
-    let entries = map::read_map(&wp_dir)?;
-
-    let relative = match Path::new(file_path).strip_prefix(&project_root) {
-        Ok(p) => p.to_string_lossy().to_string(),
-        Err(_) => {
-            // File is outside this project — skip map lookup
-            return Ok(());
-        }
+    let Some(relative) = ctx.relative_path() else {
+        // File is outside this project — skip map lookup
+        return Ok(());
     };
+
+    let entries = map::read_map(&ctx.wp_dir)?;
 
     let context = if let Some(entry) = map::lookup(&entries, &relative) {
         let _ = ledger::record_event(
             ledger::EventKind::MapHit,
-            &project_root.to_string_lossy(),
+            &ctx.project_root.to_string_lossy(),
             #[allow(clippy::cast_possible_wrap)] // token estimates won't exceed i64::MAX
             {
                 entry.token_estimate as i64
@@ -48,7 +34,7 @@ pub fn run() -> Result<(), AppError> {
     } else {
         let _ = ledger::record_event(
             ledger::EventKind::MapMiss,
-            &project_root.to_string_lossy(),
+            &ctx.project_root.to_string_lossy(),
             0,
         );
         String::new()
