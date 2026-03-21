@@ -27,7 +27,7 @@ pub enum AppError {
 pub fn run(cli: Cli) -> Result<(), AppError> {
     match cli.command {
         Command::Scan { check } => {
-            let project_root = resolve_project_root();
+            let project_root = resolve_project_root()?;
             let wp_dir = project::ensure_initialized(&project_root)?;
 
             if check {
@@ -50,7 +50,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
         }
 
         Command::Gain => {
-            let project_root = resolve_project_root();
+            let project_root = resolve_project_root()?;
             let stats = ledger::gain_stats(Some(&project_root.to_string_lossy()))?;
 
             println!("Waypoint Gain — {}\n", project_root.display());
@@ -75,7 +75,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
 
         Command::Trap { command } => match command {
             TrapCommand::Search { term } => {
-                let project_root = resolve_project_root();
+                let project_root = resolve_project_root()?;
                 let wp_dir = project::waypoint_dir(&project_root);
 
                 let traps = trap::read_traps(&wp_dir)?;
@@ -102,7 +102,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 fix,
                 tags,
             } => {
-                let project_root = resolve_project_root();
+                let project_root = resolve_project_root()?;
                 let wp_dir = project::ensure_initialized(&project_root)?;
 
                 let new_trap = trap::NewTrap {
@@ -122,7 +122,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
 
         Command::Journal { command } => match command {
             JournalCommand::Add { section, entry } => {
-                let project_root = resolve_project_root();
+                let project_root = resolve_project_root()?;
                 let wp_dir = project::ensure_initialized(&project_root)?;
 
                 journal::add_entry(&wp_dir, section, &entry)?;
@@ -132,7 +132,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
         },
 
         Command::Status => {
-            let project_root = resolve_project_root();
+            let project_root = resolve_project_root()?;
             status::run(&project_root)
         }
 
@@ -146,7 +146,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
     }
 }
 
-fn resolve_project_root() -> std::path::PathBuf {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    project::find_root(&cwd).unwrap_or(cwd)
+fn resolve_project_root() -> Result<std::path::PathBuf, AppError> {
+    let cwd = std::env::current_dir()?;
+    Ok(project::find_root(&cwd).unwrap_or(cwd))
 }
