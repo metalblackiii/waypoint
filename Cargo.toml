@@ -30,7 +30,9 @@ tree-sitter-typescript = "0.23.2"
 uuid = { version = "1.22.0", features = ["v4"] }
 
 [dev-dependencies]
+assert_cmd = "2.2.0"
 divan = "0.1.21"
+predicates = "3.1.4"
 tempfile = "3.27.0"
 
 [[bench]]
