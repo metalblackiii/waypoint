@@ -4,18 +4,6 @@ pub mod pre_read;
 pub mod pre_write;
 pub mod session_start;
 
-use serde::Deserialize;
-
-/// Common fields present in all hook stdin payloads.
-#[derive(Debug, Deserialize)]
-pub struct HookInput {
-    pub session_id: Option<String>,
-    pub cwd: Option<String>,
-    pub hook_event_name: Option<String>,
-    pub tool_name: Option<String>,
-    pub tool_input: Option<serde_json::Value>,
-}
-
 /// Read full stdin and parse as JSON.
 pub fn read_stdin() -> Result<serde_json::Value, crate::AppError> {
     let input = std::io::read_to_string(std::io::stdin())?;
@@ -24,20 +12,18 @@ pub fn read_stdin() -> Result<serde_json::Value, crate::AppError> {
 }
 
 /// Extract `file_path` from `tool_input` in the hook payload.
-pub fn extract_file_path(payload: &serde_json::Value) -> Option<String> {
+#[must_use]
+pub fn extract_file_path(payload: &serde_json::Value) -> Option<&str> {
     payload
         .get("tool_input")
         .and_then(|ti| ti.get("file_path"))
         .and_then(|fp| fp.as_str())
-        .map(String::from)
 }
 
 /// Extract cwd from the hook payload.
-pub fn extract_cwd(payload: &serde_json::Value) -> Option<String> {
-    payload
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .map(String::from)
+#[must_use]
+pub fn extract_cwd(payload: &serde_json::Value) -> Option<&str> {
+    payload.get("cwd").and_then(|v| v.as_str())
 }
 
 /// Emit a JSON hook response to stdout.
@@ -77,7 +63,7 @@ mod tests {
         let payload = serde_json::json!({
             "tool_input": { "file_path": "/src/main.rs" }
         });
-        assert_eq!(extract_file_path(&payload), Some("/src/main.rs".into()));
+        assert_eq!(extract_file_path(&payload), Some("/src/main.rs"));
     }
 
     #[test]
@@ -89,7 +75,7 @@ mod tests {
     #[test]
     fn extract_cwd_from_payload() {
         let payload = serde_json::json!({ "cwd": "/home/user/project" });
-        assert_eq!(extract_cwd(&payload), Some("/home/user/project".into()));
+        assert_eq!(extract_cwd(&payload), Some("/home/user/project"));
     }
 
     #[test]

@@ -6,7 +6,12 @@ use crate::cli::JournalSection;
 /// Return the initial journal.md content.
 #[must_use]
 pub fn empty_journal() -> String {
-    "# Waypoint Journal\n\n## Preferences\n\n## Learnings\n\n## Do-Not-Repeat\n".to_string()
+    format!(
+        "# Waypoint Journal\n\n{}\n\n{}\n\n{}\n",
+        JournalSection::Preferences.header(),
+        JournalSection::Learnings.header(),
+        JournalSection::DoNotRepeat.header(),
+    )
 }
 
 /// Read the full journal.md content.
@@ -31,11 +36,7 @@ pub fn add_entry(
         empty_journal()
     };
 
-    let section_header = match section {
-        JournalSection::Preferences => "## Preferences",
-        JournalSection::Learnings => "## Learnings",
-        JournalSection::DoNotRepeat => "## Do-Not-Repeat",
-    };
+    let section_header = section.header();
 
     let date = chrono::Utc::now().format("%Y-%m-%d");
     let new_entry = format!("- {date}: {entry}");

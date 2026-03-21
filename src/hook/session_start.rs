@@ -7,8 +7,8 @@ use crate::{AppError, journal, ledger, map, project};
 /// `SessionStart` hooks use plain stdout for context injection.
 pub fn run() -> Result<(), AppError> {
     let payload = super::read_stdin()?;
-    let cwd = super::extract_cwd(&payload).unwrap_or_else(|| ".".into());
-    let cwd_path = Path::new(&cwd);
+    let cwd = super::extract_cwd(&payload).unwrap_or(".");
+    let cwd_path = Path::new(cwd);
 
     let project_root = project::find_root(cwd_path).unwrap_or_else(|| cwd_path.to_path_buf());
     let wp_dir = project::ensure_initialized(&project_root)?;
@@ -48,6 +48,9 @@ pub fn run() -> Result<(), AppError> {
         &project_root.to_string_lossy(),
         0,
     );
+
+    // FR-19: Purge old ledger events once per session, not per hook
+    let _ = ledger::purge_old_events();
 
     print!("{output}");
     Ok(())

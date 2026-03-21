@@ -87,6 +87,17 @@ pub fn record_event(
     record_event_with(&conn, kind, project_path, token_impact)
 }
 
+/// Purge events older than the retention window. Called once per session, not per event.
+pub fn purge_old_events() -> Result<(), AppError> {
+    let conn = open_db()?;
+    let cutoff = Utc::now() - chrono::TimeDelta::days(RETENTION_DAYS);
+    conn.execute(
+        "DELETE FROM events WHERE timestamp < ?1",
+        params![cutoff.to_rfc3339()],
+    )?;
+    Ok(())
+}
+
 fn record_event_with(
     conn: &Connection,
     kind: EventKind,
@@ -97,14 +108,6 @@ fn record_event_with(
         "INSERT INTO events (timestamp, event_kind, project_path, token_impact) VALUES (?1, ?2, ?3, ?4)",
         params![Utc::now().to_rfc3339(), kind.as_str(), project_path, token_impact],
     )?;
-
-    // Auto-purge old records (FR-19)
-    let cutoff = Utc::now() - chrono::TimeDelta::days(RETENTION_DAYS);
-    let _ = conn.execute(
-        "DELETE FROM events WHERE timestamp < ?1",
-        params![cutoff.to_rfc3339()],
-    );
-
     Ok(())
 }
 

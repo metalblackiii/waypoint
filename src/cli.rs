@@ -74,6 +74,18 @@ pub enum JournalSection {
     DoNotRepeat,
 }
 
+impl JournalSection {
+    /// Markdown header for this section.
+    #[must_use]
+    pub fn header(self) -> &'static str {
+        match self {
+            Self::Preferences => "## Preferences",
+            Self::Learnings => "## Learnings",
+            Self::DoNotRepeat => "## Do-Not-Repeat",
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum JournalCommand {
     /// Add an entry to the journal

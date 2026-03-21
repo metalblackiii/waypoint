@@ -23,6 +23,7 @@ pub enum AppError {
     Ledger(String),
 }
 
+#[allow(clippy::too_many_lines)] // CLI dispatch — flat match arms, not deep nesting
 pub fn run(cli: Cli) -> Result<(), AppError> {
     match cli.command {
         Command::Scan { check } => {
@@ -104,7 +105,14 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 let project_root = resolve_project_root();
                 let wp_dir = project::ensure_initialized(&project_root)?;
 
-                match trap::log_trap(&wp_dir, &error, &file, &cause, &fix, &tags)? {
+                let new_trap = trap::NewTrap {
+                    error_message: &error,
+                    file: &file,
+                    root_cause: &cause,
+                    fix: &fix,
+                    tags_str: &tags,
+                };
+                match trap::log_trap(&wp_dir, &new_trap)? {
                     Some(warning) => println!("{warning}"),
                     None => println!("Trap logged"),
                 }

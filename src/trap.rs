@@ -44,24 +44,30 @@ fn write_traps(waypoint_dir: &Path, traps: &[TrapEntry]) -> Result<(), AppError>
     Ok(())
 }
 
+/// Fields for logging a new trap entry.
+pub struct NewTrap<'a> {
+    pub error_message: &'a str,
+    pub file: &'a str,
+    pub root_cause: &'a str,
+    pub fix: &'a str,
+    pub tags_str: &'a str,
+}
+
 /// Log a new trap. Returns a warning message if a duplicate was detected.
 pub fn log_trap(
     waypoint_dir: &Path,
-    error_message: &str,
-    file: &str,
-    root_cause: &str,
-    fix: &str,
-    tags_str: &str,
+    trap: &NewTrap<'_>,
 ) -> Result<Option<String>, AppError> {
     let mut traps = read_traps(waypoint_dir)?;
-    let tags: Vec<String> = tags_str
+    let tags: Vec<String> = trap
+        .tags_str
         .split(',')
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .collect();
 
     // FR-14: Dedup guard — only dedup within the same file
-    if let Some(dup_idx) = find_duplicate_idx(&traps, error_message, file) {
+    if let Some(dup_idx) = find_duplicate_idx(&traps, trap.error_message, trap.file) {
         traps[dup_idx].occurrences += 1;
         traps[dup_idx].logged_at = Utc::now().to_rfc3339();
         let id = traps[dup_idx].id.clone();
@@ -75,10 +81,10 @@ pub fn log_trap(
     let short_uuid = &uuid::Uuid::new_v4().as_simple().to_string()[..8];
     let entry = TrapEntry {
         id: format!("trap-{short_uuid}"),
-        error_message: error_message.to_string(),
-        file: file.to_string(),
-        root_cause: root_cause.to_string(),
-        fix: fix.to_string(),
+        error_message: trap.error_message.to_string(),
+        file: trap.file.to_string(),
+        root_cause: trap.root_cause.to_string(),
+        fix: trap.fix.to_string(),
         tags,
         logged_at: Utc::now().to_rfc3339(),
         occurrences: 1,
@@ -198,11 +204,13 @@ mod tests {
 
         let result = log_trap(
             tmp.path(),
-            "TypeError: Cannot read properties of undefined",
-            "src/api/users.ts",
-            "API response was null",
-            "Added optional chaining",
-            "null-check, api",
+            &NewTrap {
+                error_message: "TypeError: Cannot read properties of undefined",
+                file: "src/api/users.ts",
+                root_cause: "API response was null",
+                fix: "Added optional chaining",
+                tags_str: "null-check, api",
+            },
         )
         .unwrap();
 
@@ -223,22 +231,26 @@ mod tests {
 
         log_trap(
             tmp.path(),
-            "TypeError: Cannot read properties of undefined (reading 'map')",
-            "src/users.ts",
-            "null response",
-            "added optional chaining",
-            "null-check",
+            &NewTrap {
+                error_message: "TypeError: Cannot read properties of undefined (reading 'map')",
+                file: "src/users.ts",
+                root_cause: "null response",
+                fix: "added optional chaining",
+                tags_str: "null-check",
+            },
         )
         .unwrap();
 
         // Very similar error message — should trigger dedup
         let result = log_trap(
             tmp.path(),
-            "TypeError: Cannot read properties of undefined (reading 'filter')",
-            "src/users.ts",
-            "null response again",
-            "added fallback array",
-            "null-check",
+            &NewTrap {
+                error_message: "TypeError: Cannot read properties of undefined (reading 'filter')",
+                file: "src/users.ts",
+                root_cause: "null response again",
+                fix: "added fallback array",
+                tags_str: "null-check",
+            },
         )
         .unwrap();
 
@@ -255,22 +267,26 @@ mod tests {
 
         log_trap(
             tmp.path(),
-            "TypeError: Cannot read properties of undefined (reading 'map')",
-            "src/a.ts",
-            "null response",
-            "added optional chaining",
-            "null-check",
+            &NewTrap {
+                error_message: "TypeError: Cannot read properties of undefined (reading 'map')",
+                file: "src/a.ts",
+                root_cause: "null response",
+                fix: "added optional chaining",
+                tags_str: "null-check",
+            },
         )
         .unwrap();
 
         // Same error but different file — should NOT trigger dedup
         let result = log_trap(
             tmp.path(),
-            "TypeError: Cannot read properties of undefined (reading 'map')",
-            "src/b.ts",
-            "null response",
-            "added optional chaining",
-            "null-check",
+            &NewTrap {
+                error_message: "TypeError: Cannot read properties of undefined (reading 'map')",
+                file: "src/b.ts",
+                root_cause: "null response",
+                fix: "added optional chaining",
+                tags_str: "null-check",
+            },
         )
         .unwrap();
 
