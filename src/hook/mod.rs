@@ -1,8 +1,8 @@
+pub mod post_failure;
 pub mod post_write;
 pub mod pre_read;
 pub mod pre_write;
 pub mod session_start;
-pub mod stop;
 
 use serde::Deserialize;
 
@@ -16,7 +16,7 @@ pub struct HookInput {
     pub tool_input: Option<serde_json::Value>,
 }
 
-/// Read full stdin into a string and parse as JSON.
+/// Read full stdin and parse as JSON.
 pub fn read_stdin() -> Result<serde_json::Value, crate::AppError> {
     let input = std::io::read_to_string(std::io::stdin())?;
     let value: serde_json::Value = serde_json::from_str(&input)?;
@@ -32,19 +32,10 @@ pub fn extract_file_path(payload: &serde_json::Value) -> Option<String> {
         .map(String::from)
 }
 
-/// Write a JSON payload to .waypoint/<filename> relative to cwd from the hook input.
-pub fn log_to_waypoint_dir(
-    payload: &serde_json::Value,
-    filename: &str,
-) -> Result<(), crate::AppError> {
-    let cwd = payload
+/// Extract cwd from the hook payload.
+pub fn extract_cwd(payload: &serde_json::Value) -> Option<String> {
+    payload
         .get("cwd")
         .and_then(|v| v.as_str())
-        .unwrap_or(".");
-    let dir = std::path::Path::new(cwd).join(".waypoint");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(filename);
-    let formatted = serde_json::to_string_pretty(payload)?;
-    std::fs::write(path, formatted)?;
-    Ok(())
+        .map(String::from)
 }

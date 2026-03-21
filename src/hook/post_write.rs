@@ -1,20 +1,70 @@
-use crate::AppError;
+use std::path::Path;
 
-/// FR-5: PostToolUse:Edit|Write probe.
-///
-/// Reads JSON from stdin, extracts file_path, returns additionalContext
-/// to test whether PostToolUse supports context injection.
+use crate::{AppError, map, project};
+
+/// FR-3: PostToolUse:Edit|Write — update map entry for the changed file.
 pub fn run() -> Result<(), AppError> {
     let payload = super::read_stdin()?;
-    let file_path = super::extract_file_path(&payload).unwrap_or_else(|| "<unknown>".into());
+    let file_path = super::extract_file_path(&payload).unwrap_or_default();
+    let cwd = super::extract_cwd(&payload).unwrap_or_else(|| ".".into());
+    let cwd_path = Path::new(&cwd);
 
-    let output = serde_json::json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
-            "additionalContext": format!("[waypoint] map updated: {file_path}")
+    let project_root = project::find_root(cwd_path)
+        .or_else(|| project::find_root(Path::new(&file_path)))
+        .unwrap_or_else(|| cwd_path.to_path_buf());
+
+    let wp_dir = project::waypoint_dir(&project_root);
+
+    if !wp_dir.exists() || !wp_dir.join("map.md").exists() {
+        print_post("");
+        return Ok(());
+    }
+
+    let abs_path = Path::new(&file_path);
+    let relative = abs_path
+        .strip_prefix(&project_root)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| file_path.clone());
+
+    if abs_path.exists() {
+        // Re-parse the changed file and update its map entry
+        if let Ok(content) = std::fs::read_to_string(abs_path) {
+            let description = map::extract::extract_description(abs_path, &content);
+            let token_estimate = map::estimate_tokens(&content, abs_path);
+
+            let entry = map::MapEntry {
+                path: relative.clone(),
+                description,
+                token_estimate,
+            };
+
+            map::update_entry(&wp_dir, entry)?;
         }
-    });
+    } else {
+        // File was deleted — remove from map
+        let mut entries = map::read_map(&wp_dir)?;
+        entries.retain(|e| e.path != relative);
+        map::write_map(&wp_dir, &entries)?;
+    }
 
-    println!("{}", serde_json::to_string(&output)?);
+    print_post(&format!("[waypoint] map updated: {relative}"));
     Ok(())
+}
+
+fn print_post(context: &str) {
+    let output = if context.is_empty() {
+        serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse"
+            }
+        })
+    } else {
+        serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": context
+            }
+        })
+    };
+    println!("{}", serde_json::to_string(&output).unwrap_or_default());
 }

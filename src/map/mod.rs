@@ -1,0 +1,333 @@
+pub mod extract;
+pub mod scan;
+
+use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::AppError;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MapEntry {
+    pub path: String,
+    pub description: String,
+    pub token_estimate: usize,
+}
+
+/// Parse map.md into a list of entries.
+pub fn read_map(waypoint_dir: &Path) -> Result<Vec<MapEntry>, AppError> {
+    let map_path = waypoint_dir.join("map.md");
+    if !map_path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(&map_path)?;
+    parse_map(&content)
+}
+
+fn parse_map(content: &str) -> Result<Vec<MapEntry>, AppError> {
+    let mut entries = Vec::new();
+    let mut current_dir = String::new();
+
+    for line in content.lines() {
+        if let Some(dir) = line.strip_prefix("## ") {
+            current_dir = dir.trim_end_matches('/').to_string();
+            if current_dir == "." {
+                current_dir.clear();
+            }
+        } else if let Some(rest) = line.strip_prefix("- `")
+            && let Some(backtick_end) = rest.find('`')
+        {
+            let filename = &rest[..backtick_end];
+            let path = if current_dir.is_empty() {
+                filename.to_string()
+            } else {
+                format!("{current_dir}/{filename}")
+            };
+
+            let after_backtick = &rest[backtick_end + 1..];
+            let (description, token_estimate) = parse_entry_tail(after_backtick);
+
+            entries.push(MapEntry {
+                path,
+                description,
+                token_estimate,
+            });
+        }
+    }
+
+    Ok(entries)
+}
+
+/// Parse " — description (~N tok)" from the tail of a map entry line.
+fn parse_entry_tail(s: &str) -> (String, usize) {
+    let s = s
+        .strip_prefix(" — ")
+        .or_else(|| s.strip_prefix(" - "))
+        .unwrap_or(s);
+
+    if let Some(paren_start) = s.rfind("(~") {
+        let before_paren = s[..paren_start].trim();
+        let in_paren = &s[paren_start + 2..];
+        if let Some(tok_end) = in_paren.find(" tok)")
+            && let Ok(tokens) = in_paren[..tok_end].trim().parse::<usize>()
+        {
+            return (before_paren.to_string(), tokens);
+        }
+    }
+
+    (s.trim().to_string(), 0)
+}
+
+/// Write entries to map.md grouped by directory. Uses atomic write (temp + rename).
+pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppError> {
+    let map_path = waypoint_dir.join("map.md");
+    let tmp_path = waypoint_dir.join("map.md.tmp");
+
+    let mut grouped: BTreeMap<String, Vec<&MapEntry>> = BTreeMap::new();
+    for entry in entries {
+        let dir = match entry.path.rfind('/') {
+            Some(pos) => entry.path[..pos].to_string(),
+            None => ".".to_string(),
+        };
+        grouped.entry(dir).or_default().push(entry);
+    }
+
+    let mut file = std::fs::File::create(&tmp_path)?;
+    writeln!(file, "# Waypoint Map")?;
+    writeln!(file)?;
+    writeln!(
+        file,
+        "<!-- Generated: {} | Files: {} -->",
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        entries.len()
+    )?;
+
+    for (dir, dir_entries) in &grouped {
+        writeln!(file)?;
+        writeln!(file, "## {dir}")?;
+        writeln!(file)?;
+        for entry in dir_entries {
+            let filename = entry.path.rsplit('/').next().unwrap_or(&entry.path);
+            writeln!(
+                file,
+                "- `{filename}` — {} (~{} tok)",
+                entry.description, entry.token_estimate
+            )?;
+        }
+    }
+
+    drop(file);
+    std::fs::rename(&tmp_path, &map_path)?;
+    Ok(())
+}
+
+/// Look up a file in the map by relative path.
+pub fn lookup<'a>(entries: &'a [MapEntry], relative_path: &str) -> Option<&'a MapEntry> {
+    entries.iter().find(|e| e.path == relative_path)
+}
+
+/// Compare current scan against existing map. Returns empty string if up to date,
+/// or a description of what changed.
+pub fn check_staleness(current: &[MapEntry], existing: &[MapEntry]) -> String {
+    use std::collections::HashMap;
+
+    let current_map: HashMap<&str, &MapEntry> =
+        current.iter().map(|e| (e.path.as_str(), e)).collect();
+    let existing_map: HashMap<&str, &MapEntry> =
+        existing.iter().map(|e| (e.path.as_str(), e)).collect();
+
+    let added = current_map
+        .keys()
+        .filter(|k| !existing_map.contains_key(*k))
+        .count();
+    let removed = existing_map
+        .keys()
+        .filter(|k| !current_map.contains_key(*k))
+        .count();
+    let modified = current_map
+        .iter()
+        .filter(|(path, entry)| {
+            existing_map.get(*path).is_some_and(|e| {
+                e.description != entry.description || e.token_estimate != entry.token_estimate
+            })
+        })
+        .count();
+
+    if added == 0 && removed == 0 && modified == 0 {
+        return String::new();
+    }
+
+    let mut parts = Vec::new();
+    if added > 0 {
+        parts.push(format!("{added} added"));
+    }
+    if removed > 0 {
+        parts.push(format!("{removed} removed"));
+    }
+    if modified > 0 {
+        parts.push(format!("{modified} modified"));
+    }
+    parts.join(", ")
+}
+
+/// Update a single entry in map.md (parse, replace or insert, write).
+pub fn update_entry(waypoint_dir: &Path, new_entry: MapEntry) -> Result<(), AppError> {
+    let mut entries = read_map(waypoint_dir)?;
+
+    if let Some(existing) = entries.iter_mut().find(|e| e.path == new_entry.path) {
+        existing.description = new_entry.description;
+        existing.token_estimate = new_entry.token_estimate;
+    } else {
+        entries.push(new_entry);
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+    }
+
+    write_map(waypoint_dir, &entries)
+}
+
+/// Estimate token count for file content.
+pub fn estimate_tokens(content: &str, path: &Path) -> usize {
+    let ratio = match path.extension().and_then(|e| e.to_str()) {
+        Some("md" | "txt" | "rst" | "adoc") => 4.0,
+        Some("json" | "yaml" | "yml" | "toml" | "xml") => 3.75,
+        _ => 3.5,
+    };
+    (content.len() as f64 / ratio).ceil() as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn roundtrip_map() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![
+            MapEntry {
+                path: "src/main.rs".into(),
+                description: "entry point".into(),
+                token_estimate: 45,
+            },
+            MapEntry {
+                path: "src/lib.rs".into(),
+                description: "library root".into(),
+                token_estimate: 80,
+            },
+        ];
+
+        write_map(tmp.path(), &entries).unwrap();
+        let read_back = read_map(tmp.path()).unwrap();
+
+        assert_eq!(read_back.len(), 2);
+        assert_eq!(read_back[0].path, "src/main.rs");
+        assert_eq!(read_back[0].description, "entry point");
+        assert_eq!(read_back[0].token_estimate, 45);
+        assert_eq!(read_back[1].path, "src/lib.rs");
+        assert_eq!(read_back[1].description, "library root");
+        assert_eq!(read_back[1].token_estimate, 80);
+    }
+
+    #[test]
+    fn parse_entry_tail_extracts_tokens() {
+        let (desc, tok) = parse_entry_tail(" — fn main(), struct Config (~120 tok)");
+        assert_eq!(desc, "fn main(), struct Config");
+        assert_eq!(tok, 120);
+    }
+
+    #[test]
+    fn lookup_finds_entry() {
+        let entries = vec![MapEntry {
+            path: "src/foo.rs".into(),
+            description: "test".into(),
+            token_estimate: 10,
+        }];
+        assert!(lookup(&entries, "src/foo.rs").is_some());
+        assert!(lookup(&entries, "src/bar.rs").is_none());
+    }
+
+    #[test]
+    fn update_entry_adds_new() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![MapEntry {
+            path: "a.rs".into(),
+            description: "first".into(),
+            token_estimate: 10,
+        }];
+        write_map(tmp.path(), &entries).unwrap();
+
+        update_entry(
+            tmp.path(),
+            MapEntry {
+                path: "b.rs".into(),
+                description: "second".into(),
+                token_estimate: 20,
+            },
+        )
+        .unwrap();
+
+        let result = read_map(tmp.path()).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn check_staleness_detects_modified() {
+        let existing = vec![MapEntry {
+            path: "src/main.rs".into(),
+            description: "fn alpha()".into(),
+            token_estimate: 50,
+        }];
+        let modified_desc = vec![MapEntry {
+            path: "src/main.rs".into(),
+            description: "fn beta()".into(),
+            token_estimate: 50,
+        }];
+        let modified_tokens = vec![MapEntry {
+            path: "src/main.rs".into(),
+            description: "fn alpha()".into(),
+            token_estimate: 999,
+        }];
+        let identical = vec![MapEntry {
+            path: "src/main.rs".into(),
+            description: "fn alpha()".into(),
+            token_estimate: 50,
+        }];
+
+        assert!(check_staleness(&modified_desc, &existing).contains("1 modified"));
+        assert!(check_staleness(&modified_tokens, &existing).contains("1 modified"));
+        assert!(check_staleness(&identical, &existing).is_empty());
+    }
+
+    #[test]
+    fn check_staleness_detects_added_and_removed() {
+        let existing = vec![MapEntry {
+            path: "a.rs".into(),
+            description: "a".into(),
+            token_estimate: 10,
+        }];
+        let current = vec![MapEntry {
+            path: "b.rs".into(),
+            description: "b".into(),
+            token_estimate: 20,
+        }];
+
+        let result = check_staleness(&current, &existing);
+        assert!(result.contains("1 added"), "got: {result}");
+        assert!(result.contains("1 removed"), "got: {result}");
+    }
+
+    #[test]
+    fn estimate_tokens_code_vs_prose() {
+        let code = "fn main() { println!(\"hello\"); }";
+        let prose = "This is a paragraph of documentation text.";
+
+        let code_tokens = estimate_tokens(code, Path::new("main.rs"));
+        let prose_tokens = estimate_tokens(prose, Path::new("README.md"));
+
+        // Code uses 3.5 ratio, prose uses 4.0 — code should yield more tokens per char
+        assert!(code_tokens > 0);
+        assert!(prose_tokens > 0);
+    }
+}
