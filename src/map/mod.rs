@@ -2,7 +2,7 @@ pub mod extract;
 pub mod scan;
 
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -94,7 +94,8 @@ pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppErr
         grouped.entry(dir).or_default().push(entry);
     }
 
-    let mut file = std::fs::File::create(&tmp_path)?;
+    let mut file = BufWriter::new(std::fs::File::create(&tmp_path)?);
+
     writeln!(file, "# Waypoint Map")?;
     writeln!(file)?;
     writeln!(
@@ -118,6 +119,7 @@ pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppErr
         }
     }
 
+    file.flush()?;
     drop(file);
     std::fs::rename(&tmp_path, &map_path)?;
     Ok(())

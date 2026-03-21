@@ -29,10 +29,10 @@ impl EventKind {
 /// Token savings statistics.
 #[derive(Debug)]
 pub struct GainStats {
-    pub total_events: usize,
-    pub map_hits: usize,
-    pub map_misses: usize,
-    pub trap_hits: usize,
+    pub total_events: i64,
+    pub map_hits: i64,
+    pub map_misses: i64,
+    pub trap_hits: i64,
     pub map_hit_rate: f64,
     pub estimated_tokens_saved: i64,
     pub daily: Vec<DayStats>,
@@ -41,7 +41,7 @@ pub struct GainStats {
 #[derive(Debug)]
 pub struct DayStats {
     pub date: String,
-    pub events: usize,
+    pub events: i64,
     pub tokens_saved: i64,
 }
 
@@ -161,7 +161,7 @@ fn gain_stats_with(
     })
 }
 
-fn query_count(conn: &Connection, sql: &str, param: &Option<String>) -> Result<usize, AppError> {
+fn query_count(conn: &Connection, sql: &str, param: &Option<String>) -> Result<i64, AppError> {
     let mut stmt = conn.prepare(sql)?;
     let count = match param {
         Some(p) => stmt.query_row(params![p], |row| row.get(0))?,
@@ -174,7 +174,7 @@ fn query_count_kind(
     conn: &Connection,
     kind: &str,
     param: &Option<String>,
-) -> Result<usize, AppError> {
+) -> Result<i64, AppError> {
     let (sql, values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match param {
         Some(p) => (
             "SELECT COUNT(*) FROM events WHERE event_kind = ?1 AND project_path = ?2".into(),
