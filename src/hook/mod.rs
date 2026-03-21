@@ -186,11 +186,7 @@ mod tests {
 
     #[test]
     fn build_pre_tool_use_allow_empty_context() {
-        let output = build_hook_output(
-            HookEvent::PreToolUse,
-            Some(PermissionDecision::Allow),
-            "",
-        );
+        let output = build_hook_output(HookEvent::PreToolUse, Some(PermissionDecision::Allow), "");
         let hook = &output["hookSpecificOutput"];
 
         assert_eq!(hook["hookEventName"], "PreToolUse");
