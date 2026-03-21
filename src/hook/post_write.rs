@@ -16,7 +16,7 @@ pub fn run() -> Result<(), AppError> {
     let wp_dir = project::waypoint_dir(&project_root);
 
     if !wp_dir.exists() || !wp_dir.join("map.md").exists() {
-        print_post("");
+        super::emit_hook_output("PostToolUse", None, "");
         return Ok(());
     }
 
@@ -47,24 +47,6 @@ pub fn run() -> Result<(), AppError> {
         map::write_map(&wp_dir, &entries)?;
     }
 
-    print_post(&format!("[waypoint] map updated: {relative}"));
+    super::emit_hook_output("PostToolUse", None, &format!("[waypoint] map updated: {relative}"));
     Ok(())
-}
-
-fn print_post(context: &str) {
-    let output = if context.is_empty() {
-        serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse"
-            }
-        })
-    } else {
-        serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "additionalContext": context
-            }
-        })
-    };
-    println!("{}", serde_json::to_string(&output).unwrap_or_default());
 }

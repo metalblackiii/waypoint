@@ -85,7 +85,7 @@ pub fn record_event(
     )?;
 
     // Auto-purge old records (FR-19)
-    let cutoff = Utc::now() - chrono::Duration::days(RETENTION_DAYS);
+    let cutoff = Utc::now() - chrono::TimeDelta::days(RETENTION_DAYS);
     let _ = conn.execute(
         "DELETE FROM events WHERE timestamp < ?1",
         params![cutoff.to_rfc3339()],

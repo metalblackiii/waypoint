@@ -17,7 +17,7 @@ pub fn run() -> Result<(), AppError> {
 
     // AC-5: No .waypoint directory — exit silently
     if !wp_dir.exists() {
-        print_allow("");
+        super::emit_hook_output("PreToolUse", Some("allow"), "");
         return Ok(());
     }
 
@@ -48,26 +48,6 @@ pub fn run() -> Result<(), AppError> {
         String::new()
     };
 
-    print_allow(&context);
+    super::emit_hook_output("PreToolUse", Some("allow"), &context);
     Ok(())
-}
-
-fn print_allow(context: &str) {
-    let output = if context.is_empty() {
-        serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow"
-            }
-        })
-    } else {
-        serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "additionalContext": context
-            }
-        })
-    };
-    println!("{}", serde_json::to_string(&output).unwrap_or_default());
 }

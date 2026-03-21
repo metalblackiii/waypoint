@@ -23,10 +23,10 @@ pub fn read_map(waypoint_dir: &Path) -> Result<Vec<MapEntry>, AppError> {
         return Ok(Vec::new());
     }
     let content = std::fs::read_to_string(&map_path)?;
-    parse_map(&content)
+    Ok(parse_map(&content))
 }
 
-fn parse_map(content: &str) -> Result<Vec<MapEntry>, AppError> {
+fn parse_map(content: &str) -> Vec<MapEntry> {
     let mut entries = Vec::new();
     let mut current_dir = String::new();
 
@@ -57,7 +57,7 @@ fn parse_map(content: &str) -> Result<Vec<MapEntry>, AppError> {
         }
     }
 
-    Ok(entries)
+    entries
 }
 
 /// Parse " — description (~N tok)" from the tail of a map entry line.

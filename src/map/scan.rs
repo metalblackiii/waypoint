@@ -25,10 +25,7 @@ pub fn scan_project(project_root: &Path) -> Result<Vec<MapEntry>, AppError> {
         .build();
 
     for result in walker {
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        let Ok(entry) = result else { continue };
 
         if entry.file_type().is_some_and(|ft| ft.is_dir()) {
             continue;
@@ -40,10 +37,7 @@ pub fn scan_project(project_root: &Path) -> Result<Vec<MapEntry>, AppError> {
             continue;
         }
 
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
+        let Ok(content) = std::fs::read_to_string(path) else { continue };
 
         if content.trim().is_empty() {
             continue;

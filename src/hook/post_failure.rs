@@ -10,13 +10,6 @@ pub fn run() -> Result<(), AppError> {
          If this is a known issue, check: waypoint trap search \"<error>\""
     );
 
-    let output = serde_json::json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
-            "additionalContext": context
-        }
-    });
-
-    println!("{}", serde_json::to_string(&output)?);
+    super::emit_hook_output("PostToolUse", None, &context);
     Ok(())
 }

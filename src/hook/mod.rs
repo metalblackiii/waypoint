@@ -39,3 +39,20 @@ pub fn extract_cwd(payload: &serde_json::Value) -> Option<String> {
         .and_then(|v| v.as_str())
         .map(String::from)
 }
+
+/// Emit a JSON hook response to stdout.
+///
+/// `event_name`: `"PreToolUse"` or `"PostToolUse"`
+/// `permission`: `Some("allow")` for pre-tool hooks, `None` for post-tool hooks
+/// `context`: additional context string (omitted when empty)
+pub fn emit_hook_output(event_name: &str, permission: Option<&str>, context: &str) {
+    let mut hook = serde_json::json!({ "hookEventName": event_name });
+    if let Some(decision) = permission {
+        hook["permissionDecision"] = serde_json::json!(decision);
+    }
+    if !context.is_empty() {
+        hook["additionalContext"] = serde_json::json!(context);
+    }
+    let output = serde_json::json!({ "hookSpecificOutput": hook });
+    println!("{}", serde_json::to_string(&output).unwrap_or_default());
+}
