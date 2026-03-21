@@ -2,9 +2,9 @@ use std::path::Path;
 
 use crate::{AppError, journal, ledger, map, project};
 
-/// FR-7: SessionStart — inject journal context and auto-scan.
+/// FR-7: `SessionStart` — inject journal context and auto-scan.
 ///
-/// SessionStart hooks use plain stdout for context injection.
+/// `SessionStart` hooks use plain stdout for context injection.
 pub fn run() -> Result<(), AppError> {
     let payload = super::read_stdin()?;
     let cwd = super::extract_cwd(&payload).unwrap_or_else(|| ".".into());

@@ -23,7 +23,7 @@ pub fn read_stdin() -> Result<serde_json::Value, crate::AppError> {
     Ok(value)
 }
 
-/// Extract file_path from tool_input in the hook payload.
+/// Extract `file_path` from `tool_input` in the hook payload.
 pub fn extract_file_path(payload: &serde_json::Value) -> Option<String> {
     payload
         .get("tool_input")
@@ -68,6 +68,7 @@ fn build_hook_output(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

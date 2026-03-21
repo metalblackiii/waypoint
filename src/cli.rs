@@ -90,7 +90,7 @@ pub enum JournalCommand {
 pub enum HookCommand {
     /// PreToolUse:Read — inject file map context
     PreRead,
-    /// SessionStart — inject journal context and auto-scan
+    /// `SessionStart` — inject journal context and auto-scan
     SessionStart,
     /// PreToolUse:Edit|Write — inject trap warnings
     PreWrite,

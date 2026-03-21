@@ -33,7 +33,7 @@ pub fn run(project_root: &Path) -> Result<(), AppError> {
 
     // Journal
     let entry_count = journal::entry_count(&wp_dir)?;
-    println!("Journal: {} entries", entry_count);
+    println!("Journal: {entry_count} entries");
 
     // Traps
     let traps = trap::read_traps(&wp_dir)?;
@@ -56,6 +56,7 @@ pub fn run(project_root: &Path) -> Result<(), AppError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

@@ -126,12 +126,14 @@ pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppErr
 }
 
 /// Look up a file in the map by relative path.
+#[must_use]
 pub fn lookup<'a>(entries: &'a [MapEntry], relative_path: &str) -> Option<&'a MapEntry> {
     entries.iter().find(|e| e.path == relative_path)
 }
 
 /// Compare current scan against existing map. Returns empty string if up to date,
 /// or a description of what changed.
+#[must_use]
 pub fn check_staleness(current: &[MapEntry], existing: &[MapEntry]) -> String {
     use std::collections::HashMap;
 
@@ -190,16 +192,24 @@ pub fn update_entry(waypoint_dir: &Path, new_entry: MapEntry) -> Result<(), AppE
 }
 
 /// Estimate token count for file content.
+#[must_use]
 pub fn estimate_tokens(content: &str, path: &Path) -> usize {
     let ratio = match path.extension().and_then(|e| e.to_str()) {
         Some("md" | "txt" | "rst" | "adoc") => 4.0,
         Some("json" | "yaml" | "yml" | "toml" | "xml") => 3.75,
         _ => 3.5,
     };
-    (content.len() as f64 / ratio).ceil() as usize
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    // ceil() guarantees non-negative; content.len() / 3.5 fits in usize
+    { (content.len() as f64 / ratio).ceil() as usize }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

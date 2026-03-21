@@ -21,14 +21,12 @@ pub fn run() -> Result<(), AppError> {
     }
 
     let abs_path = Path::new(&file_path);
-    let relative = match abs_path.strip_prefix(&project_root) {
-        Ok(p) => p.to_string_lossy().to_string(),
-        Err(_) => {
-            // File is outside this project — don't pollute the map
-            super::emit_hook_output("PostToolUse", None, "");
-            return Ok(());
-        }
+    let Ok(stripped) = abs_path.strip_prefix(&project_root) else {
+        // File is outside this project — don't pollute the map
+        super::emit_hook_output("PostToolUse", None, "");
+        return Ok(());
     };
+    let relative = stripped.to_string_lossy().to_string();
 
     if abs_path.exists() {
         // Re-parse the changed file and update its map entry

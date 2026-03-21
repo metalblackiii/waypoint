@@ -90,6 +90,7 @@ pub fn log_trap(
 }
 
 /// Search traps by keyword across all text fields.
+#[must_use]
 pub fn search<'a>(traps: &'a [TrapEntry], query: &str) -> Vec<&'a TrapEntry> {
     let query_lower = query.to_lowercase();
     let query_terms: Vec<&str> = query_lower.split_whitespace().collect();
@@ -122,6 +123,7 @@ pub fn search<'a>(traps: &'a [TrapEntry], query: &str) -> Vec<&'a TrapEntry> {
 }
 
 /// Find traps relevant to a specific file.
+#[must_use]
 pub fn traps_for_file<'a>(traps: &'a [TrapEntry], file_path: &str) -> Vec<&'a TrapEntry> {
     traps.iter().filter(|t| t.file == file_path).collect()
 }
@@ -157,7 +159,7 @@ fn normalize_terms(text: &str) -> HashSet<String> {
             while let Some(c) = chars.next() {
                 if c.is_ascii_digit() {
                     result.push('N');
-                    while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    while chars.peek().is_some_and(char::is_ascii_digit) {
                         chars.next();
                     }
                 } else {
@@ -179,10 +181,12 @@ fn jaccard_similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
     if union == 0 {
         return 0.0;
     }
-    intersection as f64 / union as f64
+    #[allow(clippy::cast_precision_loss)] // small set sizes — precision loss irrelevant
+    { intersection as f64 / union as f64 }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
@@ -308,15 +312,15 @@ mod tests {
     fn jaccard_identical() {
         let a: HashSet<String> = ["foo", "bar", "baz"]
             .iter()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .collect();
         assert!((jaccard_similarity(&a, &a) - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn jaccard_disjoint() {
-        let a: HashSet<String> = ["foo"].iter().map(|s| s.to_string()).collect();
-        let b: HashSet<String> = ["bar"].iter().map(|s| s.to_string()).collect();
+        let a: HashSet<String> = ["foo"].iter().map(ToString::to_string).collect();
+        let b: HashSet<String> = ["bar"].iter().map(ToString::to_string).collect();
         assert!((jaccard_similarity(&a, &b)).abs() < f64::EPSILON);
     }
 }

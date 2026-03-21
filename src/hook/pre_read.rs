@@ -35,7 +35,8 @@ pub fn run() -> Result<(), AppError> {
         let _ = ledger::record_event(
             ledger::EventKind::MapHit,
             &project_root.to_string_lossy(),
-            entry.token_estimate as i64,
+            #[allow(clippy::cast_possible_wrap)] // token estimates won't exceed i64::MAX
+            { entry.token_estimate as i64 },
         );
 
         format!(

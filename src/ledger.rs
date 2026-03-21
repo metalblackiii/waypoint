@@ -123,16 +123,19 @@ fn gain_stats_with(
         None => ("", None),
     };
 
+    let param_ref = param.as_deref();
+
     let total_events = query_count(
         conn,
         &format!("SELECT COUNT(*) FROM events {filter}"),
-        &param,
+        param_ref,
     )?;
 
-    let map_hits = query_count_kind(conn, "map_hit", &param)?;
-    let map_misses = query_count_kind(conn, "map_miss", &param)?;
-    let trap_hits = query_count_kind(conn, "trap_hit", &param)?;
+    let map_hits = query_count_kind(conn, "map_hit", param_ref)?;
+    let map_misses = query_count_kind(conn, "map_miss", param_ref)?;
+    let trap_hits = query_count_kind(conn, "trap_hit", param_ref)?;
 
+    #[allow(clippy::cast_precision_loss)] // ratio of small counters — precision loss irrelevant
     let map_hit_rate = if map_hits + map_misses > 0 {
         map_hits as f64 / (map_hits + map_misses) as f64 * 100.0
     } else {
@@ -142,13 +145,13 @@ fn gain_stats_with(
     let estimated_tokens_saved = {
         let sql = format!("SELECT COALESCE(SUM(token_impact), 0) FROM events {filter}");
         let mut stmt = conn.prepare(&sql)?;
-        match &param {
+        match param_ref {
             Some(p) => stmt.query_row(params![p], |row| row.get(0))?,
             None => stmt.query_row([], |row| row.get(0))?,
         }
     };
 
-    let daily = query_daily(conn, &param)?;
+    let daily = query_daily(conn, param_ref)?;
 
     Ok(GainStats {
         total_events,
@@ -161,7 +164,7 @@ fn gain_stats_with(
     })
 }
 
-fn query_count(conn: &Connection, sql: &str, param: &Option<String>) -> Result<i64, AppError> {
+fn query_count(conn: &Connection, sql: &str, param: Option<&str>) -> Result<i64, AppError> {
     let mut stmt = conn.prepare(sql)?;
     let count = match param {
         Some(p) => stmt.query_row(params![p], |row| row.get(0))?,
@@ -173,12 +176,12 @@ fn query_count(conn: &Connection, sql: &str, param: &Option<String>) -> Result<i
 fn query_count_kind(
     conn: &Connection,
     kind: &str,
-    param: &Option<String>,
+    param: Option<&str>,
 ) -> Result<i64, AppError> {
     let (sql, values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match param {
         Some(p) => (
             "SELECT COUNT(*) FROM events WHERE event_kind = ?1 AND project_path = ?2".into(),
-            vec![Box::new(kind.to_string()), Box::new(p.clone())],
+            vec![Box::new(kind.to_string()), Box::new(p.to_string())],
         ),
         None => (
             "SELECT COUNT(*) FROM events WHERE event_kind = ?1".into(),
@@ -186,19 +189,20 @@ fn query_count_kind(
         ),
     };
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
-    let count = stmt.query_row(params.as_slice(), |row| row.get(0))?;
+    let params_vec: Vec<&dyn rusqlite::types::ToSql> =
+        values.iter().map(AsRef::as_ref).collect();
+    let count = stmt.query_row(params_vec.as_slice(), |row| row.get(0))?;
     Ok(count)
 }
 
-fn query_daily(conn: &Connection, param: &Option<String>) -> Result<Vec<DayStats>, AppError> {
+fn query_daily(conn: &Connection, param: Option<&str>) -> Result<Vec<DayStats>, AppError> {
     let (sql, values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match param {
         Some(p) => (
             "SELECT DATE(timestamp) as d, COUNT(*), COALESCE(SUM(token_impact), 0) \
              FROM events WHERE project_path = ?1 \
              GROUP BY d ORDER BY d DESC LIMIT 30"
                 .into(),
-            vec![Box::new(p.clone())],
+            vec![Box::new(p.to_string())],
         ),
         None => (
             "SELECT DATE(timestamp) as d, COUNT(*), COALESCE(SUM(token_impact), 0) \
@@ -209,8 +213,9 @@ fn query_daily(conn: &Connection, param: &Option<String>) -> Result<Vec<DayStats
     };
 
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
-    let rows = stmt.query_map(params.as_slice(), |row| {
+    let params_vec: Vec<&dyn rusqlite::types::ToSql> =
+        values.iter().map(AsRef::as_ref).collect();
+    let rows = stmt.query_map(params_vec.as_slice(), |row| {
         Ok(DayStats {
             date: row.get(0)?,
             events: row.get(1)?,
@@ -222,6 +227,7 @@ fn query_daily(conn: &Connection, param: &Option<String>) -> Result<Vec<DayStats
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

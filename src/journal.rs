@@ -4,6 +4,7 @@ use crate::AppError;
 use crate::cli::JournalSection;
 
 /// Return the initial journal.md content.
+#[must_use]
 pub fn empty_journal() -> String {
     "# Waypoint Journal\n\n## Preferences\n\n## Learnings\n\n## Do-Not-Repeat\n".to_string()
 }
@@ -82,6 +83,7 @@ pub fn entry_count(waypoint_dir: &Path) -> Result<usize, AppError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

@@ -20,14 +20,12 @@ pub fn run() -> Result<(), AppError> {
         return Ok(());
     }
 
-    let relative = match Path::new(&file_path).strip_prefix(&project_root) {
-        Ok(p) => p.to_string_lossy().to_string(),
-        Err(_) => {
-            // File is outside this project — skip trap lookup
-            super::emit_hook_output("PreToolUse", None, "");
-            return Ok(());
-        }
+    let Ok(stripped) = Path::new(&file_path).strip_prefix(&project_root) else {
+        // File is outside this project — skip trap lookup
+        super::emit_hook_output("PreToolUse", None, "");
+        return Ok(());
     };
+    let relative = stripped.to_string_lossy().to_string();
 
     let traps = trap::read_traps(&wp_dir)?;
 

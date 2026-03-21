@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::AppError;
 
 /// Find the project root by walking up from `start` looking for .git (primary) or .waypoint/ (secondary).
+#[must_use]
 pub fn find_root(start: &Path) -> Option<PathBuf> {
     let mut current = if start.is_file() {
         start.parent()?.to_path_buf()
@@ -24,6 +25,7 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// Return the .waypoint directory path for the given project root.
+#[must_use]
 pub fn waypoint_dir(project_root: &Path) -> PathBuf {
     project_root.join(".waypoint")
 }
@@ -49,6 +51,7 @@ pub fn ensure_initialized(project_root: &Path) -> Result<PathBuf, AppError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
