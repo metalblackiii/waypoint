@@ -63,6 +63,21 @@ pub fn scan_project(project_root: &Path) -> Result<Vec<MapEntry>, AppError> {
     Ok(entries)
 }
 
+/// Check if a file should appear in the waypoint map: scannable type and no hidden components.
+/// Accepts either absolute or relative paths — only the filename/extension and component names matter.
+#[must_use]
+pub fn should_map_file(path: &Path) -> bool {
+    is_scannable(path) && !has_hidden_component(path)
+}
+
+/// Returns true if any path component starts with `.` (hidden file or directory).
+fn has_hidden_component(path: &Path) -> bool {
+    path.components().any(|c| {
+        let bytes = c.as_os_str().as_encoded_bytes();
+        bytes.first() == Some(&b'.')
+    })
+}
+
 /// Check if a file is a text file we should scan, based on extension or known name.
 fn is_scannable(path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {

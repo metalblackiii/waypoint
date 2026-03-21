@@ -28,6 +28,11 @@ pub fn run() -> Result<(), AppError> {
     };
     let relative = stripped.to_string_lossy().to_string();
 
+    if !map::scan::should_map_file(stripped) {
+        super::emit_hook_output("PostToolUse", None, "");
+        return Ok(());
+    }
+
     if abs_path.exists() {
         // Re-parse the changed file and update its map entry
         if let Ok(content) = std::fs::read_to_string(abs_path) {
