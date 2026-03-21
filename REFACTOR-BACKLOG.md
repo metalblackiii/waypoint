@@ -75,13 +75,9 @@ Both `lib.rs` (Command::Gain) and `status.rs` now delegate to GainStats.
 
 ---
 
-## 7. `check_staleness` returns String instead of structured type
+## ~~7. `check_staleness` returns String instead of structured type~~ (done 2026-03-21)
 
-**Smell:** Primitive Obsession
-**File:** `src/map/mod.rs`
-
-Returns empty string for "up to date", human-readable string for "stale".
-Call site checks `.is_empty()` as a boolean signal.
-
-**Proposal:** Return a `StalenessReport { added, removed, modified }`
-struct with `is_stale()` and `Display`. Low priority.
+Replaced String return with `StalenessReport { added, removed, modified }`
+struct. Added `is_stale()` predicate and `Display` impl. Call site in
+`lib.rs` uses `report.is_stale()` and `{report}` formatting. Existing
+tests updated to assert on struct fields and Display output.

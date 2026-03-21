@@ -2,6 +2,7 @@ pub mod extract;
 pub mod scan;
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::io::Write;
 use std::path::Path;
 
@@ -127,10 +128,47 @@ pub fn lookup<'a>(entries: &'a [MapEntry], relative_path: &str) -> Option<&'a Ma
     entries.iter().find(|e| e.path == relative_path)
 }
 
-/// Compare current scan against existing map. Returns empty string if up to date,
-/// or a description of what changed.
+/// Result of comparing a current scan against the existing map.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct StalenessReport {
+    pub added: usize,
+    pub removed: usize,
+    pub modified: usize,
+}
+
+impl StalenessReport {
+    #[must_use]
+    pub fn is_stale(&self) -> bool {
+        self.added > 0 || self.removed > 0 || self.modified > 0
+    }
+}
+
+impl fmt::Display for StalenessReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.is_stale() {
+            return write!(f, "up to date");
+        }
+        let mut first = true;
+        for (count, label) in [
+            (self.added, "added"),
+            (self.removed, "removed"),
+            (self.modified, "modified"),
+        ] {
+            if count > 0 {
+                if !first {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{count} {label}")?;
+                first = false;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Compare current scan against existing map.
 #[must_use]
-pub fn check_staleness(current: &[MapEntry], existing: &[MapEntry]) -> String {
+pub fn check_staleness(current: &[MapEntry], existing: &[MapEntry]) -> StalenessReport {
     use std::collections::HashMap;
 
     let current_map: HashMap<&str, &MapEntry> =
@@ -155,21 +193,11 @@ pub fn check_staleness(current: &[MapEntry], existing: &[MapEntry]) -> String {
         })
         .count();
 
-    if added == 0 && removed == 0 && modified == 0 {
-        return String::new();
+    StalenessReport {
+        added,
+        removed,
+        modified,
     }
-
-    let mut parts = Vec::new();
-    if added > 0 {
-        parts.push(format!("{added} added"));
-    }
-    if removed > 0 {
-        parts.push(format!("{removed} removed"));
-    }
-    if modified > 0 {
-        parts.push(format!("{modified} modified"));
-    }
-    parts.join(", ")
 }
 
 /// Update a single entry in map.md (parse, replace or insert, write).
@@ -305,9 +333,16 @@ mod tests {
             token_estimate: 50,
         }];
 
-        assert!(check_staleness(&modified_desc, &existing).contains("1 modified"));
-        assert!(check_staleness(&modified_tokens, &existing).contains("1 modified"));
-        assert!(check_staleness(&identical, &existing).is_empty());
+        let r1 = check_staleness(&modified_desc, &existing);
+        assert_eq!(r1.modified, 1);
+        assert!(r1.is_stale());
+
+        let r2 = check_staleness(&modified_tokens, &existing);
+        assert_eq!(r2.modified, 1);
+
+        let r3 = check_staleness(&identical, &existing);
+        assert!(!r3.is_stale());
+        assert_eq!(format!("{r3}"), "up to date");
     }
 
     #[test]
@@ -323,9 +358,11 @@ mod tests {
             token_estimate: 20,
         }];
 
-        let result = check_staleness(&current, &existing);
-        assert!(result.contains("1 added"), "got: {result}");
-        assert!(result.contains("1 removed"), "got: {result}");
+        let report = check_staleness(&current, &existing);
+        assert_eq!(report.added, 1);
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.modified, 0);
+        assert_eq!(format!("{report}"), "1 added, 1 removed");
     }
 
     #[test]

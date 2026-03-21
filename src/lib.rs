@@ -36,9 +36,9 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 let current = map::scan::scan_project(&project_root)?;
                 let existing = map::read_map(&wp_dir)?;
 
-                let stale = map::check_staleness(&current, &existing);
-                if !stale.is_empty() {
-                    eprintln!("Map is stale: {stale}");
+                let report = map::check_staleness(&current, &existing);
+                if report.is_stale() {
+                    eprintln!("Map is stale: {report}");
                     std::process::exit(1);
                 }
                 println!("Map is up to date ({} files)", existing.len());
