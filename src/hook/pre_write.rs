@@ -16,16 +16,20 @@ pub fn run() -> Result<(), AppError> {
     let wp_dir = project::waypoint_dir(&project_root);
 
     if !wp_dir.exists() {
-        super::emit_hook_output("PreToolUse", Some("allow"), "");
+        super::emit_hook_output("PreToolUse", None, "");
         return Ok(());
     }
 
-    let traps = trap::read_traps(&wp_dir)?;
+    let relative = match Path::new(&file_path).strip_prefix(&project_root) {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(_) => {
+            // File is outside this project — skip trap lookup
+            super::emit_hook_output("PreToolUse", None, "");
+            return Ok(());
+        }
+    };
 
-    let relative = Path::new(&file_path)
-        .strip_prefix(&project_root)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| file_path.clone());
+    let traps = trap::read_traps(&wp_dir)?;
 
     let matching = trap::traps_for_file(&traps, &relative);
 
@@ -50,6 +54,6 @@ pub fn run() -> Result<(), AppError> {
         )
     };
 
-    super::emit_hook_output("PreToolUse", Some("allow"), &context);
+    super::emit_hook_output("PreToolUse", None, &context);
     Ok(())
 }

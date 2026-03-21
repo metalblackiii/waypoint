@@ -43,7 +43,9 @@ pub fn extract_cwd(payload: &serde_json::Value) -> Option<String> {
 /// Emit a JSON hook response to stdout.
 ///
 /// `event_name`: `"PreToolUse"` or `"PostToolUse"`
-/// `permission`: `Some("allow")` for pre-tool hooks, `None` for post-tool hooks
+/// `permission`: `None` to defer to Claude Code's permission system (preferred),
+///               or `Some("deny")` / `Some("ask")` to override. Avoid `Some("allow")`
+///               as it bypasses normal permission checks.
 /// `context`: additional context string (omitted when empty)
 pub fn emit_hook_output(event_name: &str, permission: Option<&str>, context: &str) {
     let json = build_hook_output(event_name, permission, context);
