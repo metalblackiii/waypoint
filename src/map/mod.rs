@@ -131,6 +131,46 @@ pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppErr
     Ok(())
 }
 
+/// Metadata parsed from the map.md header comment.
+/// Both fields are required — `parse_map_header` returns `None` if either fails to parse.
+#[derive(Debug)]
+pub struct MapHeader {
+    pub generated_at: chrono::DateTime<chrono::Utc>,
+    pub file_count: usize,
+}
+
+/// Parse the `<!-- Generated: ... | Files: N -->` header from map.md.
+/// Returns `None` if map.md doesn't exist, the header is missing, or either
+/// the timestamp or file count fails to parse.
+#[must_use]
+pub fn parse_map_header(waypoint_dir: &Path) -> Option<MapHeader> {
+    use std::io::BufRead;
+
+    let map_path = waypoint_dir.join("map.md");
+    let file = std::fs::File::open(map_path).ok()?;
+    let reader = std::io::BufReader::new(file);
+
+    for line in reader.lines().take(5) {
+        let Ok(line) = line else { return None };
+        if let Some(rest) = line.strip_prefix("<!-- Generated: ") {
+            let rest = rest.strip_suffix(" -->")?;
+            let (ts_str, count_str) = rest.split_once(" | Files: ")?;
+
+            let generated_at = chrono::DateTime::parse_from_rfc3339(ts_str)
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Utc))?;
+            let file_count: usize = count_str.parse().ok()?;
+
+            return Some(MapHeader {
+                generated_at,
+                file_count,
+            });
+        }
+    }
+
+    None
+}
+
 /// Look up a file in the map by relative path.
 #[must_use]
 pub fn lookup<'a>(entries: &'a [MapEntry], relative_path: &str) -> Option<&'a MapEntry> {
@@ -422,6 +462,57 @@ mod tests {
 
         // Index lookup should fail, triggering fallback to map.md
         assert!(index::lookup(tmp.path(), "src/new.rs").is_err());
+    }
+
+    #[test]
+    fn parse_map_header_from_written_map() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![
+            MapEntry {
+                path: "a.rs".into(),
+                description: "a".into(),
+                token_estimate: 10,
+            },
+            MapEntry {
+                path: "b.rs".into(),
+                description: "b".into(),
+                token_estimate: 20,
+            },
+        ];
+        write_map(tmp.path(), &entries).unwrap();
+
+        let header = parse_map_header(tmp.path()).unwrap();
+        assert_eq!(header.file_count, 2);
+    }
+
+    #[test]
+    fn parse_map_header_missing_map() {
+        let tmp = TempDir::new().unwrap();
+        assert!(parse_map_header(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn parse_map_header_malformed_timestamp() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("map.md"),
+            "# Waypoint Map\n\n<!-- Generated: NOT-A-DATE | Files: 10 -->\n",
+        )
+        .unwrap();
+        // Malformed timestamp → None (triggers rescan)
+        assert!(parse_map_header(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn parse_map_header_malformed_count() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("map.md"),
+            "# Waypoint Map\n\n<!-- Generated: 2026-03-22T00:00:00Z | Files: abc -->\n",
+        )
+        .unwrap();
+        // Malformed count → None (triggers rescan)
+        assert!(parse_map_header(tmp.path()).is_none());
     }
 
     #[test]

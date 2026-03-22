@@ -6,11 +6,9 @@ use super::extract::extract_description;
 use super::{MapEntry, estimate_tokens};
 use crate::AppError;
 
-/// Walk the project directory respecting .gitignore, parse files, return map entries.
-pub fn scan_project(project_root: &Path) -> Result<Vec<MapEntry>, AppError> {
-    let mut entries = Vec::new();
-
-    let walker = WalkBuilder::new(project_root)
+/// Configured walker shared by `count_scannable_files` and `scan_project`.
+fn project_walker(project_root: &Path) -> ignore::Walk {
+    WalkBuilder::new(project_root)
         .hidden(true)
         .git_ignore(true)
         .git_global(true)
@@ -22,7 +20,26 @@ pub fn scan_project(project_root: &Path) -> Result<Vec<MapEntry>, AppError> {
                 ".waypoint" | ".git" | "node_modules" | "__pycache__"
             )
         })
-        .build();
+        .build()
+}
+
+/// Stat-only file count — same walk/filter as `scan_project` minus file reads.
+/// Used by `session_start` to detect map staleness cheaply. Slightly overcounts
+/// vs a full scan (includes empty/whitespace-only files) but the 10% drift
+/// threshold absorbs that.
+pub fn count_scannable_files(project_root: &Path) -> usize {
+    project_walker(project_root)
+        .filter_map(Result::ok)
+        .filter(|entry| !entry.file_type().is_some_and(|ft| ft.is_dir()))
+        .filter(|entry| is_scannable(entry.path()))
+        .count()
+}
+
+/// Walk the project directory respecting .gitignore, parse files, return map entries.
+pub fn scan_project(project_root: &Path) -> Result<Vec<MapEntry>, AppError> {
+    let mut entries = Vec::new();
+
+    let walker = project_walker(project_root);
 
     for result in walker {
         let Ok(entry) = result else { continue };
