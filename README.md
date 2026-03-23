@@ -9,7 +9,7 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 | Hook | Trigger | What happens |
 |------|---------|--------------|
 | **session-start** | New conversation | Injects journal (preferences, learnings, do-not-repeat). Auto-scans if no map exists. |
-| **pre-read** | Before Claude reads a file | Injects file description and token estimate from the map |
+| **pre-read** | Before Claude reads a file | Injects file description and token estimate from the map (works across projects) |
 | **pre-write** | Before Claude edits a file | Surfaces known bug traps for that file |
 | **post-write** | After Claude edits a file | Incrementally updates the file's map entry |
 | **post-failure** | After a tool error | Suggests searching traps for known fixes |
@@ -100,6 +100,25 @@ The hooks handle the automatic plumbing (map lookups, context injection, increme
 ```
 
 This gives Claude the operating protocol — mandatory journal updates on corrections, learning logging triggers, bug trap rules, and token discipline. See [SETUP.md](SETUP.md) for full details.
+
+## Cross-project map lookups
+
+When Claude reads a file outside the current project, the pre-read hook automatically resolves the file's own project root and serves map context from that project's `.waypoint/` directory. This works for sibling repos, nested repos (submodules), and any waypoint-managed project on disk.
+
+For this to work, the target project needs to have been scanned at least once. You can pre-warm all your repos in one pass:
+
+```sh
+PROJECTS=~/projects  # adjust to your repos directory
+for d in "$PROJECTS"/*/; do (cd "$d" && waypoint scan 2>/dev/null); done
+```
+
+Maps stay current in projects you actively edit (the post-write hook updates entries incrementally). For repos you don't touch often, a periodic re-scan keeps them fresh:
+
+```sh
+# Add to crontab, a shell alias, or run ad hoc
+PROJECTS=~/projects  # adjust to your repos directory
+for d in "$PROJECTS"/*/; do (cd "$d" && waypoint scan 2>/dev/null); done
+```
 
 ## Setup
 

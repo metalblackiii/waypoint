@@ -204,6 +204,133 @@ fn cli_status() {
         .success();
 }
 
+// ── Cross-Project Hook Tests ─────────────────────────────────────
+
+#[test]
+fn hook_pre_read_cross_project_lookup() {
+    // Project A is the cwd project; project B has a scanned map.
+    let project_a = setup_project();
+    let project_b = setup_project();
+
+    // Scan project B so it has a .waypoint/map.md
+    waypoint()
+        .arg("scan")
+        .current_dir(project_b.path())
+        .assert()
+        .success();
+
+    // Read a file in project B while cwd is project A
+    let payload = serde_json::json!({
+        "cwd": project_a.path().to_string_lossy(),
+        "tool_input": {
+            "file_path": project_b.path().join("src/main.rs").to_string_lossy().as_ref()
+        }
+    })
+    .to_string();
+
+    let assert = waypoint()
+        .args(["hook", "pre-read"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    let hook = parse_hook_output(&assert);
+    assert_eq!(hook["hookEventName"], "PreToolUse");
+    let ctx = hook["additionalContext"].as_str().unwrap();
+    assert!(
+        ctx.contains("[waypoint] map:"),
+        "expected map context, got: {ctx}"
+    );
+    assert!(
+        ctx.contains("main.rs"),
+        "expected main.rs in context, got: {ctx}"
+    );
+}
+
+#[test]
+fn hook_pre_read_cross_project_no_waypoint() {
+    // Project A is the cwd; project B exists but has no .waypoint/
+    let project_a = setup_project();
+    let project_b = setup_project();
+
+    let payload = serde_json::json!({
+        "cwd": project_a.path().to_string_lossy(),
+        "tool_input": {
+            "file_path": project_b.path().join("src/main.rs").to_string_lossy().as_ref()
+        }
+    })
+    .to_string();
+
+    let assert = waypoint()
+        .args(["hook", "pre-read"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    let hook = parse_hook_output(&assert);
+    assert_eq!(hook["hookEventName"], "PreToolUse");
+    // No map in project B, so no context
+    assert!(
+        hook.get("additionalContext").is_none(),
+        "unscanned foreign project should have no context, got: {hook}"
+    );
+}
+
+#[test]
+fn hook_pre_read_nested_project_prefers_child() {
+    // Parent repo is scanned, nested child repo is also scanned.
+    // The child's map should win for files inside the child.
+    let parent = setup_project();
+
+    // Scan parent first so it has a .waypoint/map.md
+    waypoint()
+        .arg("scan")
+        .current_dir(parent.path())
+        .assert()
+        .success();
+
+    // Create a nested child repo (gitignored by parent so parent map won't include it)
+    let child_dir = parent.path().join("nested");
+    fs::create_dir_all(child_dir.join(".git")).unwrap();
+    fs::create_dir_all(child_dir.join("src")).unwrap();
+    fs::write(child_dir.join("src/lib.rs"), "pub fn nested() {}\n").unwrap();
+    fs::write(parent.path().join(".gitignore"), "nested/\n").unwrap();
+
+    // Scan the child so it has its own .waypoint/map.md
+    waypoint()
+        .arg("scan")
+        .current_dir(&child_dir)
+        .assert()
+        .success();
+
+    // Read a child file while cwd is the parent
+    let payload = serde_json::json!({
+        "cwd": parent.path().to_string_lossy(),
+        "tool_input": {
+            "file_path": child_dir.join("src/lib.rs").to_string_lossy().as_ref()
+        }
+    })
+    .to_string();
+
+    let assert = waypoint()
+        .args(["hook", "pre-read"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    let hook = parse_hook_output(&assert);
+    assert_eq!(hook["hookEventName"], "PreToolUse");
+    let ctx = hook["additionalContext"].as_str().unwrap();
+    assert!(
+        ctx.contains("[waypoint] map:"),
+        "expected map context from child, got: {ctx}"
+    );
+    assert!(
+        ctx.contains("lib.rs"),
+        "expected lib.rs from child map, got: {ctx}"
+    );
+}
+
 // ── Hook Integration Tests ───────────────────────────────────────
 
 #[test]
