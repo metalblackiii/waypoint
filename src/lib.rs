@@ -51,15 +51,23 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             Ok(())
         }
 
-        Command::Gain => {
-            let project_root = resolve_project_root()?;
-            let stats = ledger::gain_stats(Some(&project_root.to_string_lossy()))?;
+        Command::Gain { global } => {
+            let (label, stats) = if global {
+                ("all projects".to_string(), ledger::gain_stats(None)?)
+            } else {
+                let project_root = resolve_project_root()?;
+                let label = project_root.display().to_string();
+                (
+                    label,
+                    ledger::gain_stats(Some(&project_root.to_string_lossy()))?,
+                )
+            };
 
             println!(
                 "{} {} {}",
                 "Waypoint Gain".bold(),
                 "—".dimmed(),
-                project_root.display().to_string().cyan()
+                label.cyan()
             );
             print!("{stats}");
             Ok(())

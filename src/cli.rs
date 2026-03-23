@@ -20,7 +20,11 @@ pub enum Command {
         check: bool,
     },
     /// Display token savings analytics
-    Gain,
+    Gain {
+        /// Show stats across all projects
+        #[arg(long)]
+        global: bool,
+    },
     /// Manage the bug fix trap log
     Trap {
         #[command(subcommand)]

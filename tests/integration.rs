@@ -168,6 +168,32 @@ fn cli_trap_search_no_results() {
 }
 
 #[test]
+fn cli_gain_shows_project_stats() {
+    let project = setup_project();
+
+    waypoint()
+        .arg("gain")
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Waypoint Gain"));
+}
+
+#[test]
+fn cli_gain_global_works_outside_project() {
+    // --global should not require a project root
+    let tmp = TempDir::new().unwrap();
+
+    waypoint()
+        .args(["gain", "--global"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Waypoint Gain"))
+        .stdout(predicate::str::contains("all projects"));
+}
+
+#[test]
 fn cli_status() {
     let project = setup_project();
 

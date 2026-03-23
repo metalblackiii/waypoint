@@ -79,7 +79,8 @@ waypoint trap search "FromSql"
 Token savings analytics from the ledger.
 
 ```sh
-waypoint gain
+waypoint gain            # current project
+waypoint gain --global   # all projects
 ```
 
 ### `waypoint status`
