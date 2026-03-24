@@ -37,6 +37,19 @@ pub enum Command {
     },
     /// Display waypoint status for the current project
     Status,
+    /// Show structural overview of a symbol
+    Sketch {
+        /// Symbol name to look up
+        symbol: String,
+    },
+    /// Search symbols by name or intent
+    Find {
+        /// Search query
+        query: String,
+        /// Maximum results
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
     /// Hook subcommands invoked by Claude Code hooks
     Hook {
         #[command(subcommand)]

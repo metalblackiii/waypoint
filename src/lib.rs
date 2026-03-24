@@ -33,20 +33,24 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             let wp_dir = project::ensure_initialized(&project_root)?;
 
             if check {
-                let current = map::scan::scan_project(&project_root)?;
+                let output = map::scan::scan_project(&project_root)?;
                 let existing = map::read_map(&wp_dir)?;
 
-                let report = map::check_staleness(&current, &existing);
+                let report = map::check_staleness(&output.entries, &existing);
                 if report.is_stale() {
                     eprintln!("Map is stale: {report}");
                     std::process::exit(1);
                 }
                 println!("Map is up to date ({} files)", existing.len());
             } else {
-                let entries = map::scan::scan_project(&project_root)?;
-                let count = entries.len();
-                map::write_map(&wp_dir, &entries)?;
-                println!("Scanned {count} files → .waypoint/map.md");
+                let output = map::scan::scan_project(&project_root)?;
+                let count = output.entries.len();
+                let sym_count = output.symbols.len();
+                map::write_map(&wp_dir, &output.entries)?;
+                if let Err(e) = map::index::rebuild_symbols(&wp_dir, &output.symbols) {
+                    eprintln!("Warning: symbol index failed: {e}");
+                }
+                println!("Scanned {count} files, {sym_count} symbols → .waypoint/map.md");
             }
             Ok(())
         }
@@ -134,6 +138,40 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
         Command::Status => {
             let project_root = resolve_project_root()?;
             status::run(&project_root)
+        }
+
+        Command::Sketch { symbol } => {
+            let project_root = resolve_project_root()?;
+            let wp_dir = project::waypoint_dir(&project_root);
+            let results = map::index::sketch(&wp_dir, &symbol)?;
+            if results.is_empty() {
+                println!("No symbols found: {symbol}");
+            } else {
+                for row in &results {
+                    println!(
+                        "  {}:{}-{}  {}",
+                        row.file_path, row.line_start, row.line_end, row.signature
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        Command::Find { query, limit } => {
+            let project_root = resolve_project_root()?;
+            let wp_dir = project::waypoint_dir(&project_root);
+            let results = map::index::find_symbols(&wp_dir, &query, limit)?;
+            if results.is_empty() {
+                println!("No symbols found: {query}");
+            } else {
+                for row in &results {
+                    println!(
+                        "  {:6}  {:<30}  {}:{}",
+                        row.kind, row.name, row.file_path, row.line_start
+                    );
+                }
+            }
+            Ok(())
         }
 
         Command::Hook { command } => match command {

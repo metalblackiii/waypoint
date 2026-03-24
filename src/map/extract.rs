@@ -947,6 +947,383 @@ fn extract_proto(content: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Symbol extraction (structured, for sketch and find)
+// ---------------------------------------------------------------------------
+
+/// A structured symbol extracted from source code via tree-sitter.
+#[derive(Debug, Clone)]
+pub struct Symbol {
+    /// Relative file path (set by caller, not by extraction).
+    pub file_path: String,
+    pub name: String,
+    pub kind: String,
+    /// Declaration signature without body.
+    pub signature: String,
+    /// 1-based start line.
+    pub line_start: i64,
+    /// 1-based end line.
+    pub line_end: i64,
+    pub exported: bool,
+}
+
+/// Extract structured symbols from a source file using tree-sitter.
+/// Returns an empty vec for unsupported languages or parse failures.
+#[must_use]
+pub fn extract_symbols(path: &Path, content: &str) -> Vec<Symbol> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    let language = match ext {
+        "rs" => tree_sitter_rust::LANGUAGE,
+        "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+        "tsx" => tree_sitter_typescript::LANGUAGE_TSX,
+        "js" | "jsx" | "mjs" | "cjs" => tree_sitter_javascript::LANGUAGE,
+        "py" => tree_sitter_python::LANGUAGE,
+        "go" => tree_sitter_go::LANGUAGE,
+        _ => return Vec::new(),
+    };
+
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&language.into()).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return Vec::new();
+    };
+
+    let mut symbols = Vec::new();
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        collect_node_symbol(child, ext, content, &mut symbols);
+    }
+    symbols
+}
+
+fn collect_node_symbol(
+    node: tree_sitter::Node,
+    ext: &str,
+    source: &str,
+    symbols: &mut Vec<Symbol>,
+) {
+    match ext {
+        "rs" => collect_rust_symbols(node, source, symbols),
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => collect_js_symbols(node, source, symbols),
+        "py" => collect_python_symbols(node, source, symbols),
+        "go" => collect_go_symbols(node, source, symbols),
+        _ => {}
+    }
+}
+
+/// Extract the declaration signature (everything before the body).
+fn symbol_signature(node: tree_sitter::Node, source: &str) -> String {
+    let text = node_text(node, source);
+    let sig = if let Some(pos) = text.find('{') {
+        text[..pos].trim()
+    } else if let Some(pos) = text.find(';') {
+        text[..pos].trim()
+    } else {
+        text.lines().next().unwrap_or(text).trim()
+    };
+    let collapsed: String = sig.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.len() > 200 {
+        let mut end = 197;
+        while !collapsed.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &collapsed[..end])
+    } else {
+        collapsed
+    }
+}
+
+#[allow(clippy::cast_possible_wrap)]
+fn build_symbol(
+    name: String,
+    kind: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    exported: bool,
+) -> Symbol {
+    Symbol {
+        file_path: String::new(),
+        name,
+        kind: kind.to_string(),
+        signature: symbol_signature(node, source),
+        line_start: node.start_position().row as i64 + 1,
+        line_end: node.end_position().row as i64 + 1,
+        exported,
+    }
+}
+
+fn collect_rust_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<Symbol>) {
+    let is_pub = has_child_kind(node, "visibility_modifier");
+    match node.kind() {
+        "function_item" => {
+            if let Some(name) = child_text(node, "identifier", source) {
+                symbols.push(build_symbol(name, "fn", node, source, is_pub));
+            }
+        }
+        "struct_item" => {
+            if let Some(name) = child_text(node, "type_identifier", source) {
+                symbols.push(build_symbol(name, "struct", node, source, is_pub));
+            }
+        }
+        "enum_item" => {
+            if let Some(name) = child_text(node, "type_identifier", source) {
+                symbols.push(build_symbol(name, "enum", node, source, is_pub));
+            }
+        }
+        "trait_item" => {
+            if let Some(name) = child_text(node, "type_identifier", source) {
+                symbols.push(build_symbol(name, "trait", node, source, is_pub));
+            }
+        }
+        "impl_item" => {
+            // For `impl Type` or `impl Trait for Type`, take the last type child
+            // as the concrete type. Handles both simple (`Foo`) and generic (`Foo<T>`)
+            // forms — `generic_type` wraps the `type_identifier`.
+            let mut cursor = node.walk();
+            let impl_type: Option<String> = node
+                .children(&mut cursor)
+                .filter_map(|c| impl_type_name(c, source))
+                .last();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "declaration_list" {
+                    collect_impl_methods(child, impl_type.as_deref(), source, symbols);
+                }
+            }
+        }
+        "const_item" => {
+            if let Some(name) = child_text(node, "identifier", source) {
+                symbols.push(build_symbol(name, "const", node, source, is_pub));
+            }
+        }
+        "static_item" => {
+            if let Some(name) = child_text(node, "identifier", source) {
+                symbols.push(build_symbol(name, "static", node, source, is_pub));
+            }
+        }
+        "mod_item" => {
+            if let Some(name) = child_text(node, "identifier", source) {
+                symbols.push(build_symbol(name, "mod", node, source, is_pub));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract the base type name from an impl target node.
+/// Handles `Foo`, `Foo<T>`, `path::Foo`, and `path::Foo<T>`.
+fn impl_type_name(node: tree_sitter::Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => Some(node_text(node, source).to_string()),
+        "generic_type" => {
+            // `Foo<T>` → direct type_identifier child is `Foo`
+            // `path::Foo<T>` → scoped_type_identifier child wraps the path
+            child_text(node, "type_identifier", source).or_else(|| {
+                let mut cursor = node.walk();
+                node.children(&mut cursor)
+                    .find(|c| c.kind() == "scoped_type_identifier")
+                    .and_then(|c| scoped_type_name(c, source))
+            })
+        }
+        "scoped_type_identifier" => scoped_type_name(node, source),
+        _ => None,
+    }
+}
+
+/// Extract the trailing type name from a scoped type like `path::Foo`.
+fn scoped_type_name(node: tree_sitter::Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    // The last type_identifier in the scoped path is the type name
+    node.children(&mut cursor)
+        .filter(|c| c.kind() == "type_identifier")
+        .last()
+        .map(|c| node_text(c, source).to_string())
+}
+
+fn collect_impl_methods(
+    decl_list: tree_sitter::Node,
+    impl_type: Option<&str>,
+    source: &str,
+    symbols: &mut Vec<Symbol>,
+) {
+    let mut cursor = decl_list.walk();
+    for child in decl_list.children(&mut cursor) {
+        if child.kind() == "function_item" {
+            let is_pub = has_child_kind(child, "visibility_modifier");
+            if let Some(method_name) = child_text(child, "identifier", source) {
+                let qualified = match impl_type {
+                    Some(t) => format!("{t}::{method_name}"),
+                    None => method_name,
+                };
+                symbols.push(build_symbol(qualified, "method", child, source, is_pub));
+            }
+        }
+    }
+}
+
+fn collect_js_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<Symbol>) {
+    match node.kind() {
+        "function_declaration" => {
+            if let Some(name) = child_text(node, "identifier", source) {
+                symbols.push(build_symbol(name, "fn", node, source, false));
+            }
+        }
+        "class_declaration" => {
+            if let Some(name) = child_text(node, "identifier", source) {
+                symbols.push(build_symbol(name, "class", node, source, false));
+            }
+        }
+        "export_statement" => {
+            collect_js_export_symbols(node, source, symbols);
+        }
+        "lexical_declaration" | "variable_declaration" => {
+            collect_js_var_symbols(node, source, symbols, false);
+        }
+        "interface_declaration" | "type_alias_declaration" => {
+            let name = child_text(node, "type_identifier", source)
+                .or_else(|| child_text(node, "identifier", source));
+            if let Some(name) = name {
+                symbols.push(build_symbol(name, "type", node, source, false));
+            }
+        }
+        "enum_declaration" => {
+            if let Some(name) = child_text(node, "identifier", source) {
+                symbols.push(build_symbol(name, "enum", node, source, false));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_js_export_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<Symbol>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_declaration" => {
+                if let Some(name) = child_text(child, "identifier", source) {
+                    symbols.push(build_symbol(name, "fn", child, source, true));
+                }
+                return;
+            }
+            "class_declaration" => {
+                if let Some(name) = child_text(child, "identifier", source) {
+                    symbols.push(build_symbol(name, "class", child, source, true));
+                }
+                return;
+            }
+            "lexical_declaration" | "variable_declaration" => {
+                collect_js_var_symbols(child, source, symbols, true);
+                return;
+            }
+            "interface_declaration" | "type_alias_declaration" => {
+                let name = child_text(child, "type_identifier", source)
+                    .or_else(|| child_text(child, "identifier", source));
+                if let Some(name) = name {
+                    symbols.push(build_symbol(name, "type", child, source, true));
+                }
+                return;
+            }
+            "enum_declaration" => {
+                if let Some(name) = child_text(child, "identifier", source) {
+                    symbols.push(build_symbol(name, "enum", child, source, true));
+                }
+                return;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_js_var_symbols(
+    node: tree_sitter::Node,
+    source: &str,
+    symbols: &mut Vec<Symbol>,
+    exported: bool,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "variable_declarator" {
+            continue;
+        }
+        let Some(name) = child_text(child, "identifier", source) else {
+            continue;
+        };
+        if let Some(value) = child.child_by_field_name("value") {
+            if is_require_call(value, source) {
+                continue;
+            }
+            let kind = if matches!(value.kind(), "arrow_function" | "function_expression") {
+                "fn"
+            } else {
+                "const"
+            };
+            symbols.push(build_symbol(name, kind, node, source, exported));
+        } else {
+            symbols.push(build_symbol(name, "const", node, source, exported));
+        }
+    }
+}
+
+fn collect_python_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<Symbol>) {
+    match node.kind() {
+        "function_definition" => {
+            if let Some(name) = child_text(node, "identifier", source) {
+                let exported = !name.starts_with('_');
+                symbols.push(build_symbol(name, "fn", node, source, exported));
+            }
+        }
+        "class_definition" => {
+            if let Some(name) = child_text(node, "identifier", source) {
+                let exported = !name.starts_with('_');
+                symbols.push(build_symbol(name, "class", node, source, exported));
+            }
+        }
+        "decorated_definition" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if matches!(child.kind(), "function_definition" | "class_definition") {
+                    collect_python_symbols(child, source, symbols);
+                    return;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_go_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<Symbol>) {
+    match node.kind() {
+        "function_declaration" => {
+            if let Some(name) = child_text(node, "identifier", source) {
+                let exported = name.starts_with(|c: char| c.is_uppercase());
+                symbols.push(build_symbol(name, "fn", node, source, exported));
+            }
+        }
+        "method_declaration" => {
+            if let Some(name) = child_text(node, "field_identifier", source) {
+                let exported = name.starts_with(|c: char| c.is_uppercase());
+                symbols.push(build_symbol(name, "method", node, source, exported));
+            }
+        }
+        "type_declaration" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "type_spec"
+                    && let Some(name) = child_text(child, "type_identifier", source)
+                {
+                    let exported = name.starts_with(|c: char| c.is_uppercase());
+                    symbols.push(build_symbol(name, "type", node, source, exported));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -1271,5 +1648,144 @@ module.exports = Router;
 "#;
         let desc = extract_description(Path::new("test.js"), src);
         assert!(desc.contains("export class Router"), "got: {desc}");
+    }
+
+    // -- Symbol extraction tests --
+
+    #[test]
+    fn extract_symbols_rust_basic() {
+        let src = "pub fn main() {}\npub struct Config {}\nenum State {}\n";
+        let symbols = extract_symbols(Path::new("lib.rs"), src);
+        assert_eq!(symbols.len(), 3);
+        assert_eq!(symbols[0].name, "main");
+        assert_eq!(symbols[0].kind, "fn");
+        assert!(symbols[0].exported);
+        assert_eq!(symbols[1].name, "Config");
+        assert_eq!(symbols[1].kind, "struct");
+        assert_eq!(symbols[2].name, "State");
+        assert_eq!(symbols[2].kind, "enum");
+        assert!(!symbols[2].exported);
+    }
+
+    #[test]
+    fn extract_symbols_rust_impl_methods() {
+        let src = "pub struct Foo {}\n\nimpl Foo {\n    pub fn new() -> Self { Foo {} }\n    fn helper(&self) {}\n}\n";
+        let symbols = extract_symbols(Path::new("foo.rs"), src);
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Foo" && s.kind == "struct")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Foo::new" && s.kind == "method" && s.exported)
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Foo::helper" && s.kind == "method" && !s.exported)
+        );
+    }
+
+    #[test]
+    fn extract_symbols_rust_trait_impl_uses_concrete_type() {
+        let src = "trait Builder {\n    fn build(&self);\n}\nstruct Car {}\nimpl Builder for Car {\n    fn build(&self) {}\n}\n";
+        let symbols = extract_symbols(Path::new("car.rs"), src);
+        assert!(
+            symbols.iter().any(|s| s.name == "Car::build"),
+            "trait impl method should be qualified with concrete type, got: {symbols:?}"
+        );
+        assert!(
+            !symbols.iter().any(|s| s.name == "Builder::build"),
+            "should not use trait name for qualification"
+        );
+    }
+
+    #[test]
+    fn extract_symbols_rust_generic_impl() {
+        let src = "struct Foo<T> { val: T }\nimpl<T> Foo<T> {\n    pub fn new(val: T) -> Self { Foo { val } }\n}\n";
+        let symbols = extract_symbols(Path::new("foo.rs"), src);
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Foo::new" && s.kind == "method"),
+            "generic impl should qualify as Foo::new, got: {symbols:?}"
+        );
+    }
+
+    #[test]
+    fn extract_symbols_rust_generic_trait_impl() {
+        let src = "trait Builder<T> {\n    fn build(&self) -> T;\n}\nstruct Car {}\nimpl<T> Builder<T> for Car {\n    fn build(&self) -> T { todo!() }\n}\n";
+        let symbols = extract_symbols(Path::new("car.rs"), src);
+        assert!(
+            symbols.iter().any(|s| s.name == "Car::build"),
+            "generic trait impl should qualify with concrete type, got: {symbols:?}"
+        );
+    }
+
+    #[test]
+    fn extract_symbols_rust_scoped_impl() {
+        let src =
+            "mod inner { pub struct Car {} }\nimpl inner::Car {\n    pub fn drive(&self) {}\n}\n";
+        let symbols = extract_symbols(Path::new("car.rs"), src);
+        assert!(
+            symbols.iter().any(|s| s.name == "Car::drive"),
+            "scoped impl should qualify with final type name, got: {symbols:?}"
+        );
+    }
+
+    #[test]
+    fn extract_symbols_rust_scoped_generic_impl() {
+        let src = "mod inner { pub struct Car<T> { val: T } }\nimpl<T> inner::Car<T> {\n    pub fn new(val: T) -> Self { inner::Car { val } }\n}\n";
+        let symbols = extract_symbols(Path::new("car.rs"), src);
+        assert!(
+            symbols.iter().any(|s| s.name == "Car::new"),
+            "scoped generic impl should qualify with final type name, got: {symbols:?}"
+        );
+    }
+
+    #[test]
+    fn extract_symbols_js_exports() {
+        let src =
+            "export function doWork() {}\nexport class Service {}\nconst helper = () => {};\n";
+        let symbols = extract_symbols(Path::new("test.js"), src);
+        assert!(symbols.iter().any(|s| s.name == "doWork" && s.exported));
+        assert!(symbols.iter().any(|s| s.name == "Service" && s.exported));
+        assert!(symbols.iter().any(|s| s.name == "helper" && !s.exported));
+    }
+
+    #[test]
+    fn extract_symbols_python() {
+        let src =
+            "def public_fn():\n    pass\n\nclass MyClass:\n    pass\n\ndef _private():\n    pass\n";
+        let symbols = extract_symbols(Path::new("main.py"), src);
+        assert!(symbols.iter().any(|s| s.name == "public_fn" && s.exported));
+        assert!(symbols.iter().any(|s| s.name == "MyClass" && s.exported));
+        assert!(symbols.iter().any(|s| s.name == "_private" && !s.exported));
+    }
+
+    #[test]
+    fn extract_symbols_unsupported_ext() {
+        assert!(extract_symbols(Path::new("styles.css"), ".foo { color: red; }").is_empty());
+    }
+
+    #[test]
+    fn symbol_signature_strips_body() {
+        let src = "pub fn foo(x: i32) -> String {\n    x.to_string()\n}\n";
+        let symbols = extract_symbols(Path::new("test.rs"), src);
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].signature, "pub fn foo(x: i32) -> String");
+    }
+
+    #[test]
+    fn symbol_line_numbers() {
+        let src = "\npub fn alpha() {}\n\npub fn beta() {}\n";
+        let symbols = extract_symbols(Path::new("test.rs"), src);
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "alpha");
+        assert_eq!(symbols[0].line_start, 2);
+        assert_eq!(symbols[1].name, "beta");
+        assert_eq!(symbols[1].line_start, 4);
     }
 }

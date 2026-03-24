@@ -2,9 +2,15 @@ use std::path::Path;
 
 use ignore::WalkBuilder;
 
-use super::extract::extract_description;
+use super::extract::{Symbol, extract_description, extract_symbols};
 use super::{MapEntry, estimate_tokens};
 use crate::AppError;
+
+/// Output from a full project scan: file-level entries + symbol-level data.
+pub struct ScanOutput {
+    pub entries: Vec<MapEntry>,
+    pub symbols: Vec<Symbol>,
+}
 
 /// Configured walker shared by `count_scannable_files` and `scan_project`.
 fn project_walker(project_root: &Path) -> ignore::Walk {
@@ -35,9 +41,10 @@ pub fn count_scannable_files(project_root: &Path) -> usize {
         .count()
 }
 
-/// Walk the project directory respecting .gitignore, parse files, return map entries.
-pub fn scan_project(project_root: &Path) -> Result<Vec<MapEntry>, AppError> {
+/// Walk the project directory respecting .gitignore, parse files, return map entries and symbols.
+pub fn scan_project(project_root: &Path) -> Result<ScanOutput, AppError> {
     let mut entries = Vec::new();
+    let mut symbols = Vec::new();
 
     let walker = project_walker(project_root);
 
@@ -71,6 +78,19 @@ pub fn scan_project(project_root: &Path) -> Result<Vec<MapEntry>, AppError> {
         let description = extract_description(path, &content);
         let token_estimate = estimate_tokens(&content, path);
 
+        // Extract structured symbols from tree-sitter-supported files only
+        let ext = path.extension().and_then(|e| e.to_str());
+        if matches!(
+            ext,
+            Some("rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "go")
+        ) {
+            let mut file_symbols = extract_symbols(path, &content);
+            for sym in &mut file_symbols {
+                sym.file_path.clone_from(&relative);
+            }
+            symbols.extend(file_symbols);
+        }
+
         entries.push(MapEntry {
             path: relative,
             description,
@@ -79,7 +99,7 @@ pub fn scan_project(project_root: &Path) -> Result<Vec<MapEntry>, AppError> {
     }
 
     entries.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(entries)
+    Ok(ScanOutput { entries, symbols })
 }
 
 /// Check if a file should appear in the waypoint map: scannable type and no hidden components.

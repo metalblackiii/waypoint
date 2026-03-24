@@ -16,8 +16,9 @@ pub fn run() -> Result<(), AppError> {
 
     // FR-22: Auto-scan if map.md doesn't exist or is stale
     if should_rescan(&wp_dir, &ctx.project_root) {
-        let entries = map::scan::scan_project(&ctx.project_root)?;
-        map::write_map(&wp_dir, &entries)?;
+        let output = map::scan::scan_project(&ctx.project_root)?;
+        map::write_map(&wp_dir, &output.entries)?;
+        let _ = map::index::rebuild_symbols(&wp_dir, &output.symbols);
     }
 
     // FR-7: Inject journal contents

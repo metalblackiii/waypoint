@@ -24,7 +24,7 @@ pub fn run() -> Result<(), AppError> {
 
     let abs_path = Path::new(&ctx.file_path);
     if abs_path.exists() {
-        // Re-parse the changed file and update its map entry
+        // Re-parse the changed file and update its map entry + symbols
         if let Ok(content) = std::fs::read_to_string(abs_path) {
             let description = map::extract::extract_description(abs_path, &content);
             let token_estimate = map::estimate_tokens(&content, abs_path);
@@ -36,10 +36,18 @@ pub fn run() -> Result<(), AppError> {
             };
 
             map::update_entry(&ctx.wp_dir, entry)?;
+
+            // Update symbol index for this file
+            let mut file_symbols = map::extract::extract_symbols(abs_path, &content);
+            for sym in &mut file_symbols {
+                sym.file_path.clone_from(&relative);
+            }
+            let _ = map::index::update_file_symbols(&ctx.wp_dir, &relative, &file_symbols);
         }
     } else {
-        // File was deleted — remove from map and index
+        // File was deleted — remove from map, index, and symbols
         let _ = map::index::remove(&ctx.wp_dir, &relative);
+        let _ = map::index::remove_file_symbols(&ctx.wp_dir, &relative);
         let mut entries = map::read_map(&ctx.wp_dir)?;
         entries.retain(|e| e.path != relative);
         map::write_map(&ctx.wp_dir, &entries)?;

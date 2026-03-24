@@ -83,10 +83,20 @@ waypoint trap log \
 
 **The threshold is LOW.** When in doubt, log it. A false positive costs nothing. A missed trap means repeating the same fix later.
 
+## Symbol Index (optional)
+
+After `waypoint scan`, a symbol index is available in `map_index.db` alongside the file map. Use these commands when you need structural understanding without reading full files.
+
+- `waypoint sketch <name>` — show file location and signature for a symbol (function, struct, class, etc.). Useful before deciding whether to read a file.
+- `waypoint find "<query>"` — full-text search across all indexed symbols. Finds code by name or intent without grepping the codebase.
+
+These are **optional** — the file map and Grep/Glob remain the primary navigation tools. Use sketch/find when you need to understand code structure or locate symbols across the project.
+
 ## Token Discipline
 
 - Never re-read a file already read this session unless it was modified since.
 - Prefer map descriptions over full file reads when possible.
+- Use `waypoint sketch` to check a symbol's signature before reading its full file.
 - Prefer targeted Grep over full file reads when searching for specific code.
 - If appending to a file, do not read the entire file first.
 
