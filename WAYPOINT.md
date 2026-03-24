@@ -6,8 +6,10 @@ You are working in a Waypoint-managed project. These rules apply every turn.
 
 1. Check the `[waypoint] map:` context injected on every Read — it has a description and token estimate for the file.
 2. If the description is sufficient for your task, do NOT read the full file.
-3. If a file is not in the map, search with Grep/Glob. The post-write hook will add it automatically when you create or edit it.
-4. Use `waypoint scan --check` to detect stale map entries.
+3. When you need a specific symbol (function, class, type), use `waypoint sketch <name>` before reading the file — it gives you the signature and line range.
+4. When searching for code by name or intent, use `waypoint find "<query>"` before falling back to Grep.
+5. If a file is not in the map or symbol index, search with Grep/Glob. The post-write hook will add it automatically when you create or edit it.
+6. Use `waypoint scan --check` to detect stale map entries.
 
 ## Code Generation
 
@@ -83,14 +85,18 @@ waypoint trap log \
 
 **The threshold is LOW.** When in doubt, log it. A false positive costs nothing. A missed trap means repeating the same fix later.
 
-## Symbol Index (optional)
+## Symbol Index
 
-After `waypoint scan`, a symbol index is available in `map_index.db` alongside the file map. Use these commands when you need structural understanding without reading full files.
+After `waypoint scan`, a symbol index is available in `map_index.db` alongside the file map.
 
-- `waypoint sketch <name>` — show file location and signature for a symbol (function, struct, class, etc.). Useful before deciding whether to read a file.
-- `waypoint find "<query>"` — full-text search across all indexed symbols. Finds code by name or intent without grepping the codebase.
+- `waypoint sketch <name>` — show file location and signature for a symbol (function, struct, class, etc.). **Use this before reading a file** when you need a specific function, class, or type — it returns the signature and location without spending tokens on the full file.
+- `waypoint find "<query>"` — full-text search across all indexed symbols. Use this instead of Grep when searching for code by name or intent — it searches structured symbol data, not raw text.
 
-These are **optional** — the file map and Grep/Glob remain the primary navigation tools. Use sketch/find when you need to understand code structure or locate symbols across the project.
+**Preferred lookup order:**
+1. Map description (injected on Read) — often sufficient, zero cost
+2. `waypoint sketch` / `waypoint find` — precise symbol info, minimal tokens
+3. Grep/Glob — when the symbol index doesn't cover what you need (comments, string literals, config values)
+4. Full file Read — last resort for understanding surrounding context
 
 ## Token Discipline
 
