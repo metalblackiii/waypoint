@@ -1,17 +1,28 @@
 use std::path::Path;
 
-use crate::{AppError, map};
+use crate::{AppError, map, project};
 
 /// FR-3: PostToolUse:Edit|Write — update map entry for the changed file.
+/// FR-10: Resolve foreign project for map/symbol updates.
 pub fn run() -> Result<(), AppError> {
     let ctx = super::HookContext::from_stdin()?;
 
-    if !ctx.wp_dir.exists() || !ctx.wp_dir.join("map.md").exists() {
-        super::emit_hook_output(super::HookEvent::PostToolUse, None, "");
-        return Ok(());
-    }
-
-    let Some(relative) = ctx.relative_path() else {
+    // Resolve the file's own project first, fall back to cwd project
+    let (wp_dir, relative) = if let Some(resolved) = project::resolve_foreign(&ctx.file_path) {
+        if resolved.wp_dir.join("map.md").exists() {
+            (resolved.wp_dir, resolved.relative_path)
+        } else {
+            super::emit_hook_output(super::HookEvent::PostToolUse, None, "");
+            return Ok(());
+        }
+    } else if let Some(rel) = ctx.relative_path() {
+        if ctx.wp_dir.exists() && ctx.wp_dir.join("map.md").exists() {
+            (ctx.wp_dir.clone(), rel)
+        } else {
+            super::emit_hook_output(super::HookEvent::PostToolUse, None, "");
+            return Ok(());
+        }
+    } else {
         super::emit_hook_output(super::HookEvent::PostToolUse, None, "");
         return Ok(());
     };
@@ -35,22 +46,22 @@ pub fn run() -> Result<(), AppError> {
                 token_estimate,
             };
 
-            map::update_entry(&ctx.wp_dir, entry)?;
+            map::update_entry(&wp_dir, entry)?;
 
             // Update symbol index for this file
             let mut file_symbols = map::extract::extract_symbols(abs_path, &content);
             for sym in &mut file_symbols {
                 sym.file_path.clone_from(&relative);
             }
-            let _ = map::index::update_file_symbols(&ctx.wp_dir, &relative, &file_symbols);
+            let _ = map::index::update_file_symbols(&wp_dir, &relative, &file_symbols);
         }
     } else {
         // File was deleted — remove from map, index, and symbols
-        let _ = map::index::remove(&ctx.wp_dir, &relative);
-        let _ = map::index::remove_file_symbols(&ctx.wp_dir, &relative);
-        let mut entries = map::read_map(&ctx.wp_dir)?;
+        let _ = map::index::remove(&wp_dir, &relative);
+        let _ = map::index::remove_file_symbols(&wp_dir, &relative);
+        let mut entries = map::read_map(&wp_dir)?;
         entries.retain(|e| e.path != relative);
-        map::write_map(&ctx.wp_dir, &entries)?;
+        map::write_map(&wp_dir, &entries)?;
     }
 
     super::emit_hook_output(

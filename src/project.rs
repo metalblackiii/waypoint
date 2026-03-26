@@ -3,6 +3,77 @@ use std::path::{Path, PathBuf};
 
 use crate::AppError;
 
+/// Resolved foreign project context — project root, waypoint dir, and relative file path.
+#[derive(Debug, Clone)]
+pub struct ResolvedProject {
+    pub root: PathBuf,
+    pub wp_dir: PathBuf,
+    pub relative_path: String,
+}
+
+/// Resolve a file's project from its absolute path.
+///
+/// Walks up from the file path to find a project root with a `.waypoint/` directory.
+/// Returns `None` if no waypoint-managed project is found.
+#[must_use]
+pub fn resolve_foreign(file_path: &str) -> Option<ResolvedProject> {
+    let path = Path::new(file_path);
+    let root = find_root(path)?;
+    let wp_dir = waypoint_dir(&root);
+    if !wp_dir.exists() {
+        return None;
+    }
+    let relative = path.strip_prefix(&root).ok()?;
+    Some(ResolvedProject {
+        root,
+        wp_dir,
+        relative_path: relative.to_string_lossy().into_owned(),
+    })
+}
+
+/// Resolve a project from an optional `-C` path override, falling back to cwd.
+///
+/// If `context_path` is `Some`, resolves from that path.
+/// If `context_path` is `None`, falls back to cwd resolution.
+/// Does NOT check for `.waypoint/` existence — callers that need it should
+/// use `require_waypoint_dir` or `ensure_initialized`.
+pub fn resolve_with_context(context_path: Option<&str>) -> Result<PathBuf, AppError> {
+    if let Some(path) = context_path {
+        let abs = if Path::new(path).is_relative() {
+            std::env::current_dir()?.join(path)
+        } else {
+            PathBuf::from(path)
+        };
+        let root = find_root(&abs).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("no project root found for: {path}"),
+            )
+        })?;
+        Ok(root)
+    } else {
+        let cwd = std::env::current_dir()?;
+        Ok(find_root(&cwd).unwrap_or(cwd))
+    }
+}
+
+/// Ensure the project has a `.waypoint/` directory, returning an error if not.
+/// Use for read-only commands (`sketch`, `find`, `trap search`) that can't create it.
+pub fn require_waypoint_dir(project_root: &Path) -> Result<PathBuf, AppError> {
+    let wp_dir = waypoint_dir(project_root);
+    if !wp_dir.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "no .waypoint/ directory in project: {}",
+                project_root.display()
+            ),
+        )
+        .into());
+    }
+    Ok(wp_dir)
+}
+
 /// Find the project root by walking up from `start` looking for .git (primary) or .waypoint/ (secondary).
 #[must_use]
 pub fn find_root(start: &Path) -> Option<PathBuf> {
@@ -143,5 +214,91 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("line 1"));
         assert!(content.contains("line 2"));
+    }
+
+    #[test]
+    fn resolve_foreign_finds_waypoint_project() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir(tmp.path().join(".waypoint")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        let file = tmp.path().join("src/main.rs");
+        std::fs::write(&file, "fn main() {}").unwrap();
+
+        let resolved = resolve_foreign(file.to_str().unwrap()).unwrap();
+        assert_eq!(resolved.root, tmp.path());
+        assert_eq!(resolved.wp_dir, tmp.path().join(".waypoint"));
+        assert_eq!(resolved.relative_path, "src/main.rs");
+    }
+
+    #[test]
+    fn resolve_foreign_returns_none_without_waypoint() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let file = tmp.path().join("foo.rs");
+        std::fs::write(&file, "").unwrap();
+
+        assert!(resolve_foreign(file.to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn resolve_with_context_none_uses_cwd() {
+        // Just verifying it doesn't panic — actual root depends on test runner cwd
+        let result = resolve_with_context(None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn resolve_with_context_errors_on_nonexistent() {
+        let result = resolve_with_context(Some("/nonexistent/deeply/nested/path"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_with_context_succeeds_without_waypoint() {
+        // resolve_with_context does not require .waypoint/ — callers check separately
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+
+        let result = resolve_with_context(Some(tmp.path().to_str().unwrap()));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), tmp.path());
+    }
+
+    #[test]
+    fn require_waypoint_dir_errors_without_waypoint() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+
+        let result = require_waypoint_dir(tmp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains(".waypoint"),
+            "error should mention .waypoint: {err}"
+        );
+    }
+
+    #[test]
+    fn require_waypoint_dir_succeeds_with_waypoint() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".waypoint")).unwrap();
+
+        let result = require_waypoint_dir(tmp.path());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), tmp.path().join(".waypoint"));
+    }
+
+    #[test]
+    fn resolve_with_context_resolves_from_file_path() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir(tmp.path().join(".waypoint")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        let file = tmp.path().join("src/main.rs");
+        std::fs::write(&file, "fn main() {}").unwrap();
+
+        let root = resolve_with_context(Some(file.to_str().unwrap())).unwrap();
+        assert_eq!(root, tmp.path());
     }
 }

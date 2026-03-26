@@ -78,9 +78,13 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
         }
 
         Command::Trap { command } => match command {
-            TrapCommand::Search { term } => {
-                let project_root = resolve_project_root()?;
-                let wp_dir = project::waypoint_dir(&project_root);
+            TrapCommand::Search { term, context } => {
+                let project_root = project::resolve_with_context(context.as_deref())?;
+                let wp_dir = if context.is_some() {
+                    project::require_waypoint_dir(&project_root)?
+                } else {
+                    project::waypoint_dir(&project_root)
+                };
 
                 let traps = trap::read_traps(&wp_dir)?;
                 let results = trap::search(&traps, &term);
@@ -106,12 +110,19 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 fix,
                 tags,
             } => {
-                let project_root = resolve_project_root()?;
-                let wp_dir = project::ensure_initialized(&project_root)?;
+                // FR-2: Resolve project from --file path; FR-3: fall back to cwd
+                let (wp_dir, relative_file) =
+                    if let Some(resolved) = project::resolve_foreign(&file) {
+                        (resolved.wp_dir, resolved.relative_path)
+                    } else {
+                        let project_root = resolve_project_root()?;
+                        let wp_dir = project::ensure_initialized(&project_root)?;
+                        (wp_dir, file.clone())
+                    };
 
                 let new_trap = trap::NewTrap {
                     error_message: &error,
-                    file: &file,
+                    file: &relative_file,
                     root_cause: &cause,
                     fix: &fix,
                     tags_str: &tags,
@@ -125,8 +136,12 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
         },
 
         Command::Journal { command } => match command {
-            JournalCommand::Add { section, entry } => {
-                let project_root = resolve_project_root()?;
+            JournalCommand::Add {
+                section,
+                entry,
+                context,
+            } => {
+                let project_root = project::resolve_with_context(context.as_deref())?;
                 let wp_dir = project::ensure_initialized(&project_root)?;
 
                 journal::add_entry(&wp_dir, section, &entry)?;
@@ -140,9 +155,9 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             status::run(&project_root)
         }
 
-        Command::Sketch { symbol } => {
-            let project_root = resolve_project_root()?;
-            let wp_dir = project::waypoint_dir(&project_root);
+        Command::Sketch { symbol, context } => {
+            let project_root = project::resolve_with_context(context.as_deref())?;
+            let wp_dir = project::require_waypoint_dir(&project_root)?;
             let results = map::index::sketch(&wp_dir, &symbol)?;
             if results.is_empty() {
                 println!("No symbols found: {symbol}");
@@ -157,9 +172,13 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             Ok(())
         }
 
-        Command::Find { query, limit } => {
-            let project_root = resolve_project_root()?;
-            let wp_dir = project::waypoint_dir(&project_root);
+        Command::Find {
+            query,
+            limit,
+            context,
+        } => {
+            let project_root = project::resolve_with_context(context.as_deref())?;
+            let wp_dir = project::require_waypoint_dir(&project_root)?;
             let results = map::index::find_symbols(&wp_dir, &query, limit)?;
             if results.is_empty() {
                 println!("No symbols found: {query}");

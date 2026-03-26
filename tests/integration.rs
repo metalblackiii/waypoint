@@ -565,3 +565,425 @@ fn hook_post_failure_suggests_trap_search() {
     assert!(ctx.contains("waypoint trap search"), "got: {ctx}");
     assert!(ctx.contains("main.rs"), "got: {ctx}");
 }
+
+// ── Cross-Project CLI Tests ─────────────────────────────────────
+
+/// Create a scanned project with .waypoint/ initialized.
+fn setup_scanned_project() -> TempDir {
+    let project = setup_project();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+    project
+}
+
+/// Build a cross-project hook payload: cwd is `project_a`, file is in `project_b`.
+fn cross_project_payload(project_a: &TempDir, project_b: &TempDir, file_path: &str) -> String {
+    serde_json::json!({
+        "cwd": project_a.path().to_string_lossy(),
+        "tool_input": {
+            "file_path": project_b.path().join(file_path).to_string_lossy().as_ref()
+        }
+    })
+    .to_string()
+}
+
+// ── AC-1: trap log --file resolves foreign project ──────────────
+
+#[test]
+fn cli_trap_log_foreign_file_writes_to_foreign_project() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_scanned_project();
+
+    let foreign_file = project_b.path().join("src/main.rs");
+
+    waypoint()
+        .args([
+            "trap",
+            "log",
+            "--error",
+            "foreign bug",
+            "--file",
+            foreign_file.to_str().unwrap(),
+            "--cause",
+            "foreign cause",
+            "--fix",
+            "foreign fix",
+            "--tags",
+            "cross-project",
+        ])
+        .current_dir(project_a.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Trap logged"));
+
+    // Trap should be in project B, not project A
+    let traps_b = fs::read_to_string(project_b.path().join(".waypoint/traps.json")).unwrap();
+    assert!(
+        traps_b.contains("foreign bug"),
+        "trap should be in project B: {traps_b}"
+    );
+
+    let traps_a = fs::read_to_string(project_a.path().join(".waypoint/traps.json")).unwrap();
+    assert!(
+        !traps_a.contains("foreign bug"),
+        "trap should NOT be in project A: {traps_a}"
+    );
+}
+
+// ── AC-10: trap log normalizes file path to project-relative ────
+
+#[test]
+fn cli_trap_log_foreign_file_stores_relative_path() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_scanned_project();
+
+    let foreign_file = project_b.path().join("src/main.rs");
+
+    waypoint()
+        .args([
+            "trap",
+            "log",
+            "--error",
+            "path test",
+            "--file",
+            foreign_file.to_str().unwrap(),
+            "--cause",
+            "testing",
+            "--fix",
+            "testing",
+            "--tags",
+            "test",
+        ])
+        .current_dir(project_a.path())
+        .assert()
+        .success();
+
+    let traps_b = fs::read_to_string(project_b.path().join(".waypoint/traps.json")).unwrap();
+    let traps: serde_json::Value = serde_json::from_str(&traps_b).unwrap();
+    let file_field = traps[0]["file"].as_str().unwrap();
+    assert_eq!(
+        file_field, "src/main.rs",
+        "file should be project-relative, got: {file_field}"
+    );
+}
+
+// ── AC-11: trap log fallback to cwd when no .waypoint ───────────
+
+#[test]
+fn cli_trap_log_unknown_repo_falls_back_to_cwd() {
+    let project_a = setup_scanned_project();
+    let unknown = TempDir::new().unwrap();
+    fs::create_dir(unknown.path().join(".git")).unwrap();
+    // No .waypoint/ in unknown
+
+    let foreign_file = unknown.path().join("foo.rs");
+    fs::write(&foreign_file, "").unwrap();
+
+    waypoint()
+        .args([
+            "trap",
+            "log",
+            "--error",
+            "fallback bug",
+            "--file",
+            foreign_file.to_str().unwrap(),
+            "--cause",
+            "testing",
+            "--fix",
+            "testing",
+            "--tags",
+            "test",
+        ])
+        .current_dir(project_a.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Trap logged"));
+
+    // Should fall back to project A
+    let traps_a = fs::read_to_string(project_a.path().join(".waypoint/traps.json")).unwrap();
+    assert!(
+        traps_a.contains("fallback bug"),
+        "trap should fall back to cwd project: {traps_a}"
+    );
+}
+
+// ── AC-2: trap search -C targets foreign project ────────────────
+
+#[test]
+fn cli_trap_search_with_context_flag() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_scanned_project();
+
+    // Log a trap in project B
+    waypoint()
+        .args([
+            "trap",
+            "log",
+            "--error",
+            "foreign error",
+            "--file",
+            "src/main.rs",
+            "--cause",
+            "testing",
+            "--fix",
+            "testing",
+            "--tags",
+            "test",
+        ])
+        .current_dir(project_b.path())
+        .assert()
+        .success();
+
+    // Search from project A with -C pointing to project B
+    waypoint()
+        .args([
+            "trap",
+            "search",
+            "-C",
+            project_b.path().to_str().unwrap(),
+            "foreign error",
+        ])
+        .current_dir(project_a.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("foreign error"));
+}
+
+// ── AC-3: sketch -C targets foreign project ─────────────────────
+
+#[test]
+fn cli_sketch_with_context_flag() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_scanned_project();
+
+    // Sketch from project A targeting project B
+    waypoint()
+        .args(["sketch", "-C", project_b.path().to_str().unwrap(), "main"])
+        .current_dir(project_a.path())
+        .assert()
+        .success();
+    // Just verifying it doesn't error — symbol may or may not match
+}
+
+// ── AC-4: find -C targets foreign project ───────────────────────
+
+#[test]
+fn cli_find_with_context_flag() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_scanned_project();
+
+    // Find from project A targeting project B
+    waypoint()
+        .args(["find", "-C", project_b.path().to_str().unwrap(), "main"])
+        .current_dir(project_a.path())
+        .assert()
+        .success();
+}
+
+// ── AC-5: journal add -C targets foreign project ────────────────
+
+#[test]
+fn cli_journal_add_with_context_flag() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_scanned_project();
+
+    waypoint()
+        .args([
+            "journal",
+            "add",
+            "--section",
+            "learnings",
+            "-C",
+            project_b.path().to_str().unwrap(),
+            "cross-project learning",
+        ])
+        .current_dir(project_a.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added to journal"));
+
+    let journal_b = fs::read_to_string(project_b.path().join(".waypoint/journal.md")).unwrap();
+    assert!(
+        journal_b.contains("cross-project learning"),
+        "journal entry should be in project B: {journal_b}"
+    );
+
+    let journal_a = fs::read_to_string(project_a.path().join(".waypoint/journal.md")).unwrap();
+    assert!(
+        !journal_a.contains("cross-project learning"),
+        "journal entry should NOT be in project A: {journal_a}"
+    );
+}
+
+// ── AC-12: -C with nonexistent path returns clear error ─────────
+
+#[test]
+fn cli_context_flag_nonexistent_path_errors() {
+    let project = setup_scanned_project();
+
+    waypoint()
+        .args(["sketch", "-C", "/nonexistent/deeply/nested/path", "main"])
+        .current_dir(project.path())
+        .assert()
+        .failure();
+}
+
+// ── AC-6: pre-read annotates foreign project ────────────────────
+
+#[test]
+fn hook_pre_read_annotates_foreign_project() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_scanned_project();
+
+    let payload = cross_project_payload(&project_a, &project_b, "src/main.rs");
+
+    let assert = waypoint()
+        .args(["hook", "pre-read"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    let hook = parse_hook_output(&assert);
+    let ctx = hook["additionalContext"].as_str().unwrap();
+    assert!(
+        ctx.contains("[waypoint] foreign:"),
+        "expected foreign annotation, got: {ctx}"
+    );
+    assert!(
+        ctx.contains(&project_b.path().to_string_lossy().to_string()),
+        "expected project B path in annotation, got: {ctx}"
+    );
+}
+
+// ── AC-7: pre-write checks foreign project traps ────────────────
+
+#[test]
+fn hook_pre_write_checks_foreign_project_traps() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_scanned_project();
+
+    // Log a trap in project B for src/main.rs
+    waypoint()
+        .args([
+            "trap",
+            "log",
+            "--error",
+            "foreign trap error",
+            "--file",
+            "src/main.rs",
+            "--cause",
+            "testing",
+            "--fix",
+            "testing",
+            "--tags",
+            "test",
+        ])
+        .current_dir(project_b.path())
+        .assert()
+        .success();
+
+    // Pre-write on a project B file while cwd is project A
+    let payload = cross_project_payload(&project_a, &project_b, "src/main.rs");
+
+    let assert = waypoint()
+        .args(["hook", "pre-write"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    let hook = parse_hook_output(&assert);
+    let ctx = hook["additionalContext"].as_str().unwrap();
+    assert!(
+        ctx.contains("foreign trap error"),
+        "expected foreign trap warning, got: {ctx}"
+    );
+}
+
+// ── AC-8: post-write updates foreign project map ────────────────
+
+#[test]
+fn hook_post_write_updates_foreign_project_map() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_scanned_project();
+
+    // Modify file in project B
+    fs::write(
+        project_b.path().join("src/main.rs"),
+        "fn main() {}\n\npub fn cross_project_helper() {}\n",
+    )
+    .unwrap();
+
+    let payload = cross_project_payload(&project_a, &project_b, "src/main.rs");
+
+    let assert = waypoint()
+        .args(["hook", "post-write"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    let hook = parse_hook_output(&assert);
+    let ctx = hook["additionalContext"].as_str().unwrap();
+    assert!(
+        ctx.contains("[waypoint] map updated: src/main.rs"),
+        "got: {ctx}"
+    );
+
+    // Verify project B's map was updated
+    let map_b = fs::read_to_string(project_b.path().join(".waypoint/map.md")).unwrap();
+    assert!(
+        map_b.contains("cross_project_helper"),
+        "project B map should reflect update: {map_b}"
+    );
+}
+
+// ── AC-9: post-failure includes -C for foreign files ────────────
+
+#[test]
+fn hook_post_failure_includes_context_flag_for_foreign() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_scanned_project();
+
+    let payload = cross_project_payload(&project_a, &project_b, "src/main.rs");
+
+    let assert = waypoint()
+        .args(["hook", "post-failure"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    let hook = parse_hook_output(&assert);
+    let ctx = hook["additionalContext"].as_str().unwrap();
+    assert!(
+        ctx.contains("-C"),
+        "expected -C flag in suggestion, got: {ctx}"
+    );
+    assert!(
+        ctx.contains(&project_b.path().to_string_lossy().to_string()),
+        "expected project B path in suggestion, got: {ctx}"
+    );
+}
+
+// ── AC-13: no auto-initialization of foreign projects ───────────
+
+#[test]
+fn cli_context_flag_no_auto_init() {
+    let project_a = setup_scanned_project();
+    let project_b = TempDir::new().unwrap();
+    fs::create_dir(project_b.path().join(".git")).unwrap();
+    // No .waypoint/ in project B
+
+    // -C to project B should fail, not auto-create .waypoint/
+    waypoint()
+        .args(["sketch", "-C", project_b.path().to_str().unwrap(), "main"])
+        .current_dir(project_a.path())
+        .assert()
+        .failure();
+
+    assert!(
+        !project_b.path().join(".waypoint").exists(),
+        ".waypoint/ should NOT be auto-created in foreign project"
+    );
+}

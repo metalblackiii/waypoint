@@ -41,6 +41,9 @@ pub enum Command {
     Sketch {
         /// Symbol name to look up
         symbol: String,
+        /// Resolve project from this path instead of cwd
+        #[arg(short = 'C', long = "context")]
+        context: Option<String>,
     },
     /// Search symbols by name or intent
     Find {
@@ -49,6 +52,9 @@ pub enum Command {
         /// Maximum results
         #[arg(long, default_value = "20")]
         limit: usize,
+        /// Resolve project from this path instead of cwd
+        #[arg(short = 'C', long = "context")]
+        context: Option<String>,
     },
     /// Hook subcommands invoked by Claude Code hooks
     Hook {
@@ -63,6 +69,9 @@ pub enum TrapCommand {
     Search {
         /// Search term
         term: String,
+        /// Resolve project from this path instead of cwd
+        #[arg(short = 'C', long = "context")]
+        context: Option<String>,
     },
     /// Log a new bug fix trap
     Log {
@@ -112,6 +121,9 @@ pub enum JournalCommand {
         section: JournalSection,
         /// Entry text
         entry: String,
+        /// Resolve project from this path instead of cwd
+        #[arg(short = 'C', long = "context")]
+        context: Option<String>,
     },
 }
 

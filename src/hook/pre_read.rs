@@ -1,22 +1,28 @@
-use std::path::Path;
-
 use crate::{AppError, ledger, map, project};
 
 /// FR-2: PreToolUse:Read — inject file map context.
+/// FR-8: Annotate foreign project availability.
 pub fn run() -> Result<(), AppError> {
     let ctx = super::HookContext::from_stdin()?;
 
     // Resolve the file's own project first (handles nested and sibling repos),
     // then fall back to the cwd project
-    let (wp_dir, relative, project_label) =
-        if let Some(resolved) = resolve_foreign_project(&ctx.file_path) {
-            resolved
+    let (wp_dir, relative, project_label, is_foreign) =
+        if let Some(resolved) = project::resolve_foreign(&ctx.file_path) {
+            let is_foreign = resolved.root != ctx.project_root;
+            (
+                resolved.wp_dir,
+                resolved.relative_path,
+                resolved.root.to_string_lossy().into_owned(),
+                is_foreign,
+            )
         } else if let Some(rel) = ctx.relative_path() {
             if ctx.wp_dir.exists() {
                 (
                     ctx.wp_dir.clone(),
                     rel,
                     ctx.project_root.to_string_lossy().into_owned(),
+                    false,
                 )
             } else {
                 super::emit_hook_output(super::HookEvent::PreToolUse, None, "");
@@ -38,7 +44,7 @@ pub fn run() -> Result<(), AppError> {
         }
     };
 
-    let context = if let Some(entry) = entry {
+    let mut context = if let Some(entry) = entry {
         let _ = ledger::record_event(
             ledger::EventKind::MapHit,
             &project_label,
@@ -57,24 +63,12 @@ pub fn run() -> Result<(), AppError> {
         String::new()
     };
 
+    // FR-8: Annotate foreign project so the AI knows cross-project data is available
+    if is_foreign {
+        let foreign_note = format!("\n[waypoint] foreign: {project_label}");
+        context.push_str(&foreign_note);
+    }
+
     super::emit_hook_output(super::HookEvent::PreToolUse, None, &context);
     Ok(())
-}
-
-/// Resolve a foreign file's project root and return its waypoint dir,
-/// the file's relative path within that project, and a label for ledger events.
-/// Returns `None` if the file doesn't belong to any waypoint-managed project.
-fn resolve_foreign_project(file_path: &str) -> Option<(std::path::PathBuf, String, String)> {
-    let path = Path::new(file_path);
-    let foreign_root = project::find_root(path)?;
-    let wp_dir = project::waypoint_dir(&foreign_root);
-    if !wp_dir.exists() {
-        return None;
-    }
-    let relative = path.strip_prefix(&foreign_root).ok()?;
-    Some((
-        wp_dir,
-        relative.to_string_lossy().into_owned(),
-        foreign_root.to_string_lossy().into_owned(),
-    ))
 }
