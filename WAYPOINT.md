@@ -98,6 +98,35 @@ After `waypoint scan`, a symbol index is available in `map_index.db` alongside t
 3. Grep/Glob — when the symbol index doesn't cover what you need (comments, string literals, config values)
 4. Full file Read — last resort for understanding surrounding context
 
+## Cross-Project Work
+
+When you read or edit a file outside the cwd project, the hooks resolve the correct project automatically. Watch for these annotations:
+
+- `[waypoint] foreign: /path/to/other-repo` — the pre-read hook detected a foreign project with waypoint data. Remember this path.
+- Pre-write and post-write hooks automatically check traps and update maps in the foreign project.
+
+**When working in a foreign project, use `-C` to target its waypoint data:**
+
+```sh
+waypoint sketch -C /path/to/other-repo SymbolName
+waypoint find -C /path/to/other-repo "query"
+waypoint trap search -C /path/to/other-repo "keyword"
+waypoint journal add -C /path/to/other-repo --section learnings "entry"
+```
+
+**`trap log --file` auto-resolves** — no `-C` needed. The `--file` path determines which project's traps to write to:
+
+```sh
+waypoint trap log --file /path/to/other-repo/src/foo.js --error "..." --cause "..." --fix "..." --tags "..."
+```
+
+This writes to `other-repo/.waypoint/traps.json` with a project-relative file path (`src/foo.js`).
+
+**Key rules:**
+- Use the full path from the `[waypoint] foreign:` annotation as the `-C` value
+- Journal entries and traps belong to the project they're about — don't log neb-www learnings in neb-entitlements
+- If `-C` fails with "no .waypoint/ directory", the foreign project hasn't been scanned yet — run `waypoint scan` from that repo first
+
 ## Token Discipline
 
 - Never re-read a file already read this session unless it was modified since.
