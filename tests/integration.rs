@@ -987,3 +987,74 @@ fn cli_context_flag_no_auto_init() {
         ".waypoint/ should NOT be auto-created in foreign project"
     );
 }
+
+// ── Scan --all Tests ────────────────────────────────────────────
+
+/// Helper: create a parent dir with N child git repos, each containing a source file.
+fn setup_multi_project(names: &[&str]) -> TempDir {
+    let parent = TempDir::new().unwrap();
+    for name in names {
+        let repo = parent.path().join(name);
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::create_dir(repo.join(".git")).unwrap();
+        fs::write(
+            repo.join("src/main.rs"),
+            "fn main() {\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
+    }
+    parent
+}
+
+#[test]
+fn cli_scan_all_discovers_and_scans_children() {
+    let parent = setup_multi_project(&["alpha", "beta"]);
+
+    waypoint()
+        .args(["scan", "--all", parent.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("alpha"))
+        .stderr(predicate::str::contains("beta"))
+        .stderr(predicate::str::contains("2 repos found, 2 scanned"));
+
+    // Both repos should have .waypoint/ with map.md
+    assert!(parent.path().join("alpha/.waypoint/map.md").exists());
+    assert!(parent.path().join("beta/.waypoint/map.md").exists());
+}
+
+#[test]
+fn cli_scan_all_check_conflict() {
+    waypoint()
+        .args(["scan", "--all", "--check"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn cli_scan_all_empty_dir_exits_nonzero() {
+    let empty = TempDir::new().unwrap();
+
+    waypoint()
+        .args(["scan", "--all", empty.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No git repos found"));
+}
+
+#[test]
+fn cli_scan_all_initializes_new_repos() {
+    let parent = setup_multi_project(&["fresh"]);
+    assert!(!parent.path().join("fresh/.waypoint").exists());
+
+    waypoint()
+        .args(["scan", "--all", parent.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("initialized"));
+
+    assert!(parent.path().join("fresh/.waypoint/map.md").exists());
+    assert!(parent.path().join("fresh/.waypoint/journal.md").exists());
+    assert!(parent.path().join("fresh/.waypoint/traps.json").exists());
+}

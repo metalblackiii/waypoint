@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -16,8 +18,13 @@ pub enum Command {
     /// Scan project files and generate map.md
     Scan {
         /// Check if map is stale (exit non-zero if outdated)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "all")]
         check: bool,
+        /// Scan all immediate child git repos in a directory
+        #[arg(long)]
+        all: bool,
+        /// Directory to scan (with --all: parent dir; without: project root)
+        path: Option<PathBuf>,
     },
     /// Display token savings analytics
     Gain {

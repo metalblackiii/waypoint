@@ -28,8 +28,20 @@ pub enum AppError {
 #[allow(clippy::too_many_lines)] // CLI dispatch — flat match arms, not deep nesting
 pub fn run(cli: Cli) -> Result<(), AppError> {
     match cli.command {
-        Command::Scan { check } => {
-            let project_root = resolve_project_root()?;
+        Command::Scan { check, all, path } => {
+            if all {
+                return scan_all(path);
+            }
+            let project_root = if let Some(p) = path {
+                let abs = if p.is_relative() {
+                    std::env::current_dir()?.join(p)
+                } else {
+                    p
+                };
+                project::find_root(&abs).unwrap_or(abs)
+            } else {
+                resolve_project_root()?
+            };
             let wp_dir = project::ensure_initialized(&project_root)?;
 
             if check {
@@ -201,6 +213,84 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             HookCommand::PostFailure => hook::post_failure::run(),
         },
     }
+}
+
+fn scan_all(path: Option<std::path::PathBuf>) -> Result<(), AppError> {
+    let base = match path {
+        Some(p) => {
+            if p.is_relative() {
+                std::env::current_dir()?.join(p)
+            } else {
+                p
+            }
+        }
+        None => std::env::current_dir()?,
+    };
+
+    let projects = project::discover_projects(&base)?;
+    if projects.is_empty() {
+        eprintln!("No git repos found under {}", base.display());
+        std::process::exit(1);
+    }
+
+    eprintln!(
+        "Scanning projects under {} ...",
+        base.display().to_string().cyan()
+    );
+
+    let mut scanned = 0u32;
+    let mut errored = 0u32;
+
+    for root in &projects {
+        let name = root.file_name().map_or_else(
+            || root.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+
+        match scan_one_project(root) {
+            Ok((files, symbols, initialized)) => {
+                let init_note = if initialized { " (initialized)" } else { "" };
+                eprintln!(
+                    "  {} {:<24} ({files} files, {symbols} symbols{init_note})",
+                    "✓".green(),
+                    name,
+                );
+                scanned += 1;
+            }
+            Err(e) => {
+                eprintln!("  {} {:<24} ({e})", "✗".red(), name);
+                errored += 1;
+            }
+        }
+    }
+
+    let total = projects.len();
+    let summary = format!("{total} repos found, {scanned} scanned");
+    let summary = if errored > 0 {
+        format!("{summary}, {errored} errored")
+    } else {
+        summary
+    };
+    eprintln!("\n{summary}");
+
+    if errored > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Scan a single project: ensure initialized, scan files, write map + symbols.
+fn scan_one_project(root: &std::path::Path) -> Result<(usize, usize, bool), AppError> {
+    let initialized = !root.join(".waypoint").exists();
+    let wp_dir = project::ensure_initialized(root)?;
+    let output = map::scan::scan_project(root)?;
+    let files = output.entries.len();
+    let symbols = output.symbols.len();
+    map::write_map(&wp_dir, &output.entries)?;
+    if let Err(e) = map::index::rebuild_symbols(&wp_dir, &output.symbols) {
+        eprintln!("    Warning: symbol index failed: {e}");
+    }
+    Ok((files, symbols, initialized))
 }
 
 fn resolve_project_root() -> Result<std::path::PathBuf, AppError> {

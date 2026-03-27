@@ -57,6 +57,56 @@ pub fn resolve_with_context(context_path: Option<&str>) -> Result<PathBuf, AppEr
     }
 }
 
+/// Discover git repositories under `base` for batch scanning.
+///
+/// If `base` is a git repo with child git repos, scans children (monorepo parent case).
+/// If `base` is a git repo without child git repos, walks up to parent and scans siblings.
+/// If `base` is not a git repo, scans its immediate children.
+pub fn discover_projects(base: &Path) -> Result<Vec<PathBuf>, AppError> {
+    let base_is_repo = base.join(".git").exists();
+    let children = child_git_repos(base)?;
+
+    // Base has .git AND child .git repos → it's a parent of repos (e.g., ~/repos that's also a git repo)
+    // Base has .git but NO child repos → it's a single project; walk up to scan siblings
+    // Base has no .git → it's a plain parent dir; scan children
+    let scan_dir = if base_is_repo && children.is_empty() {
+        base.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("cannot determine parent of: {}", base.display()),
+            )
+        })?
+    } else {
+        base
+    };
+
+    let mut projects = child_git_repos(scan_dir)?;
+    // Include scan_dir itself if it's a repo (covers the "parent is also a repo" edge case)
+    if scan_dir.join(".git").exists() && !projects.contains(&scan_dir.to_path_buf()) {
+        projects.push(scan_dir.to_path_buf());
+    }
+    projects.sort();
+    Ok(projects)
+}
+
+/// List immediate child directories of `dir` that contain `.git`.
+fn child_git_repos(dir: &Path) -> Result<Vec<PathBuf>, AppError> {
+    let mut repos = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(repos),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() && path.join(".git").exists() {
+            repos.push(path);
+        }
+    }
+    Ok(repos)
+}
+
 /// Ensure the project has a `.waypoint/` directory, returning an error if not.
 /// Use for read-only commands (`sketch`, `find`, `trap search`) that can't create it.
 pub fn require_waypoint_dir(project_root: &Path) -> Result<PathBuf, AppError> {
@@ -300,5 +350,61 @@ mod tests {
 
         let root = resolve_with_context(Some(file.to_str().unwrap())).unwrap();
         assert_eq!(root, tmp.path());
+    }
+
+    /// Helper: create a child git repo under `parent`.
+    fn make_child_repo(parent: &Path, name: &str) -> PathBuf {
+        let child = parent.join(name);
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::create_dir(child.join(".git")).unwrap();
+        child
+    }
+
+    #[test]
+    fn discover_from_parent_dir() {
+        let tmp = TempDir::new().unwrap();
+        let a = make_child_repo(tmp.path(), "alpha");
+        let b = make_child_repo(tmp.path(), "beta");
+        // non-repo dir should be ignored
+        std::fs::create_dir(tmp.path().join("not-a-repo")).unwrap();
+
+        let projects = discover_projects(tmp.path()).unwrap();
+        assert_eq!(projects, vec![a, b]);
+    }
+
+    #[test]
+    fn discover_from_inside_project_walks_up() {
+        let tmp = TempDir::new().unwrap();
+        let a = make_child_repo(tmp.path(), "alpha");
+        let b = make_child_repo(tmp.path(), "beta");
+
+        // Calling from inside "alpha" should find siblings
+        let projects = discover_projects(&a).unwrap();
+        assert!(projects.contains(&a));
+        assert!(projects.contains(&b));
+        assert_eq!(projects.len(), 2);
+    }
+
+    #[test]
+    fn discover_parent_is_also_repo() {
+        let tmp = TempDir::new().unwrap();
+        // Parent is a git repo AND has child repos
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let a = make_child_repo(tmp.path(), "alpha");
+        let b = make_child_repo(tmp.path(), "beta");
+
+        let projects = discover_projects(tmp.path()).unwrap();
+        // Should include parent and both children
+        assert!(projects.contains(&tmp.path().to_path_buf()));
+        assert!(projects.contains(&a));
+        assert!(projects.contains(&b));
+        assert_eq!(projects.len(), 3);
+    }
+
+    #[test]
+    fn discover_empty_dir() {
+        let tmp = TempDir::new().unwrap();
+        let projects = discover_projects(tmp.path()).unwrap();
+        assert!(projects.is_empty());
     }
 }
