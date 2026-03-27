@@ -110,7 +110,7 @@ fn cli_journal_add() {
             "journal",
             "add",
             "--section",
-            "learnings",
+            "preferences",
             "integration test entry",
         ])
         .current_dir(project.path())
@@ -795,10 +795,10 @@ fn cli_journal_add_with_context_flag() {
             "journal",
             "add",
             "--section",
-            "learnings",
+            "preferences",
             "-C",
             project_b.path().to_str().unwrap(),
-            "cross-project learning",
+            "cross-project preference",
         ])
         .current_dir(project_a.path())
         .assert()
@@ -807,13 +807,13 @@ fn cli_journal_add_with_context_flag() {
 
     let journal_b = fs::read_to_string(project_b.path().join(".waypoint/journal.md")).unwrap();
     assert!(
-        journal_b.contains("cross-project learning"),
+        journal_b.contains("cross-project preference"),
         "journal entry should be in project B: {journal_b}"
     );
 
     let journal_a = fs::read_to_string(project_a.path().join(".waypoint/journal.md")).unwrap();
     assert!(
-        !journal_a.contains("cross-project learning"),
+        !journal_a.contains("cross-project preference"),
         "journal entry should NOT be in project A: {journal_a}"
     );
 }
@@ -1057,4 +1057,211 @@ fn cli_scan_all_initializes_new_repos() {
     assert!(parent.path().join("fresh/.waypoint/map.md").exists());
     assert!(parent.path().join("fresh/.waypoint/journal.md").exists());
     assert!(parent.path().join("fresh/.waypoint/traps.json").exists());
+}
+
+// ── Learning CLI tests ───────────────────────────────────────────
+
+#[test]
+fn cli_learning_add_and_search() {
+    let project = setup_project();
+
+    waypoint()
+        .args([
+            "learning",
+            "add",
+            "FTS is best-effort",
+            "--tags",
+            "src/map/index.rs,sqlite",
+        ])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Learning added"));
+
+    // Verify file was created (lazy-create)
+    assert!(project.path().join(".waypoint/learnings.json").exists());
+
+    // Search by term
+    waypoint()
+        .args(["learning", "search", "FTS"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FTS is best-effort"));
+}
+
+#[test]
+fn cli_learning_list() {
+    let project = setup_project();
+
+    waypoint()
+        .args([
+            "learning",
+            "add",
+            "hooks resolve foreign projects",
+            "--tags",
+            "src/hook/",
+        ])
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["learning", "list"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hooks resolve foreign projects"))
+        .stdout(predicate::str::contains("src/hook/"));
+}
+
+#[test]
+fn cli_learning_list_empty() {
+    let project = setup_scanned_project();
+
+    waypoint()
+        .args(["learning", "list"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No learnings logged yet"));
+}
+
+#[test]
+fn cli_learning_prune_requires_older_than() {
+    let project = setup_project();
+
+    waypoint()
+        .args(["learning", "prune"])
+        .current_dir(project.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--older-than"));
+}
+
+#[test]
+fn cli_trap_prune_requires_older_than() {
+    let project = setup_project();
+
+    waypoint()
+        .args(["trap", "prune"])
+        .current_dir(project.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--older-than"));
+}
+
+#[test]
+fn cli_learning_with_context_flag() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_scanned_project();
+
+    waypoint()
+        .args([
+            "learning",
+            "add",
+            "cross-project learning",
+            "--tags",
+            "src/",
+            "-C",
+            project_b.path().to_str().unwrap(),
+        ])
+        .current_dir(project_a.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Learning added"));
+
+    // Verify learning is in project B
+    assert!(project_b.path().join(".waypoint/learnings.json").exists());
+
+    // Verify learning is NOT in project A
+    assert!(!project_a.path().join(".waypoint/learnings.json").exists());
+}
+
+#[test]
+fn hook_pre_read_surfaces_learnings() {
+    let project = setup_scanned_project();
+    let src_dir = project.path().join("src/hook");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("pre_read.rs"), "// test file").unwrap();
+
+    // Add a learning tagged to src/hook/
+    waypoint()
+        .args([
+            "learning",
+            "add",
+            "hooks resolve foreign projects",
+            "--tags",
+            "src/hook/",
+        ])
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // Re-scan to pick up the new file
+    waypoint()
+        .args(["scan"])
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // Pre-read for a file under src/hook/ should surface the learning
+    let payload = hook_payload(&project, "src/hook/pre_read.rs");
+    let assert = waypoint()
+        .args(["hook", "pre-read"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    let parsed = parse_hook_output(&assert);
+    let context = parsed
+        .get("additionalContext")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    assert!(
+        context.contains("[waypoint] learnings for src/hook/pre_read.rs"),
+        "should surface learning; got: {context}"
+    );
+    assert!(
+        context.contains("hooks resolve foreign projects"),
+        "should contain learning text; got: {context}"
+    );
+}
+
+#[test]
+fn hook_pre_read_no_learnings_for_untagged_file() {
+    let project = setup_scanned_project();
+
+    // Add a learning tagged to src/trap.rs
+    waypoint()
+        .args([
+            "learning",
+            "add",
+            "trap dedup uses Jaccard",
+            "--tags",
+            "src/trap.rs",
+        ])
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // Pre-read for a different file should NOT surface the learning
+    let payload = hook_payload(&project, "src/lib.rs");
+    let assert = waypoint()
+        .args(["hook", "pre-read"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    let parsed = parse_hook_output(&assert);
+    let context = parsed
+        .get("additionalContext")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    assert!(
+        !context.contains("learnings for"),
+        "should NOT surface learning for untagged file; got: {context}"
+    );
 }

@@ -31,10 +31,16 @@ pub fn run() -> Result<(), AppError> {
         output.push('\n');
     }
 
-    // FR-10: Invocation prompt for journal
+    // FR-10: Invocation prompt for journal (preferences + do-not-repeat only)
     output.push_str(
         "To log a correction or preference: \
-         waypoint journal add --section <preferences|learnings|do-not-repeat> \"<entry>\"\n",
+         waypoint journal add --section <preferences|do-not-repeat> \"<entry>\"\n",
+    );
+
+    // FR-9: Invocation prompt for learnings
+    output.push_str(
+        "To log a learning: \
+         waypoint learning add \"<entry>\" --tags \"<file-or-dir-paths>\"\n",
     );
 
     // FR-15: Invocation prompt for traps

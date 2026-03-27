@@ -7,9 +7,8 @@ use crate::cli::JournalSection;
 #[must_use]
 pub fn empty_journal() -> String {
     format!(
-        "# Waypoint Journal\n\n{}\n\n{}\n\n{}\n",
+        "# Waypoint Journal\n\n{}\n\n{}\n",
         JournalSection::Preferences.header(),
-        JournalSection::Learnings.header(),
         JournalSection::DoNotRepeat.header(),
     )
 }

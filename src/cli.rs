@@ -42,6 +42,11 @@ pub enum Command {
         #[command(subcommand)]
         command: JournalCommand,
     },
+    /// Manage contextual learnings
+    Learning {
+        #[command(subcommand)]
+        command: LearningCommand,
+    },
     /// Display waypoint status for the current project
     Status,
     /// Show structural overview of a symbol
@@ -98,12 +103,23 @@ pub enum TrapCommand {
         #[arg(long)]
         tags: String,
     },
+    /// Remove trap entries older than a duration (e.g., 90d)
+    Prune {
+        /// Duration threshold, e.g. "90d" (days only)
+        #[arg(long)]
+        older_than: Option<String>,
+        /// Prune across all sibling projects
+        #[arg(long, conflicts_with = "context")]
+        all: bool,
+        /// Resolve project from this path instead of cwd
+        #[arg(short = 'C', long = "context")]
+        context: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum JournalSection {
     Preferences,
-    Learnings,
     DoNotRepeat,
 }
 
@@ -113,10 +129,50 @@ impl JournalSection {
     pub fn header(self) -> &'static str {
         match self {
             Self::Preferences => "## Preferences",
-            Self::Learnings => "## Learnings",
             Self::DoNotRepeat => "## Do-Not-Repeat",
         }
     }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum LearningCommand {
+    /// Add a new learning
+    Add {
+        /// Learning text
+        entry: String,
+        /// Comma-separated file paths or topic tags (required)
+        #[arg(long)]
+        tags: String,
+        /// Resolve project from this path instead of cwd
+        #[arg(short = 'C', long = "context")]
+        context: Option<String>,
+    },
+    /// Search learnings by keyword
+    Search {
+        /// Search term
+        term: String,
+        /// Resolve project from this path instead of cwd
+        #[arg(short = 'C', long = "context")]
+        context: Option<String>,
+    },
+    /// List all learnings
+    List {
+        /// Resolve project from this path instead of cwd
+        #[arg(short = 'C', long = "context")]
+        context: Option<String>,
+    },
+    /// Remove learning entries older than a duration (e.g., 90d)
+    Prune {
+        /// Duration threshold, e.g. "90d" (days only)
+        #[arg(long)]
+        older_than: Option<String>,
+        /// Prune across all sibling projects
+        #[arg(long, conflicts_with = "context")]
+        all: bool,
+        /// Resolve project from this path instead of cwd
+        #[arg(short = 'C', long = "context")]
+        context: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

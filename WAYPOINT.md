@@ -15,17 +15,18 @@ You are working in a Waypoint-managed project. These rules apply every turn.
 
 1. Respect every entry in the Waypoint journal (injected at session start). If session context was compressed, re-read `.waypoint/journal.md`.
 2. Check the `## Do-Not-Repeat` section — these are past mistakes that must not recur.
-3. Follow all conventions in `## Learnings` and `## Preferences`.
+3. Follow all conventions in `## Preferences`.
+4. Watch for `[waypoint] learnings for <file>:` annotations on pre-read — these are contextual learnings relevant to the file you're reading.
 
 ## After Actions
 
 1. After renaming or deleting files: run `waypoint scan` to update the map. (Edits and creates are handled automatically by the post-write hook.)
 2. After fixing a bug: log it with `waypoint trap log` (see Bug Logging below).
-3. After learning something new about the project: log it with `waypoint journal add` (see Journal Learning below).
+3. After learning something new about the project: log it with `waypoint learning add` (see Learnings below).
 
-## Journal Learning (MANDATORY — every session)
+## Journal (MANDATORY — every session)
 
-Waypoint's value comes from learning across sessions. You MUST update the journal whenever you learn something useful. This is not optional.
+The journal stores preferences and past mistakes. You MUST update it when relevant. This is not optional.
 
 **Update `preferences` when the user:**
 - Corrects your approach ("no, do it this way instead")
@@ -34,23 +35,38 @@ Waypoint's value comes from learning across sessions. You MUST update the journa
 - Rejects a suggestion — record what they preferred instead
 - Asks for more/less detail, verbosity, explanation
 
-**Update `learnings` when you discover:**
-- A project convention not obvious from the code (e.g., "tests go in __tests__/ not test/")
-- A framework-specific pattern this project uses
-- An API behavior that surprised you
-- A dependency quirk or version constraint
-- How modules connect or data flows through the system
-
 **Update `do-not-repeat` (with date) when:**
 - The user corrects a mistake you made
 - You try something that fails and find the right approach
 - You discover a gotcha that would trip up a fresh session
 
 ```sh
-waypoint journal add --section <preferences|learnings|do-not-repeat> "<entry>"
+waypoint journal add --section <preferences|do-not-repeat> "<entry>"
 ```
 
-**The bar is LOW.** If in doubt, add it. A journal entry that's slightly redundant costs nothing. A missing entry means the next session repeats the same discovery process.
+## Learnings (MANDATORY — every session)
+
+Learnings are contextual knowledge stored in `.waypoint/learnings.json` and surfaced automatically on pre-read when the file being read matches a learning's tags. You MUST log learnings when you discover something useful.
+
+**Log a learning when you discover:**
+- A project convention not obvious from the code (e.g., "tests go in __tests__/ not test/")
+- A framework-specific pattern this project uses
+- An API behavior that surprised you
+- A dependency quirk or version constraint
+- How modules connect or data flows through the system
+
+```sh
+waypoint learning add "<entry>" --tags "<file-or-dir-paths>"
+```
+
+**Tagging is critical.** Tag learnings with the file paths or directory prefixes they relate to. Directory tags must end with `/`. Learnings surface automatically on pre-read when a file matches a tag — untagged learnings never surface contextually.
+
+Examples:
+- `--tags "src/map/index.rs"` — surfaces when reading that specific file
+- `--tags "src/hook/"` — surfaces when reading any file under `src/hook/`
+- `--tags "src/trap.rs,src/learning.rs"` — surfaces for either file
+
+**The bar is LOW.** If in doubt, add it. A learning that's slightly redundant costs nothing. A missing learning means the next session repeats the same discovery process.
 
 ## Bug Logging (MANDATORY)
 
@@ -93,7 +109,7 @@ After `waypoint scan`, a symbol index is available in `map_index.db` alongside t
 - `waypoint find "<query>"` — full-text search across all indexed symbols. Use this instead of Grep when searching for code by name or intent — it searches structured symbol data, not raw text.
 
 **Preferred lookup order:**
-1. Map description (injected on Read) — often sufficient, zero cost
+1. Map description (injected on Read) — often sufficient, zero cost. Learnings for the file are also surfaced here automatically.
 2. `waypoint sketch` / `waypoint find` — precise symbol info, minimal tokens
 3. Grep/Glob — when the symbol index doesn't cover what you need (comments, string literals, config values)
 4. Full file Read — last resort for understanding surrounding context
@@ -111,7 +127,8 @@ When you read or edit a file outside the cwd project, the hooks resolve the corr
 waypoint sketch -C /path/to/other-repo SymbolName
 waypoint find -C /path/to/other-repo "query"
 waypoint trap search -C /path/to/other-repo "keyword"
-waypoint journal add -C /path/to/other-repo --section learnings "entry"
+waypoint learning add -C /path/to/other-repo "entry" --tags "src/"
+waypoint journal add -C /path/to/other-repo --section preferences "entry"
 ```
 
 **`trap log --file` auto-resolves** — no `-C` needed. The `--file` path determines which project's traps to write to:
@@ -124,7 +141,7 @@ This writes to `other-repo/.waypoint/traps.json` with a project-relative file pa
 
 **Key rules:**
 - Use the full path from the `[waypoint] foreign:` annotation as the `-C` value
-- Journal entries and traps belong to the project they're about — don't log neb-www learnings in neb-entitlements
+- Journal entries, learnings, and traps belong to the project they're about — don't log neb-www learnings in neb-entitlements
 - If `-C` fails with "no .waypoint/ directory", the foreign project hasn't been scanned yet — run `waypoint scan` from that repo first
 
 ## Token Discipline
@@ -140,4 +157,4 @@ This writes to `other-repo/.waypoint/traps.json` with a project-relative file pa
 Before ending or when asked to wrap up:
 
 1. Review the session: did you learn anything? Did the user correct you? Did you fix a bug?
-2. If yes, update the journal and/or trap log.
+2. If yes, update the journal, log learnings, and/or log traps as appropriate.

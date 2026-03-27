@@ -122,6 +122,30 @@ pub fn search<'a>(traps: &'a [TrapEntry], query: &str) -> Vec<&'a TrapEntry> {
     scored.into_iter().map(|(trap, _)| trap).collect()
 }
 
+/// Prune traps older than `max_age_days`. Returns the removed entries.
+/// Deletes traps.json if all entries are pruned.
+pub fn prune(waypoint_dir: &Path, max_age_days: i64) -> Result<Vec<TrapEntry>, AppError> {
+    let traps = read_traps(waypoint_dir)?;
+    let cutoff = Utc::now() - chrono::Duration::days(max_age_days);
+
+    let (keep, pruned): (Vec<_>, Vec<_>) = traps.into_iter().partition(|t| {
+        chrono::DateTime::parse_from_rfc3339(&t.logged_at)
+            .map(|dt| dt >= cutoff)
+            .unwrap_or(true) // keep entries with unparseable dates
+    });
+
+    let path = waypoint_dir.join("traps.json");
+    if keep.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+    } else {
+        write_traps(waypoint_dir, &keep)?;
+    }
+
+    Ok(pruned)
+}
+
 /// Find traps relevant to a specific file.
 #[must_use]
 pub fn traps_for_file<'a>(traps: &'a [TrapEntry], file_path: &str) -> Vec<&'a TrapEntry> {
