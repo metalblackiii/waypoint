@@ -626,7 +626,12 @@ fn cli_trap_log_foreign_file_writes_to_foreign_project() {
         "trap should be in project B: {traps_b}"
     );
 
-    let traps_a = fs::read_to_string(project_a.path().join(".waypoint/traps.json")).unwrap();
+    let traps_a_path = project_a.path().join(".waypoint/traps.json");
+    let traps_a = if traps_a_path.exists() {
+        fs::read_to_string(&traps_a_path).unwrap()
+    } else {
+        String::new()
+    };
     assert!(
         !traps_a.contains("foreign bug"),
         "trap should NOT be in project A: {traps_a}"
@@ -1056,7 +1061,7 @@ fn cli_scan_all_initializes_new_repos() {
 
     assert!(parent.path().join("fresh/.waypoint/map.md").exists());
     assert!(parent.path().join("fresh/.waypoint/journal.md").exists());
-    assert!(parent.path().join("fresh/.waypoint/traps.json").exists());
+    // traps.json and learnings.json are lazy-created on first log/add
 }
 
 // ── Learning CLI tests ───────────────────────────────────────────
