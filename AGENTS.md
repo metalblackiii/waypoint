@@ -20,6 +20,7 @@ Project intelligence for Claude Code — hooks, file map, journal, traps, ledger
 - `map.md` is the human-readable source of truth. `map_index.db` is a SQLite cache for O(1) lookups — it can be deleted and will rebuild on next `waypoint scan`.
 - `map_index.db` also contains a `symbols` table (structured symbol data from tree-sitter) and a `symbols_fts` FTS5 table for full-text search. Both rebuild on `waypoint scan`.
 - `waypoint sketch <name>` queries symbols by exact name; `waypoint find "<query>"` uses FTS5 with LIKE fallback.
+- `waypoint scan --all [PATH]` discovers immediate child git repos and scans each. Initializes `.waypoint/` if missing. Smart default: from inside a project, walks up to parent and scans siblings.
 - `atomic_write_with(path, |writer| ...)` in `project.rs` — use this for all file writes that need crash safety. The closure receives `&mut BufWriter<File>`.
 - SQLite integers must be `i64`, not `usize` — rusqlite 0.39 dropped `FromSql` for `usize`.
 

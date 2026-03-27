@@ -34,8 +34,10 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 Walks the project respecting `.gitignore`, extracts descriptions using tree-sitter (Rust, TypeScript, JavaScript, Python, Go) with regex fallback for 15+ other formats. Writes `.waypoint/map.md`.
 
 ```sh
-waypoint scan           # Generate/regenerate the map
-waypoint scan --check   # Exit non-zero if map is stale
+waypoint scan              # Generate/regenerate the map
+waypoint scan --check      # Exit non-zero if map is stale
+waypoint scan --all        # Scan all immediate child git repos (smart default: walks up if inside a project)
+waypoint scan --all ~/repos  # Explicit parent directory
 ```
 
 ### `waypoint journal add`
@@ -105,20 +107,13 @@ This gives Claude the operating protocol — mandatory journal updates on correc
 
 When Claude reads a file outside the current project, the pre-read hook automatically resolves the file's own project root and serves map context from that project's `.waypoint/` directory. This works for sibling repos, nested repos (submodules), and any waypoint-managed project on disk.
 
-For this to work, the target project needs to have been scanned at least once. You can pre-warm all your repos in one pass:
+For this to work, the target project needs to have been scanned at least once. Pre-warm all your repos in one pass:
 
 ```sh
-PROJECTS=~/projects  # adjust to your repos directory
-for d in "$PROJECTS"/*/; do (cd "$d" && waypoint scan 2>/dev/null); done
+waypoint scan --all ~/repos
 ```
 
-Maps stay current in projects you actively edit (the post-write hook updates entries incrementally). For repos you don't touch often, a periodic re-scan keeps them fresh:
-
-```sh
-# Add to crontab, a shell alias, or run ad hoc
-PROJECTS=~/projects  # adjust to your repos directory
-for d in "$PROJECTS"/*/; do (cd "$d" && waypoint scan 2>/dev/null); done
-```
+Maps stay current in projects you actively edit (the post-write hook updates entries incrementally). For repos you don't touch often, a periodic re-scan keeps them fresh — just re-run `waypoint scan --all`.
 
 ## Setup
 
