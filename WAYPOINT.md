@@ -6,8 +6,10 @@ You are working in a Waypoint-managed project. These rules apply every turn.
 
 1. Check the `[waypoint] map:` context injected on every Read — it has a description and token estimate for the file.
 2. If the description is sufficient for your task, do NOT read the full file.
-3. When you need a specific symbol (function, class, type), use `waypoint sketch <name>` before reading the file — it gives you the signature and line range.
-4. When searching for code by name or intent, use `waypoint find "<query>"` before falling back to Grep.
+3. When you need a specific symbol (function, class, type), use `waypoint sketch <name>` before reading the file — it gives you the signature and line range. **Skip sketch for files under ~150 tokens** (check the map annotation — roughly 10-15 lines of code).
+4. `waypoint find` vs `Grep` — use the right tool for the job:
+   - `waypoint find "<query>"` — symbol names, function signatures, struct/class definitions
+   - `Grep` — string literals, comments, config values, error messages, non-code text
 5. If a file is not in the map or symbol index, search with Grep/Glob. The post-write hook will add it automatically when you create or edit it.
 6. Use `waypoint scan --check` to detect stale map entries.
 
@@ -21,8 +23,7 @@ You are working in a Waypoint-managed project. These rules apply every turn.
 ## After Actions
 
 1. After renaming or deleting files: run `waypoint scan` to update the map. (Edits and creates are handled automatically by the post-write hook.)
-2. After fixing a bug: log it with `waypoint trap log` (see Bug Logging below).
-3. After learning something new about the project: log it with `waypoint learning add` (see Learnings below).
+2. Traps, learnings, and journal writes are **batched at session end** — note key details (error messages, file paths, root causes) inline in your responses as you go, then write them all in the Session End pass. The only inline write is `waypoint scan` for renames/deletes.
 
 ## Journal (MANDATORY — every session)
 
@@ -88,7 +89,7 @@ Examples:
 waypoint trap search "<keyword>"
 ```
 
-**After fixing:** ALWAYS log the trap.
+**After fixing:** Note the details (error, file, cause, fix) inline in your response — the actual `trap log` call happens in the Session End pass. Template for reference:
 
 ```sh
 waypoint trap log \
@@ -106,7 +107,7 @@ waypoint trap log \
 After `waypoint scan`, a symbol index is available in `map_index.db` alongside the file map.
 
 - `waypoint sketch <name>` — show file location and signature for a symbol (function, struct, class, etc.). **Use this before reading a file** when you need a specific function, class, or type — it returns the signature and location without spending tokens on the full file.
-- `waypoint find "<query>"` — full-text search across all indexed symbols. Use this instead of Grep when searching for code by name or intent — it searches structured symbol data, not raw text.
+- `waypoint find "<query>"` — full-text search across all indexed symbols. Use this for symbol lookups (names, signatures, definitions). For string literals, comments, config values, and error messages, use Grep instead.
 
 **Preferred lookup order:**
 1. Map description (injected on Read) — often sufficient, zero cost. Learnings for the file are also surfaced here automatically.
@@ -154,7 +155,9 @@ This writes to `other-repo/.waypoint/traps.json` with a project-relative file pa
 
 ## Session End
 
-Before ending or when asked to wrap up:
+All writes are batched here. Before ending or when asked to wrap up:
 
-1. Review the session: did you learn anything? Did the user correct you? Did you fix a bug?
-2. If yes, update the journal, log learnings, and/or log traps as appropriate.
+1. **Traps:** Log every bug you fixed or error you encountered (search first to avoid duplicates).
+2. **Learnings:** Log anything you discovered about the project — conventions, quirks, connections.
+3. **Journal:** Update `preferences` if the user corrected your approach or expressed a preference. Update `do-not-repeat` if you made a mistake or discovered a gotcha.
+4. If nothing happened worth logging, that's fine — not every session produces writes.
