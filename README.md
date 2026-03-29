@@ -8,8 +8,8 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 
 | Hook | Trigger | What happens |
 |------|---------|--------------|
-| **session-start** | New conversation | Injects journal (preferences, learnings, do-not-repeat). Auto-scans if no map exists. |
-| **pre-read** | Before Claude reads a file | Injects file description and token estimate from the map (works across projects) |
+| **session-start** | New conversation | Injects journal preferences and do-not-repeat notes. Auto-scans if no map exists. |
+| **pre-read** | Before Claude reads a file | Injects file description, token estimate, and matching learnings from the map (works across projects) |
 | **pre-write** | Before Claude edits a file | Surfaces known bug traps for that file |
 | **post-write** | After Claude edits a file | Incrementally updates the file's map entry |
 | **post-failure** | After a tool error | Suggests searching traps for known fixes |
@@ -19,9 +19,10 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 ```
 .waypoint/           ← per-project, gitignored
   map.md             ← file descriptions + token estimates (human-readable source of truth)
-  map_index.db       ← SQLite index for O(1) map lookups (cache, rebuilt on scan)
-  journal.md         ← cross-session memory (preferences, learnings, do-not-repeat)
+  map_index.db       ← SQLite index for O(1) map lookups + FTS5 symbol search
+  journal.md         ← cross-session memory (preferences, do-not-repeat)
   traps.json         ← bug fix log with dedup
+  learnings.json     ← contextual learnings tagged to files/directories
 
 ~/Library/Application Support/waypoint/
   ledger.db          ← SQLite analytics (90-day retention)
@@ -48,12 +49,11 @@ Add entries to the cross-session journal. Claude sees these at the start of ever
 # Things you want Claude to always do
 waypoint journal add --section preferences "Use jiff instead of chrono for timezone-aware dates"
 
-# Things Claude learned during a session
-waypoint journal add --section learnings "tree-sitter grammar crates use tree-sitter-language as intermediary"
-
 # Mistakes Claude should not repeat
 waypoint journal add --section do-not-repeat "Don't use unbuffered File writes — wrap in BufWriter"
 ```
+
+Use [`waypoint learning add`](#waypoint-learning-add) for contextual learnings that should surface on `pre-read`.
 
 ### `waypoint trap log`
 
@@ -74,6 +74,58 @@ Search traps by keyword.
 
 ```sh
 waypoint trap search "FromSql"
+```
+
+### `waypoint trap prune`
+
+Remove old trap entries.
+
+```sh
+waypoint trap prune --older-than 90d
+waypoint trap prune --older-than 90d --all   # prune across all sibling projects
+```
+
+### `waypoint learning add`
+
+Record a contextual learning tagged to specific files or directories. Learnings are surfaced automatically on pre-read when the file being read matches a tag.
+
+```sh
+waypoint learning add "tree-sitter grammar crates use tree-sitter-language as intermediary" \
+  --tags "Cargo.toml,src/scan/"
+```
+
+### `waypoint learning search`
+
+Search learnings by keyword.
+
+```sh
+waypoint learning search "tree-sitter"
+```
+
+### `waypoint learning prune`
+
+Remove old learning entries.
+
+```sh
+waypoint learning prune --older-than 90d
+waypoint learning prune --older-than 90d --all   # prune across all sibling projects
+```
+
+### `waypoint sketch`
+
+Look up a symbol's signature and location without reading the full file.
+
+```sh
+waypoint sketch SessionStart      # shows file, line range, and signature
+```
+
+### `waypoint find`
+
+Full-text search across all indexed symbols (function names, structs, classes, types).
+
+```sh
+waypoint find "token savings"     # BM25-ranked results from the symbol index
+waypoint find "scan" --limit 5
 ```
 
 ### `waypoint gain`

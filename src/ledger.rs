@@ -15,6 +15,7 @@ pub enum EventKind {
     MapHit,
     MapMiss,
     TrapHit,
+    FirstEdit,
 }
 
 impl EventKind {
@@ -24,6 +25,7 @@ impl EventKind {
             Self::MapHit => "map_hit",
             Self::MapMiss => "map_miss",
             Self::TrapHit => "trap_hit",
+            Self::FirstEdit => "first_edit",
         }
     }
 }
@@ -35,6 +37,8 @@ pub struct GainStats {
     pub map_hits: i64,
     pub map_misses: i64,
     pub trap_hits: i64,
+    pub first_edit_count: i64,
+    pub avg_first_edit_secs: f64,
     pub map_hit_rate: f64,
     pub estimated_tokens_saved: i64,
     pub daily: Vec<DayStats>,
@@ -65,6 +69,23 @@ fn format_tokens(n: i64) -> String {
         format!("{:.1}K", value / 1_000.0)
     } else {
         n.to_string()
+    }
+}
+
+/// Format a duration in seconds for human display (e.g., "42s", "2m 15s", "5m").
+fn format_duration(secs: f64) -> String {
+    #[allow(clippy::cast_possible_truncation)]
+    let s = secs.round() as i64;
+    if s < 60 {
+        format!("{s}s")
+    } else {
+        let m = s / 60;
+        let remainder = s % 60;
+        if remainder == 0 {
+            format!("{m}m")
+        } else {
+            format!("{m}m {remainder}s")
+        }
     }
 }
 
@@ -140,6 +161,20 @@ impl fmt::Display for GainStats {
             meter.color(color),
             format!("{:.1}%", self.map_hit_rate).bold(),
         )?;
+
+        // First-edit timing
+        if self.first_edit_count > 0 {
+            let padded_label = format!("{:<LABEL_PAD$}", "First edit:");
+            let time_str = format_duration(self.avg_first_edit_secs);
+            let count_str = format!("({} samples)", self.first_edit_count);
+            writeln!(
+                f,
+                "{} {:>VALUE_PAD$}  {}",
+                padded_label.bold(),
+                time_str.color(Color::Cyan),
+                count_str.dimmed(),
+            )?;
+        }
 
         // Daily breakdown table
         if !self.daily.is_empty() {
@@ -263,6 +298,48 @@ fn record_event_with(
     Ok(())
 }
 
+/// Record a first-edit event if one hasn't been logged for the current session.
+///
+/// Stores elapsed seconds since session start in `token_impact`.
+/// Idempotent within a session — second and subsequent calls are no-ops.
+pub fn record_first_edit_if_needed(project_path: &str) -> Result<(), AppError> {
+    let conn = open_db()?;
+    record_first_edit_if_needed_with(&conn, project_path)
+}
+
+fn record_first_edit_if_needed_with(conn: &Connection, project_path: &str) -> Result<(), AppError> {
+    // Use the most recent session_start globally — a session has one start
+    // time regardless of which (possibly foreign) project files are edited.
+    let session_start: Option<String> = conn.query_row(
+        "SELECT MAX(timestamp) FROM events WHERE event_kind = 'session_start'",
+        [],
+        |row| row.get(0),
+    )?;
+
+    // Check if already logged since that session_start — globally, not per-project.
+    // A session has one first edit regardless of which project the file belongs to.
+    let cutoff = session_start.as_deref().unwrap_or("1970-01-01");
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE event_kind = 'first_edit' \
+         AND timestamp > ?1",
+        params![cutoff],
+        |row| row.get(0),
+    )?;
+
+    if count > 0 {
+        return Ok(());
+    }
+
+    let elapsed_secs = match session_start {
+        Some(ref ts) => chrono::DateTime::parse_from_rfc3339(ts)
+            .map(|start| (Utc::now() - start.with_timezone(&Utc)).num_seconds())
+            .unwrap_or(0),
+        None => 0,
+    };
+
+    record_event_with(conn, EventKind::FirstEdit, project_path, elapsed_secs)
+}
+
 /// Get gain statistics, optionally filtered by project.
 pub fn gain_stats(project_path: Option<&str>) -> Result<GainStats, AppError> {
     let conn = open_db()?;
@@ -295,12 +372,34 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
     };
 
     let estimated_tokens_saved = {
-        let sql = format!("SELECT COALESCE(SUM(token_impact), 0) FROM events {filter}");
+        let sql = if filter.is_empty() {
+            "SELECT COALESCE(SUM(token_impact), 0) FROM events WHERE event_kind != 'first_edit'"
+                .to_string()
+        } else {
+            format!("SELECT COALESCE(SUM(token_impact), 0) FROM events {filter} AND event_kind != 'first_edit'")
+        };
         let mut stmt = conn.prepare(&sql)?;
         match param_ref {
             Some(p) => stmt.query_row(params![p], |row| row.get(0))?,
             None => stmt.query_row([], |row| row.get(0))?,
         }
+    };
+
+    let first_edit_count = query_count_kind(conn, "first_edit", param_ref)?;
+
+    #[allow(clippy::cast_precision_loss)]
+    let avg_first_edit_secs: f64 = if first_edit_count > 0 {
+        let sql = match param_ref {
+            Some(_) => "SELECT AVG(token_impact) FROM events WHERE event_kind = 'first_edit' AND project_path = ?1",
+            None => "SELECT AVG(token_impact) FROM events WHERE event_kind = 'first_edit'",
+        };
+        let mut stmt = conn.prepare(sql)?;
+        match param_ref {
+            Some(p) => stmt.query_row(params![p], |row| row.get(0))?,
+            None => stmt.query_row([], |row| row.get(0))?,
+        }
+    } else {
+        0.0
     };
 
     let daily = query_daily(conn, param_ref)?;
@@ -310,6 +409,8 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         map_hits,
         map_misses,
         trap_hits,
+        first_edit_count,
+        avg_first_edit_secs,
         map_hit_rate,
         estimated_tokens_saved,
         daily,
@@ -345,14 +446,16 @@ fn query_count_kind(conn: &Connection, kind: &str, param: Option<&str>) -> Resul
 fn query_daily(conn: &Connection, param: Option<&str>) -> Result<Vec<DayStats>, AppError> {
     let (sql, values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match param {
         Some(p) => (
-            "SELECT DATE(timestamp) as d, COUNT(*), COALESCE(SUM(token_impact), 0) \
+            "SELECT DATE(timestamp) as d, COUNT(*), \
+             COALESCE(SUM(CASE WHEN event_kind = 'first_edit' THEN 0 ELSE token_impact END), 0) \
              FROM events WHERE project_path = ?1 \
              GROUP BY d ORDER BY d DESC LIMIT 30"
                 .into(),
             vec![Box::new(p.to_string())],
         ),
         None => (
-            "SELECT DATE(timestamp) as d, COUNT(*), COALESCE(SUM(token_impact), 0) \
+            "SELECT DATE(timestamp) as d, COUNT(*), \
+             COALESCE(SUM(CASE WHEN event_kind = 'first_edit' THEN 0 ELSE token_impact END), 0) \
              FROM events GROUP BY d ORDER BY d DESC LIMIT 30"
                 .into(),
             vec![],
@@ -448,11 +551,98 @@ mod tests {
     }
 
     #[test]
+    fn daily_breakdown_excludes_first_edit_seconds() {
+        let conn = test_db();
+
+        record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
+        record_event_with(&conn, EventKind::MapHit, "/tmp/p", 500).unwrap();
+        record_first_edit_if_needed_with(&conn, "/tmp/p").unwrap();
+
+        let stats = gain_stats_with(&conn, Some("/tmp/p")).unwrap();
+
+        assert_eq!(stats.daily.len(), 1);
+        assert_eq!(stats.daily[0].events, 3);
+        assert_eq!(stats.daily[0].tokens_saved, 500);
+    }
+
+    #[test]
     fn event_kind_as_str() {
         assert_eq!(EventKind::SessionStart.as_str(), "session_start");
         assert_eq!(EventKind::MapHit.as_str(), "map_hit");
         assert_eq!(EventKind::MapMiss.as_str(), "map_miss");
         assert_eq!(EventKind::TrapHit.as_str(), "trap_hit");
+        assert_eq!(EventKind::FirstEdit.as_str(), "first_edit");
+    }
+
+    #[test]
+    fn first_edit_tracking() {
+        let conn = test_db();
+
+        record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
+        record_event_with(&conn, EventKind::MapHit, "/tmp/p", 100).unwrap();
+        record_event_with(&conn, EventKind::FirstEdit, "/tmp/p", 45).unwrap();
+
+        let stats = gain_stats_with(&conn, Some("/tmp/p")).unwrap();
+
+        assert_eq!(stats.first_edit_count, 1);
+        assert!((stats.avg_first_edit_secs - 45.0).abs() < f64::EPSILON);
+        // first_edit token_impact (seconds) must not pollute tokens saved
+        assert_eq!(stats.estimated_tokens_saved, 100);
+    }
+
+    #[test]
+    fn first_edit_avg_across_sessions() {
+        let conn = test_db();
+
+        // Session 1: first edit at 30s
+        record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
+        record_event_with(&conn, EventKind::FirstEdit, "/tmp/p", 30).unwrap();
+
+        // Session 2: first edit at 60s
+        record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
+        record_event_with(&conn, EventKind::FirstEdit, "/tmp/p", 60).unwrap();
+
+        let stats = gain_stats_with(&conn, Some("/tmp/p")).unwrap();
+
+        assert_eq!(stats.first_edit_count, 2);
+        assert!((stats.avg_first_edit_secs - 45.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn first_edit_helper_is_idempotent_within_session() {
+        let conn = test_db();
+
+        record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
+        record_first_edit_if_needed_with(&conn, "/tmp/p").unwrap();
+        record_first_edit_if_needed_with(&conn, "/tmp/p").unwrap();
+
+        record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
+        record_first_edit_if_needed_with(&conn, "/tmp/p").unwrap();
+
+        let stats = gain_stats_with(&conn, Some("/tmp/p")).unwrap();
+
+        assert_eq!(stats.first_edit_count, 2);
+        assert!(stats.avg_first_edit_secs >= 0.0);
+    }
+
+    #[test]
+    fn first_edit_is_session_global_not_per_project() {
+        let conn = test_db();
+
+        record_event_with(&conn, EventKind::SessionStart, "/tmp/a", 0).unwrap();
+        // First edit in project A — recorded
+        record_first_edit_if_needed_with(&conn, "/tmp/a").unwrap();
+        // First edit in project B — should be a no-op (session already has a first edit)
+        record_first_edit_if_needed_with(&conn, "/tmp/b").unwrap();
+
+        let stats_all = gain_stats_with(&conn, None).unwrap();
+        assert_eq!(stats_all.first_edit_count, 1);
+
+        let stats_a = gain_stats_with(&conn, Some("/tmp/a")).unwrap();
+        assert_eq!(stats_a.first_edit_count, 1);
+
+        let stats_b = gain_stats_with(&conn, Some("/tmp/b")).unwrap();
+        assert_eq!(stats_b.first_edit_count, 0);
     }
 
     #[test]
@@ -506,6 +696,8 @@ mod tests {
             map_hits: 75,
             map_misses: 25,
             trap_hits: 3,
+            first_edit_count: 0,
+            avg_first_edit_secs: 0.0,
             map_hit_rate: 75.0,
             estimated_tokens_saved: 500_000,
             daily: vec![],
@@ -523,6 +715,8 @@ mod tests {
             map_hits: 325,
             map_misses: 101,
             trap_hits: 7,
+            first_edit_count: 0,
+            avg_first_edit_secs: 0.0,
             map_hit_rate: 76.3,
             estimated_tokens_saved: 1_025_558,
             daily: vec![DayStats {
@@ -552,6 +746,8 @@ mod tests {
             map_hits: 8,
             map_misses: 2,
             trap_hits: 0,
+            first_edit_count: 0,
+            avg_first_edit_secs: 0.0,
             map_hit_rate: 80.0,
             estimated_tokens_saved: 5_000,
             daily: vec![],
@@ -560,5 +756,24 @@ mod tests {
 
         assert!(output.contains("Total events:"));
         assert!(!output.contains("Daily Breakdown"));
+    }
+
+    #[test]
+    fn display_uses_first_edit_samples_label() {
+        let stats = GainStats {
+            total_events: 12,
+            map_hits: 8,
+            map_misses: 2,
+            trap_hits: 1,
+            first_edit_count: 3,
+            avg_first_edit_secs: 42.0,
+            map_hit_rate: 80.0,
+            estimated_tokens_saved: 5_000,
+            daily: vec![],
+        };
+        let output = format!("{stats}");
+
+        assert!(output.contains("(3 samples)"));
+        assert!(!output.contains("sessions"));
     }
 }
