@@ -29,17 +29,9 @@ You are working in a Waypoint-managed project. These rules apply every turn.
 
 The journal stores preferences and past mistakes. You MUST update it when relevant. This is not optional.
 
-**Update `preferences` when the user:**
-- Corrects your approach ("no, do it this way instead")
-- Expresses a style preference (naming, structure, formatting)
-- Shows a preferred workflow or tool choice
-- Rejects a suggestion — record what they preferred instead
-- Asks for more/less detail, verbosity, explanation
+**Update `preferences`** when the user corrects your approach, expresses a style/workflow preference, or rejects a suggestion.
 
-**Update `do-not-repeat` (with date) when:**
-- The user corrects a mistake you made
-- You try something that fails and find the right approach
-- You discover a gotcha that would trip up a fresh session
+**Update `do-not-repeat`** (with date) when you make a mistake, find the right approach after a failure, or discover a gotcha that would trip a fresh session.
 
 ```sh
 waypoint journal add --section <preferences|do-not-repeat> "<entry>"
@@ -47,14 +39,7 @@ waypoint journal add --section <preferences|do-not-repeat> "<entry>"
 
 ## Learnings (MANDATORY — every session)
 
-Learnings are contextual knowledge stored in `.waypoint/learnings.json` and surfaced automatically on pre-read when the file being read matches a learning's tags. You MUST log learnings when you discover something useful.
-
-**Log a learning when you discover:**
-- A project convention not obvious from the code (e.g., "tests go in __tests__/ not test/")
-- A framework-specific pattern this project uses
-- An API behavior that surprised you
-- A dependency quirk or version constraint
-- How modules connect or data flows through the system
+Learnings are contextual knowledge stored in `.waypoint/learnings.json` and surfaced on pre-read when the file matches a learning's tags. Log any project convention, API behavior, dependency quirk, or system connection that isn't obvious from reading the code.
 
 ```sh
 waypoint learning add "<entry>" --tags "<file-or-dir-paths>"
@@ -67,21 +52,15 @@ Examples:
 - `--tags "src/hook/"` — surfaces when reading any file under `src/hook/`
 - `--tags "src/trap.rs,src/learning.rs"` — surfaces for either file
 
-**The bar is LOW.** If in doubt, add it. A learning that's slightly redundant costs nothing. A missing learning means the next session repeats the same discovery process.
+When in doubt, add it — a redundant learning costs nothing; a missing one means rediscovery.
 
 ## Bug Logging (MANDATORY)
 
-**Log a trap whenever ANY of these happen:**
-- The user reports an error, bug, or problem
-- A test fails or a command produces an error
+**Log a trap whenever:**
+- The user reports a bug or unexpected behavior
+- A test, build, lint, or type check fails
 - You fix something that was broken
 - You edit a file more than twice to get it right
-- An import, module, or dependency is missing or wrong
-- A runtime error, type error, or syntax error occurs
-- A build, lint, or type check fails
-- A feature doesn't work as expected
-- You change error handling, try/catch blocks, or validation logic
-- The user says something "doesn't work", "is broken", or "shows wrong X"
 
 **Before fixing:** Search existing traps — the fix may already be known.
 
@@ -100,7 +79,7 @@ waypoint trap log \
   --tags "<relevant,keywords>"
 ```
 
-**The threshold is LOW.** When in doubt, log it. A false positive costs nothing. A missed trap means repeating the same fix later.
+When in doubt, log it — a false positive costs nothing.
 
 ## Symbol Index
 
@@ -148,9 +127,6 @@ This writes to `other-repo/.waypoint/traps.json` with a project-relative file pa
 ## Token Discipline
 
 - Never re-read a file already read this session unless it was modified since.
-- Prefer map descriptions over full file reads when possible.
-- Use `waypoint sketch` to check a symbol's signature before reading its full file.
-- Prefer targeted Grep over full file reads when searching for specific code.
 - If appending to a file, do not read the entire file first.
 
 ## Session End
