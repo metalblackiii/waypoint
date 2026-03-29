@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::{AppError, journal, ledger, map, project, trap};
+use crate::{AppError, learning, ledger, map, project, trap};
 
 pub fn run(project_root: &Path) -> Result<(), AppError> {
     let wp_dir = project::waypoint_dir(project_root);
@@ -31,9 +31,12 @@ pub fn run(project_root: &Path) -> Result<(), AppError> {
         println!("Map:     not generated (run: waypoint scan)");
     }
 
-    // Journal
-    let entry_count = journal::entry_count(&wp_dir)?;
-    println!("Journal: {entry_count} entries");
+    // Knowledge store
+    let learnings = learning::read_learnings(&wp_dir)?;
+    let prefs = learning::learnings_by_type(&learnings, learning::LearningType::Preference).len();
+    let corrs = learning::learnings_by_type(&learnings, learning::LearningType::Correction).len();
+    let discs = learning::learnings_by_type(&learnings, learning::LearningType::Discovery).len();
+    println!("Knowledge: {prefs} preferences, {corrs} corrections, {discs} discoveries");
 
     // Traps
     let traps = trap::read_traps(&wp_dir)?;
@@ -84,7 +87,7 @@ mod tests {
     fn no_map_file_succeeds() {
         let tmp = TempDir::new().unwrap();
         project::ensure_initialized(tmp.path()).unwrap();
-        // journal.md and traps.json exist, but no map.md
+        // .waypoint/ exists but no map.md
         assert!(run(tmp.path()).is_ok());
     }
 }

@@ -376,7 +376,9 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
             "SELECT COALESCE(SUM(token_impact), 0) FROM events WHERE event_kind != 'first_edit'"
                 .to_string()
         } else {
-            format!("SELECT COALESCE(SUM(token_impact), 0) FROM events {filter} AND event_kind != 'first_edit'")
+            format!(
+                "SELECT COALESCE(SUM(token_impact), 0) FROM events {filter} AND event_kind != 'first_edit'"
+            )
         };
         let mut stmt = conn.prepare(&sql)?;
         match param_ref {
@@ -390,7 +392,9 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
     #[allow(clippy::cast_precision_loss)]
     let avg_first_edit_secs: f64 = if first_edit_count > 0 {
         let sql = match param_ref {
-            Some(_) => "SELECT AVG(token_impact) FROM events WHERE event_kind = 'first_edit' AND project_path = ?1",
+            Some(_) => {
+                "SELECT AVG(token_impact) FROM events WHERE event_kind = 'first_edit' AND project_path = ?1"
+            }
             None => "SELECT AVG(token_impact) FROM events WHERE event_kind = 'first_edit'",
         };
         let mut stmt = conn.prepare(sql)?;

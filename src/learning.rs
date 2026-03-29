@@ -5,9 +5,33 @@ use serde::{Deserialize, Serialize};
 
 use crate::AppError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LearningType {
+    /// User style/workflow preference. Permanent, surfaced at session start.
+    Preference,
+    /// Past mistake / gotcha. Surfaced at session start.
+    Correction,
+    /// Contextual project knowledge. Surfaced on pre-read via tag match.
+    #[default]
+    Discovery,
+}
+
+impl std::fmt::Display for LearningType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Preference => write!(f, "preference"),
+            Self::Correction => write!(f, "correction"),
+            Self::Discovery => write!(f, "discovery"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearningEntry {
     pub id: String,
+    #[serde(default)]
+    pub r#type: LearningType,
     pub entry: String,
     pub tags: Vec<String>,
     pub logged_at: String,
@@ -41,9 +65,11 @@ fn write_learnings(waypoint_dir: &Path, learnings: &[LearningEntry]) -> Result<(
 pub struct NewLearning<'a> {
     pub entry: &'a str,
     pub tags_str: &'a str,
+    pub r#type: LearningType,
 }
 
-/// Add a new learning to the store. Returns an error if no valid tags are provided.
+/// Add a new learning to the store.
+/// Tags are required for `Discovery` type, optional for `Preference`/`Correction`.
 pub fn add_learning(waypoint_dir: &Path, learning: &NewLearning<'_>) -> Result<(), AppError> {
     let mut learnings = read_learnings(waypoint_dir)?;
     let tags: Vec<String> = learning
@@ -53,16 +79,22 @@ pub fn add_learning(waypoint_dir: &Path, learning: &NewLearning<'_>) -> Result<(
         .filter(|t| !t.is_empty())
         .collect();
 
-    if tags.is_empty() {
+    if tags.is_empty() && learning.r#type == LearningType::Discovery {
         return Err(AppError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "At least one non-empty tag is required",
+            "At least one non-empty tag is required for discovery learnings",
         )));
     }
 
+    let prefix = match learning.r#type {
+        LearningType::Preference => "pref",
+        LearningType::Correction => "corr",
+        LearningType::Discovery => "learn",
+    };
     let short_uuid = &uuid::Uuid::new_v4().as_simple().to_string()[..8];
     let entry = LearningEntry {
-        id: format!("learn-{short_uuid}"),
+        id: format!("{prefix}-{short_uuid}"),
+        r#type: learning.r#type,
         entry: learning.entry.to_string(),
         tags,
         logged_at: Utc::now().to_rfc3339(),
@@ -117,40 +149,22 @@ pub fn learnings_for_file<'a>(
     learnings
         .iter()
         .filter(|l| {
-            l.tags.iter().any(|tag| {
-                if tag.ends_with('/') {
-                    file_path.starts_with(tag.as_str())
-                } else {
-                    file_path == tag
-                }
-            })
+            l.r#type == LearningType::Discovery
+                && l.tags.iter().any(|tag| {
+                    if tag.ends_with('/') {
+                        file_path.starts_with(tag.as_str())
+                    } else {
+                        file_path == tag
+                    }
+                })
         })
         .collect()
 }
 
-/// Prune learnings older than `max_age_days`. Returns the removed entries.
-/// Deletes learnings.json if all entries are pruned.
-pub fn prune(waypoint_dir: &Path, max_age_days: i64) -> Result<Vec<LearningEntry>, AppError> {
-    let learnings = read_learnings(waypoint_dir)?;
-    let cutoff = Utc::now() - chrono::Duration::days(max_age_days);
-
-    let (keep, pruned): (Vec<_>, Vec<_>) = learnings.into_iter().partition(|l| {
-        chrono::DateTime::parse_from_rfc3339(&l.logged_at)
-            .map(|dt| dt >= cutoff)
-            .unwrap_or(true) // keep entries with unparseable dates
-    });
-
-    write_learnings(waypoint_dir, &keep)?;
-    Ok(pruned)
-}
-
-/// Parse a duration string like "90d" into days. Only supports `Nd` format.
+/// Filter learnings by type.
 #[must_use]
-pub fn parse_duration_days(s: &str) -> Option<i64> {
-    s.trim()
-        .strip_suffix('d')
-        .and_then(|n| n.parse::<i64>().ok())
-        .filter(|&d| d > 0)
+pub fn learnings_by_type(learnings: &[LearningEntry], typ: LearningType) -> Vec<&LearningEntry> {
+    learnings.iter().filter(|l| l.r#type == typ).collect()
 }
 
 #[cfg(test)]
@@ -160,7 +174,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn add_and_read() {
+    fn add_discovery_and_read() {
         let tmp = TempDir::new().unwrap();
 
         add_learning(
@@ -168,6 +182,7 @@ mod tests {
             &NewLearning {
                 entry: "FTS is best-effort",
                 tags_str: "src/map/index.rs,sqlite",
+                r#type: LearningType::Discovery,
             },
         )
         .unwrap();
@@ -177,6 +192,59 @@ mod tests {
         assert_eq!(learnings[0].entry, "FTS is best-effort");
         assert_eq!(learnings[0].tags, vec!["src/map/index.rs", "sqlite"]);
         assert!(learnings[0].id.starts_with("learn-"));
+        assert_eq!(learnings[0].r#type, LearningType::Discovery);
+    }
+
+    #[test]
+    fn add_preference_without_tags() {
+        let tmp = TempDir::new().unwrap();
+
+        add_learning(
+            tmp.path(),
+            &NewLearning {
+                entry: "Use conventional commits",
+                tags_str: "",
+                r#type: LearningType::Preference,
+            },
+        )
+        .unwrap();
+
+        let learnings = read_learnings(tmp.path()).unwrap();
+        assert_eq!(learnings.len(), 1);
+        assert!(learnings[0].id.starts_with("pref-"));
+        assert!(learnings[0].tags.is_empty());
+    }
+
+    #[test]
+    fn add_correction_without_tags() {
+        let tmp = TempDir::new().unwrap();
+
+        add_learning(
+            tmp.path(),
+            &NewLearning {
+                entry: "Never use .unwrap() in this codebase",
+                tags_str: "",
+                r#type: LearningType::Correction,
+            },
+        )
+        .unwrap();
+
+        let learnings = read_learnings(tmp.path()).unwrap();
+        assert!(learnings[0].id.starts_with("corr-"));
+    }
+
+    #[test]
+    fn discovery_rejects_empty_tags() {
+        let tmp = TempDir::new().unwrap();
+        let result = add_learning(
+            tmp.path(),
+            &NewLearning {
+                entry: "no tags",
+                tags_str: " , ",
+                r#type: LearningType::Discovery,
+            },
+        );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -191,12 +259,14 @@ mod tests {
         let learnings = vec![
             LearningEntry {
                 id: "learn-001".into(),
+                r#type: LearningType::Discovery,
                 entry: "FTS is best-effort".into(),
                 tags: vec!["sqlite".into()],
                 logged_at: "2026-01-01T00:00:00Z".into(),
             },
             LearningEntry {
                 id: "learn-002".into(),
+                r#type: LearningType::Discovery,
                 entry: "BufWriter is essential".into(),
                 tags: vec!["io".into()],
                 logged_at: "2026-01-01T00:00:00Z".into(),
@@ -212,6 +282,7 @@ mod tests {
     fn search_by_tag() {
         let learnings = vec![LearningEntry {
             id: "learn-001".into(),
+            r#type: LearningType::Discovery,
             entry: "some learning".into(),
             tags: vec!["sqlite".into(), "fts".into()],
             logged_at: "2026-01-01T00:00:00Z".into(),
@@ -225,6 +296,7 @@ mod tests {
     fn learnings_for_file_exact_match() {
         let learnings = vec![LearningEntry {
             id: "learn-001".into(),
+            r#type: LearningType::Discovery,
             entry: "trap dedup uses Jaccard".into(),
             tags: vec!["src/trap.rs".into()],
             logged_at: "2026-01-01T00:00:00Z".into(),
@@ -238,6 +310,7 @@ mod tests {
     fn learnings_for_file_prefix_match() {
         let learnings = vec![LearningEntry {
             id: "learn-001".into(),
+            r#type: LearningType::Discovery,
             entry: "hooks resolve foreign projects".into(),
             tags: vec!["src/hook/".into()],
             logged_at: "2026-01-01T00:00:00Z".into(),
@@ -257,6 +330,7 @@ mod tests {
     fn learnings_for_file_no_false_prefix() {
         let learnings = vec![LearningEntry {
             id: "learn-001".into(),
+            r#type: LearningType::Discovery,
             entry: "hook stuff".into(),
             tags: vec!["src/hook/".into()],
             logged_at: "2026-01-01T00:00:00Z".into(),
@@ -267,92 +341,6 @@ mod tests {
     }
 
     #[test]
-    fn prune_removes_old_entries() {
-        let tmp = TempDir::new().unwrap();
-        let old_date = (Utc::now() - chrono::Duration::days(100)).to_rfc3339();
-        let new_date = Utc::now().to_rfc3339();
-
-        let learnings = vec![
-            LearningEntry {
-                id: "learn-old".into(),
-                entry: "old learning".into(),
-                tags: vec!["old".into()],
-                logged_at: old_date,
-            },
-            LearningEntry {
-                id: "learn-new".into(),
-                entry: "new learning".into(),
-                tags: vec!["new".into()],
-                logged_at: new_date,
-            },
-        ];
-
-        let content = serde_json::to_string_pretty(&learnings).unwrap();
-        std::fs::write(tmp.path().join("learnings.json"), content).unwrap();
-
-        let pruned = prune(tmp.path(), 90).unwrap();
-        assert_eq!(pruned.len(), 1);
-        assert_eq!(pruned[0].id, "learn-old");
-
-        let remaining = read_learnings(tmp.path()).unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].id, "learn-new");
-    }
-
-    #[test]
-    fn prune_all_deletes_file() {
-        let tmp = TempDir::new().unwrap();
-        let old_date = (Utc::now() - chrono::Duration::days(100)).to_rfc3339();
-
-        let learnings = vec![LearningEntry {
-            id: "learn-old".into(),
-            entry: "old".into(),
-            tags: vec!["old".into()],
-            logged_at: old_date,
-        }];
-
-        let content = serde_json::to_string_pretty(&learnings).unwrap();
-        let file_path = tmp.path().join("learnings.json");
-        std::fs::write(&file_path, content).unwrap();
-
-        let pruned = prune(tmp.path(), 90).unwrap();
-        assert_eq!(pruned.len(), 1);
-        assert!(
-            !file_path.exists(),
-            "file should be deleted when all entries pruned"
-        );
-    }
-
-    #[test]
-    fn parse_duration_days_valid() {
-        assert_eq!(parse_duration_days("90d"), Some(90));
-        assert_eq!(parse_duration_days("1d"), Some(1));
-        assert_eq!(parse_duration_days("365d"), Some(365));
-    }
-
-    #[test]
-    fn parse_duration_days_invalid() {
-        assert_eq!(parse_duration_days("90"), None);
-        assert_eq!(parse_duration_days("d"), None);
-        assert_eq!(parse_duration_days("0d"), None);
-        assert_eq!(parse_duration_days("-5d"), None);
-        assert_eq!(parse_duration_days("abc"), None);
-    }
-
-    #[test]
-    fn add_rejects_empty_tags() {
-        let tmp = TempDir::new().unwrap();
-        let result = add_learning(
-            tmp.path(),
-            &NewLearning {
-                entry: "no tags",
-                tags_str: " , ",
-            },
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn add_preserves_tags_as_given() {
         let tmp = TempDir::new().unwrap();
         add_learning(
@@ -360,6 +348,7 @@ mod tests {
             &NewLearning {
                 entry: "hook stuff",
                 tags_str: "src/hook/,src/trap.rs,sqlite",
+                r#type: LearningType::Discovery,
             },
         )
         .unwrap();
@@ -370,5 +359,52 @@ mod tests {
             vec!["src/hook/", "src/trap.rs", "sqlite"],
             "tags should be stored exactly as provided"
         );
+    }
+
+    #[test]
+    fn learnings_by_type_filters_correctly() {
+        let learnings = vec![
+            LearningEntry {
+                id: "pref-001".into(),
+                r#type: LearningType::Preference,
+                entry: "Use snake_case".into(),
+                tags: vec![],
+                logged_at: "2026-01-01T00:00:00Z".into(),
+            },
+            LearningEntry {
+                id: "corr-001".into(),
+                r#type: LearningType::Correction,
+                entry: "Don't use unwrap".into(),
+                tags: vec![],
+                logged_at: "2026-01-01T00:00:00Z".into(),
+            },
+            LearningEntry {
+                id: "learn-001".into(),
+                r#type: LearningType::Discovery,
+                entry: "FTS uses BM25".into(),
+                tags: vec!["src/".into()],
+                logged_at: "2026-01-01T00:00:00Z".into(),
+            },
+        ];
+
+        assert_eq!(
+            learnings_by_type(&learnings, LearningType::Preference).len(),
+            1
+        );
+        assert_eq!(
+            learnings_by_type(&learnings, LearningType::Correction).len(),
+            1
+        );
+        assert_eq!(
+            learnings_by_type(&learnings, LearningType::Discovery).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn deserialize_legacy_entry_defaults_to_discovery() {
+        let json = r#"[{"id":"learn-abc","entry":"old entry","tags":["src/"],"logged_at":"2026-01-01T00:00:00Z"}]"#;
+        let learnings: Vec<LearningEntry> = serde_json::from_str(json).unwrap();
+        assert_eq!(learnings[0].r#type, LearningType::Discovery);
     }
 }

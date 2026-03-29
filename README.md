@@ -8,7 +8,7 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 
 | Hook | Trigger | What happens |
 |------|---------|--------------|
-| **session-start** | New conversation | Injects journal preferences and do-not-repeat notes. Auto-scans if no map exists. |
+| **session-start** | New conversation | Injects preferences and corrections from the knowledge store. Auto-scans if no map exists. |
 | **pre-read** | Before Claude reads a file | Injects file description, token estimate, and matching learnings from the map (works across projects) |
 | **pre-write** | Before Claude edits a file | Surfaces known bug traps for that file |
 | **post-write** | After Claude edits a file | Incrementally updates the file's map entry |
@@ -20,9 +20,8 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 .waypoint/           ← per-project, gitignored
   map.md             ← file descriptions + token estimates (human-readable source of truth)
   map_index.db       ← SQLite index for O(1) map lookups + FTS5 symbol search
-  journal.md         ← cross-session memory (preferences, do-not-repeat)
+  learnings.json     ← knowledge store (preferences, corrections, discoveries)
   traps.json         ← bug fix log with dedup
-  learnings.json     ← contextual learnings tagged to files/directories
 
 ~/Library/Application Support/waypoint/
   ledger.db          ← SQLite analytics (90-day retention)
@@ -40,20 +39,6 @@ waypoint scan --check      # Exit non-zero if map is stale
 waypoint scan --all        # Scan all immediate child git repos (smart default: walks up if inside a project)
 waypoint scan --all ~/repos  # Explicit parent directory
 ```
-
-### `waypoint journal add`
-
-Add entries to the cross-session journal. Claude sees these at the start of every conversation.
-
-```sh
-# Things you want Claude to always do
-waypoint journal add --section preferences "Use jiff instead of chrono for timezone-aware dates"
-
-# Mistakes Claude should not repeat
-waypoint journal add --section do-not-repeat "Don't use unbuffered File writes — wrap in BufWriter"
-```
-
-Use [`waypoint learning add`](#waypoint-learning-add) for contextual learnings that should surface on `pre-read`.
 
 ### `waypoint trap log`
 
@@ -87,11 +72,18 @@ waypoint trap prune --older-than 90d --all   # prune across all sibling projects
 
 ### `waypoint learning add`
 
-Record a contextual learning tagged to specific files or directories. Learnings are surfaced automatically on pre-read when the file being read matches a tag.
+Record knowledge to the unified store. Three types: preferences (permanent, session-start), corrections (session-start), and discoveries (contextual, pre-read).
 
 ```sh
+# Contextual discovery (default) — requires --tags
 waypoint learning add "tree-sitter grammar crates use tree-sitter-language as intermediary" \
   --tags "Cargo.toml,src/scan/"
+
+# Preference — no tags required
+waypoint learning add "Use jiff instead of chrono for timezone-aware dates" --type preference
+
+# Correction — no tags required
+waypoint learning add "Don't use unbuffered File writes — wrap in BufWriter" --type correction
 ```
 
 ### `waypoint learning search`
@@ -100,15 +92,6 @@ Search learnings by keyword.
 
 ```sh
 waypoint learning search "tree-sitter"
-```
-
-### `waypoint learning prune`
-
-Remove old learning entries.
-
-```sh
-waypoint learning prune --older-than 90d
-waypoint learning prune --older-than 90d --all   # prune across all sibling projects
 ```
 
 ### `waypoint sketch`
@@ -139,7 +122,7 @@ waypoint gain --global   # all projects
 
 ### `waypoint status`
 
-Health check — map freshness, entry counts, journal size, trap count.
+Health check — map freshness, knowledge store breakdown, trap count.
 
 ```sh
 waypoint status
@@ -153,7 +136,7 @@ The hooks handle the automatic plumbing (map lookups, context injection, increme
 @~/repos/waypoint/WAYPOINT.md
 ```
 
-This gives Claude the operating protocol — mandatory journal updates on corrections, learning logging triggers, bug trap rules, and token discipline. See [SETUP.md](SETUP.md) for full details.
+This gives Claude the operating protocol — knowledge store logging triggers, bug trap rules, and token discipline. See [SETUP.md](SETUP.md) for full details.
 
 ## Cross-project map lookups
 

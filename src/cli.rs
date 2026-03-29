@@ -37,12 +37,7 @@ pub enum Command {
         #[command(subcommand)]
         command: TrapCommand,
     },
-    /// Manage the cross-session journal
-    Journal {
-        #[command(subcommand)]
-        command: JournalCommand,
-    },
-    /// Manage contextual learnings
+    /// Manage the knowledge store (preferences, corrections, discoveries)
     Learning {
         #[command(subcommand)]
         command: LearningCommand,
@@ -117,32 +112,18 @@ pub enum TrapCommand {
     },
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum JournalSection {
-    Preferences,
-    DoNotRepeat,
-}
-
-impl JournalSection {
-    /// Markdown header for this section.
-    #[must_use]
-    pub fn header(self) -> &'static str {
-        match self {
-            Self::Preferences => "## Preferences",
-            Self::DoNotRepeat => "## Do-Not-Repeat",
-        }
-    }
-}
-
 #[derive(Debug, Subcommand)]
 pub enum LearningCommand {
-    /// Add a new learning
+    /// Add a new learning (preference, correction, or discovery)
     Add {
         /// Learning text
         entry: String,
-        /// Comma-separated file paths or topic tags (required)
-        #[arg(long)]
+        /// Comma-separated file paths or topic tags (required for discovery)
+        #[arg(long, default_value = "")]
         tags: String,
+        /// Entry type: preference, correction, or discovery
+        #[arg(long, value_enum, default_value = "discovery")]
+        r#type: LearningTypeArg,
         /// Resolve project from this path instead of cwd
         #[arg(short = 'C', long = "context")]
         context: Option<String>,
@@ -161,40 +142,30 @@ pub enum LearningCommand {
         #[arg(short = 'C', long = "context")]
         context: Option<String>,
     },
-    /// Remove learning entries older than a duration (e.g., 90d)
-    Prune {
-        /// Duration threshold, e.g. "90d" (days only)
-        #[arg(long)]
-        older_than: Option<String>,
-        /// Prune across all sibling projects
-        #[arg(long, conflicts_with = "context")]
-        all: bool,
-        /// Resolve project from this path instead of cwd
-        #[arg(short = 'C', long = "context")]
-        context: Option<String>,
-    },
 }
 
-#[derive(Debug, Subcommand)]
-pub enum JournalCommand {
-    /// Add an entry to the journal
-    Add {
-        /// Section to add to
-        #[arg(long)]
-        section: JournalSection,
-        /// Entry text
-        entry: String,
-        /// Resolve project from this path instead of cwd
-        #[arg(short = 'C', long = "context")]
-        context: Option<String>,
-    },
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum LearningTypeArg {
+    Preference,
+    Correction,
+    Discovery,
+}
+
+impl From<LearningTypeArg> for crate::learning::LearningType {
+    fn from(arg: LearningTypeArg) -> Self {
+        match arg {
+            LearningTypeArg::Preference => Self::Preference,
+            LearningTypeArg::Correction => Self::Correction,
+            LearningTypeArg::Discovery => Self::Discovery,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
 pub enum HookCommand {
     /// PreToolUse:Read — inject file map context
     PreRead,
-    /// `SessionStart` — inject journal context and auto-scan
+    /// `SessionStart` — inject preferences/corrections and auto-scan
     SessionStart,
     /// PreToolUse:Edit|Write — inject trap warnings
     PreWrite,

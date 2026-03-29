@@ -1,4 +1,5 @@
-use crate::{AppError, journal, ledger, map, project};
+use crate::learning::{LearningType, learnings_by_type, read_learnings};
+use crate::{AppError, ledger, map, project};
 
 /// Maximum age before a map is considered stale regardless of file count.
 const MAP_MAX_AGE_DAYS: i64 = 14;
@@ -7,57 +8,76 @@ const MAP_MAX_AGE_DAYS: i64 = 14;
 /// map header count by more than this ratio, trigger a rescan.
 const FILE_COUNT_DRIFT_THRESHOLD: f64 = 0.10;
 
-/// FR-7: `SessionStart` — inject journal context and auto-scan.
+/// `SessionStart` — inject preferences/corrections and auto-scan.
 ///
 /// `SessionStart` hooks use plain stdout for context injection.
 pub fn run() -> Result<(), AppError> {
     let ctx = super::HookContext::from_stdin()?;
     let wp_dir = project::ensure_initialized(&ctx.project_root)?;
 
-    // FR-22: Auto-scan if map.md doesn't exist or is stale
+    // Auto-scan if map.md doesn't exist or is stale
     if should_rescan(&wp_dir, &ctx.project_root) {
         let output = map::scan::scan_project(&ctx.project_root)?;
         map::write_map(&wp_dir, &output.entries)?;
         let _ = map::index::rebuild_symbols(&wp_dir, &output.symbols);
     }
 
-    // FR-7: Inject journal contents
-    let journal_content = journal::read_journal(&wp_dir)?;
-
     let mut output = String::new();
 
-    if !journal_content.trim().is_empty() {
-        output.push_str(&journal_content);
-        output.push('\n');
+    // Inject preferences and corrections from the knowledge store
+    let learnings = read_learnings(&wp_dir)?;
+    let preferences = learnings_by_type(&learnings, LearningType::Preference);
+    let corrections = learnings_by_type(&learnings, LearningType::Correction);
+
+    if !preferences.is_empty() || !corrections.is_empty() {
+        output.push_str("# Waypoint Journal\n\n");
+
+        if !preferences.is_empty() {
+            output.push_str("## Preferences\n");
+            for p in &preferences {
+                output.push_str("- ");
+                output.push_str(&p.entry);
+                output.push('\n');
+            }
+            output.push('\n');
+        }
+
+        if !corrections.is_empty() {
+            output.push_str("## Do-Not-Repeat\n");
+            for c in &corrections {
+                output.push_str("- ");
+                output.push_str(&c.logged_at[..10]);
+                output.push_str(": ");
+                output.push_str(&c.entry);
+                output.push('\n');
+            }
+            output.push('\n');
+        }
     }
 
-    // FR-10: Invocation prompt for journal (preferences + do-not-repeat only)
+    // Invocation prompts
     output.push_str(
         "To log a correction or preference: \
-         waypoint journal add --section <preferences|do-not-repeat> \"<entry>\"\n",
+         waypoint learning add \"<entry>\" --type <preference|correction>\n",
     );
-
-    // FR-9: Invocation prompt for learnings
     output.push_str(
         "To log a learning: \
          waypoint learning add \"<entry>\" --tags \"<file-or-dir-paths>\"\n",
     );
-
-    // FR-15: Invocation prompt for traps
     output.push_str(
         "To log a bug fix: \
          waypoint trap log --error \"<msg>\" --file \"<path>\" \
          --cause \"<root cause>\" --fix \"<what you did>\" --tags \"<comma-separated>\"\n",
     );
 
-    // FR-17: Record session start (silent failure)
+    // Record session start (silent failure)
     let _ = ledger::record_event(
         ledger::EventKind::SessionStart,
         &ctx.project_root.to_string_lossy(),
         0,
     );
 
-    // FR-19: Purge old ledger events once per session, not per hook
+    // Purge old ledger events once per session, not per hook
     let _ = ledger::purge_old_events();
 
     print!("{output}");

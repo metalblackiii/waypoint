@@ -102,24 +102,25 @@ fn cli_scan_check_detects_stale() {
 }
 
 #[test]
-fn cli_journal_add() {
+fn cli_preference_add() {
     let project = setup_project();
 
     waypoint()
         .args([
-            "journal",
+            "learning",
             "add",
-            "--section",
-            "preferences",
-            "integration test entry",
+            "integration test preference",
+            "--type",
+            "preference",
         ])
         .current_dir(project.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Added to journal"));
+        .stdout(predicate::str::contains("preference added"));
 
-    let journal = fs::read_to_string(project.path().join(".waypoint/journal.md")).unwrap();
-    assert!(journal.contains("integration test entry"));
+    let content = fs::read_to_string(project.path().join(".waypoint/learnings.json")).unwrap();
+    assert!(content.contains("integration test preference"));
+    assert!(content.contains("\"type\": \"preference\""));
 }
 
 #[test]
@@ -334,7 +335,7 @@ fn hook_pre_read_nested_project_prefers_child() {
 // ── Hook Integration Tests ───────────────────────────────────────
 
 #[test]
-fn hook_session_start_outputs_journal_and_creates_map() {
+fn hook_session_start_outputs_invocation_prompts_and_creates_map() {
     let project = setup_project();
     let payload = serde_json::json!({
         "cwd": project.path().to_string_lossy()
@@ -347,11 +348,11 @@ fn hook_session_start_outputs_journal_and_creates_map() {
         .assert()
         .success()
         // Session-start uses plain stdout, not JSON wrapper
-        .stdout(predicate::str::contains("Waypoint Journal"))
-        .stdout(predicate::str::contains("waypoint journal add"))
+        .stdout(predicate::str::contains("waypoint learning add"))
+        .stdout(predicate::str::contains("--type <preference|correction>"))
         .stdout(predicate::str::contains("waypoint trap log"));
 
-    // FR-22: Auto-scan creates map.md on first session
+    // Auto-scan creates map.md on first session
     assert!(
         project.path().join(".waypoint/map.md").exists(),
         "session-start should auto-create map.md"
@@ -788,38 +789,38 @@ fn cli_find_with_context_flag() {
         .success();
 }
 
-// ── AC-5: journal add -C targets foreign project ────────────────
+// ── AC-5: preference add -C targets foreign project ─────────────
 
 #[test]
-fn cli_journal_add_with_context_flag() {
+fn cli_preference_add_with_context_flag() {
     let project_a = setup_scanned_project();
     let project_b = setup_scanned_project();
 
     waypoint()
         .args([
-            "journal",
+            "learning",
             "add",
-            "--section",
-            "preferences",
+            "cross-project preference",
+            "--type",
+            "preference",
             "-C",
             project_b.path().to_str().unwrap(),
-            "cross-project preference",
         ])
         .current_dir(project_a.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Added to journal"));
+        .stdout(predicate::str::contains("preference added"));
 
-    let journal_b = fs::read_to_string(project_b.path().join(".waypoint/journal.md")).unwrap();
+    let content_b = fs::read_to_string(project_b.path().join(".waypoint/learnings.json")).unwrap();
     assert!(
-        journal_b.contains("cross-project preference"),
-        "journal entry should be in project B: {journal_b}"
+        content_b.contains("cross-project preference"),
+        "preference should be in project B: {content_b}"
     );
 
-    let journal_a = fs::read_to_string(project_a.path().join(".waypoint/journal.md")).unwrap();
+    // Project A should not have a learnings.json
     assert!(
-        !journal_a.contains("cross-project preference"),
-        "journal entry should NOT be in project A: {journal_a}"
+        !project_a.path().join(".waypoint/learnings.json").exists(),
+        "preference should NOT be in project A"
     );
 }
 
@@ -1060,8 +1061,7 @@ fn cli_scan_all_initializes_new_repos() {
         .stderr(predicate::str::contains("initialized"));
 
     assert!(parent.path().join("fresh/.waypoint/map.md").exists());
-    assert!(parent.path().join("fresh/.waypoint/journal.md").exists());
-    // traps.json and learnings.json are lazy-created on first log/add
+    // learnings.json and traps.json are lazy-created on first add/log
 }
 
 // ── Learning CLI tests ───────────────────────────────────────────
@@ -1081,7 +1081,7 @@ fn cli_learning_add_and_search() {
         .current_dir(project.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Learning added"));
+        .stdout(predicate::str::contains("discovery added"));
 
     // Verify file was created (lazy-create)
     assert!(project.path().join(".waypoint/learnings.json").exists());
@@ -1133,18 +1133,6 @@ fn cli_learning_list_empty() {
 }
 
 #[test]
-fn cli_learning_prune_requires_older_than() {
-    let project = setup_project();
-
-    waypoint()
-        .args(["learning", "prune"])
-        .current_dir(project.path())
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("--older-than"));
-}
-
-#[test]
 fn cli_trap_prune_requires_older_than() {
     let project = setup_project();
 
@@ -1174,7 +1162,7 @@ fn cli_learning_with_context_flag() {
         .current_dir(project_a.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Learning added"));
+        .stdout(predicate::str::contains("discovery added"));
 
     // Verify learning is in project B
     assert!(project_b.path().join(".waypoint/learnings.json").exists());

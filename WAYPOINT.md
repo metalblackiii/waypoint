@@ -10,49 +10,39 @@ You are working in a Waypoint-managed project. These rules apply every turn.
 4. `waypoint find` vs `Grep` — use the right tool for the job:
    - `waypoint find "<query>"` — symbol names, function signatures, struct/class definitions
    - `Grep` — string literals, comments, config values, error messages, non-code text
-5. If a file is not in the map or symbol index, search with Grep/Glob. The post-write hook will add it automatically when you create or edit it.
-6. Use `waypoint scan --check` to detect stale map entries.
 
 ## Code Generation
 
-1. Respect every entry in the Waypoint journal (injected at session start). If session context was compressed, re-read `.waypoint/journal.md`.
-2. Check the `## Do-Not-Repeat` section — these are past mistakes that must not recur.
-3. Follow all conventions in `## Preferences`.
-4. Watch for `[waypoint] learnings for <file>:` annotations on pre-read — these are contextual learnings relevant to the file you're reading.
+1. Respect preferences and corrections injected at session start — these are past user corrections and style preferences.
+2. Watch for `[waypoint] learnings for <file>:` annotations on pre-read — these are contextual discoveries relevant to the file you're reading.
 
 ## After Actions
 
 1. After renaming or deleting files: run `waypoint scan` to update the map. (Edits and creates are handled automatically by the post-write hook.)
-2. Traps, learnings, and journal writes are **batched at session end** — note key details (error messages, file paths, root causes) inline in your responses as you go, then write them all in the Session End pass. The only inline write is `waypoint scan` for renames/deletes.
+2. Traps and learnings are **batched at session end** — note key details (error messages, file paths, root causes) inline in your responses as you go, then write them all in the Session End pass. The only inline write is `waypoint scan` for renames/deletes.
 
-## Journal (MANDATORY — every session)
+## Knowledge Store (MANDATORY — every session)
 
-The journal stores preferences and past mistakes. You MUST update it when relevant. This is not optional.
+All cross-session knowledge lives in `.waypoint/learnings.json` with three types:
 
-**Update `preferences`** when the user corrects your approach, expresses a style/workflow preference, or rejects a suggestion.
+- **preference** — user style/workflow preferences. Permanent, injected at session start.
+- **correction** — past mistakes with dates. Injected at session start.
+- **discovery** — contextual project knowledge. Surfaced on pre-read via tag match.
 
-**Update `do-not-repeat`** (with date) when you make a mistake, find the right approach after a failure, or discover a gotcha that would trip a fresh session.
-
-```sh
-waypoint journal add --section <preferences|do-not-repeat> "<entry>"
-```
-
-## Learnings (MANDATORY — every session)
-
-Learnings are contextual knowledge stored in `.waypoint/learnings.json` and surfaced on pre-read when the file matches a learning's tags. Log any project convention, API behavior, dependency quirk, or system connection that isn't obvious from reading the code.
+**Add when:**
+- User corrects your approach or expresses a preference → `--type preference`
+- You make a mistake or find the right approach after failure → `--type correction`
+- You discover a convention, API quirk, or module connection → `--type discovery` (default)
 
 ```sh
-waypoint learning add "<entry>" --tags "<file-or-dir-paths>"
+waypoint learning add "<entry>" --type <preference|correction|discovery> --tags "<paths>"
+# --tags required for discovery; optional for preference and correction
+# --type defaults to discovery
 ```
 
-**Tagging is critical.** Tag learnings with the file paths or directory prefixes they relate to. Directory tags must end with `/`. Learnings surface automatically on pre-read when a file matches a tag — untagged learnings never surface contextually.
+**Tagging:** Tag discoveries with file paths or directory prefixes they relate to. Directory tags must end with `/`. Untagged discoveries never surface contextually.
 
-Examples:
-- `--tags "src/map/index.rs"` — surfaces when reading that specific file
-- `--tags "src/hook/"` — surfaces when reading any file under `src/hook/`
-- `--tags "src/trap.rs,src/learning.rs"` — surfaces for either file
-
-When in doubt, add it — a redundant learning costs nothing; a missing one means rediscovery.
+When in doubt, add it — a redundant entry costs nothing; a missing one means rediscovery.
 
 ## Bug Logging (MANDATORY)
 
@@ -81,48 +71,14 @@ waypoint trap log \
 
 When in doubt, log it — a false positive costs nothing.
 
-## Symbol Index
-
-After `waypoint scan`, a symbol index is available in `map_index.db` alongside the file map.
-
-- `waypoint sketch <name>` — show file location and signature for a symbol (function, struct, class, etc.). **Use this before reading a file** when you need a specific function, class, or type — it returns the signature and location without spending tokens on the full file.
-- `waypoint find "<query>"` — full-text search across all indexed symbols. Use this for symbol lookups (names, signatures, definitions). For string literals, comments, config values, and error messages, use Grep instead.
-
-**Preferred lookup order:**
-1. Map description (injected on Read) — often sufficient, zero cost. Learnings for the file are also surfaced here automatically.
-2. `waypoint sketch` / `waypoint find` — precise symbol info, minimal tokens
-3. Grep/Glob — when the symbol index doesn't cover what you need (comments, string literals, config values)
-4. Full file Read — last resort for understanding surrounding context
-
 ## Cross-Project Work
 
-When you read or edit a file outside the cwd project, the hooks resolve the correct project automatically. Watch for these annotations:
+Hooks resolve foreign projects automatically. Watch for `[waypoint] foreign: /path/to/other-repo` annotations on pre-read.
 
-- `[waypoint] foreign: /path/to/other-repo` — the pre-read hook detected a foreign project with waypoint data. Remember this path.
-- Pre-write and post-write hooks automatically check traps and update maps in the foreign project.
+When working in a foreign project, use `-C` with the path from the annotation (e.g., `waypoint learning add -C /path/to/other-repo "entry" --tags "src/"`). `trap log --file` auto-resolves — no `-C` needed.
 
-**When working in a foreign project, use `-C` to target its waypoint data:**
-
-```sh
-waypoint sketch -C /path/to/other-repo SymbolName
-waypoint find -C /path/to/other-repo "query"
-waypoint trap search -C /path/to/other-repo "keyword"
-waypoint learning add -C /path/to/other-repo "entry" --tags "src/"
-waypoint journal add -C /path/to/other-repo --section preferences "entry"
-```
-
-**`trap log --file` auto-resolves** — no `-C` needed. The `--file` path determines which project's traps to write to:
-
-```sh
-waypoint trap log --file /path/to/other-repo/src/foo.js --error "..." --cause "..." --fix "..." --tags "..."
-```
-
-This writes to `other-repo/.waypoint/traps.json` with a project-relative file path (`src/foo.js`).
-
-**Key rules:**
-- Use the full path from the `[waypoint] foreign:` annotation as the `-C` value
-- Journal entries, learnings, and traps belong to the project they're about — don't log neb-www learnings in neb-entitlements
-- If `-C` fails with "no .waypoint/ directory", the foreign project hasn't been scanned yet — run `waypoint scan` from that repo first
+- Learnings and traps belong to the project they're about — don't cross-pollinate
+- If `-C` fails with "no .waypoint/ directory", run `waypoint scan` from that repo first
 
 ## Token Discipline
 
@@ -134,6 +90,6 @@ This writes to `other-repo/.waypoint/traps.json` with a project-relative file pa
 All writes are batched here. Before ending or when asked to wrap up:
 
 1. **Traps:** Log every bug you fixed or error you encountered (search first to avoid duplicates).
-2. **Learnings:** Log anything you discovered about the project — conventions, quirks, connections.
-3. **Journal:** Update `preferences` if the user corrected your approach or expressed a preference. Update `do-not-repeat` if you made a mistake or discovered a gotcha.
+2. **Discoveries:** Log anything you discovered about the project — conventions, quirks, connections.
+3. **Preferences/corrections:** Log if the user corrected your approach, expressed a preference, or you discovered a gotcha.
 4. If nothing happened worth logging, that's fine — not every session produces writes.

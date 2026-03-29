@@ -1,6 +1,5 @@
 pub mod cli;
 pub mod hook;
-pub mod journal;
 pub mod learning;
 pub mod ledger;
 pub mod map;
@@ -12,7 +11,7 @@ use thiserror::Error;
 
 use colored::Colorize;
 
-use crate::cli::{Cli, Command, HookCommand, JournalCommand, LearningCommand, TrapCommand};
+use crate::cli::{Cli, Command, HookCommand, LearningCommand, TrapCommand};
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -163,38 +162,26 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             }
         },
 
-        Command::Journal { command } => match command {
-            JournalCommand::Add {
-                section,
-                entry,
-                context,
-            } => {
-                let project_root = project::resolve_with_context(context.as_deref())?;
-                let wp_dir = project::ensure_initialized(&project_root)?;
-
-                journal::add_entry(&wp_dir, section, &entry)?;
-                println!("Added to journal");
-                Ok(())
-            }
-        },
-
         Command::Learning { command } => match command {
             LearningCommand::Add {
                 entry,
                 tags,
+                r#type,
                 context,
             } => {
                 let project_root = project::resolve_with_context(context.as_deref())?;
                 let wp_dir = project::ensure_initialized(&project_root)?;
 
+                let learning_type: learning::LearningType = r#type.into();
                 learning::add_learning(
                     &wp_dir,
                     &learning::NewLearning {
                         entry: &entry,
                         tags_str: &tags,
+                        r#type: learning_type,
                     },
                 )?;
-                println!("Learning added");
+                println!("{learning_type} added");
                 Ok(())
             }
             LearningCommand::Search { term, context } => {
@@ -208,7 +195,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                     println!("No learnings found for: {term}");
                 } else {
                     for l in &results {
-                        println!("{} [{}]", l.id, l.tags.join(", "));
+                        println!("{} ({}) [{}]", l.id, l.r#type, l.tags.join(", "));
                         println!("  {}", l.entry);
                         println!("  logged: {}", l.logged_at);
                         println!();
@@ -225,27 +212,12 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                     println!("No learnings logged yet");
                 } else {
                     for l in &learnings {
-                        println!("{} [{}]", l.id, l.tags.join(", "));
+                        println!("{} ({}) [{}]", l.id, l.r#type, l.tags.join(", "));
                         println!("  {}", l.entry);
                         println!("  logged: {}", l.logged_at);
                         println!();
                     }
                 }
-                Ok(())
-            }
-            LearningCommand::Prune {
-                older_than,
-                all,
-                context,
-            } => {
-                let days = parse_older_than(older_than.as_deref())?;
-                if all {
-                    return prune_all_learnings(days);
-                }
-                let project_root = project::resolve_with_context(context.as_deref())?;
-                let wp_dir = project::require_waypoint_dir(&project_root)?;
-                let pruned = learning::prune(&wp_dir, days)?;
-                print_pruned_learnings(&pruned);
                 Ok(())
             }
         },
@@ -389,12 +361,17 @@ fn resolve_project_root() -> Result<std::path::PathBuf, AppError> {
 /// Parse `--older-than` flag, requiring `Nd` format.
 fn parse_older_than(value: Option<&str>) -> Result<i64, AppError> {
     match value {
-        Some(s) => learning::parse_duration_days(s).ok_or_else(|| {
-            AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Invalid duration: {s}. Use Nd format, e.g. --older-than 90d"),
-            ))
-        }),
+        Some(s) => s
+            .trim()
+            .strip_suffix('d')
+            .and_then(|n| n.parse::<i64>().ok())
+            .filter(|&d| d > 0)
+            .ok_or_else(|| {
+                AppError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Invalid duration: {s}. Use Nd format, e.g. --older-than 90d"),
+                ))
+            }),
         None => Err(AppError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "Required: --older-than <duration> (e.g., --older-than 90d)",
@@ -415,30 +392,6 @@ fn discover_prune_targets() -> Result<Vec<std::path::PathBuf>, AppError> {
         std::process::exit(1);
     }
     Ok(projects)
-}
-
-fn prune_all_learnings(days: i64) -> Result<(), AppError> {
-    for root in &discover_prune_targets()? {
-        let name = root.file_name().map_or_else(
-            || root.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        let wp_dir = root.join(".waypoint");
-        if !wp_dir.exists() {
-            continue;
-        }
-        match learning::prune(&wp_dir, days) {
-            Ok(pruned) if !pruned.is_empty() => {
-                eprintln!(
-                    "  {name}: pruned {} learning(s) older than {days}d",
-                    pruned.len()
-                );
-            }
-            Ok(_) => {}
-            Err(e) => eprintln!("  {name}: error — {e}"),
-        }
-    }
-    Ok(())
 }
 
 fn prune_all_traps(days: i64) -> Result<(), AppError> {
@@ -477,20 +430,6 @@ fn print_pruned_traps(pruned: &[trap::TrapEntry]) {
             println!("  fix:   {}", t.fix);
             println!("  tags:  {}", t.tags.join(", "));
             println!("  logged: {}", t.logged_at);
-            println!();
-        }
-    }
-}
-
-fn print_pruned_learnings(pruned: &[learning::LearningEntry]) {
-    if pruned.is_empty() {
-        println!("No learnings to prune");
-    } else {
-        println!("Pruned {} learning(s):\n", pruned.len());
-        for l in pruned {
-            println!("{} [{}]", l.id, l.tags.join(", "));
-            println!("  {}", l.entry);
-            println!("  logged: {}", l.logged_at);
             println!();
         }
     }

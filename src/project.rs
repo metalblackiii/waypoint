@@ -158,12 +158,6 @@ pub fn ensure_initialized(project_root: &Path) -> Result<PathBuf, AppError> {
     if !dir.exists() {
         std::fs::create_dir_all(&dir)?;
     }
-
-    let journal_path = dir.join("journal.md");
-    if !journal_path.exists() {
-        std::fs::write(&journal_path, crate::journal::empty_journal())?;
-    }
-
     Ok(dir)
 }
 
@@ -225,8 +219,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wp = ensure_initialized(tmp.path()).unwrap();
 
-        assert!(wp.join("journal.md").exists());
-        // traps.json and learnings.json are lazy-created
+        assert!(wp.exists());
+        // learnings.json and traps.json are lazy-created
     }
 
     #[test]

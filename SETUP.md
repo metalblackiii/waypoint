@@ -113,7 +113,7 @@ Add these entries to the `hooks` object. Waypoint hooks should come **before** o
 
 ## 5. Import the operating protocol
 
-Add the Waypoint protocol to your global `~/.claude/CLAUDE.md` so Claude follows the journal and trap logging rules in every project:
+Add the Waypoint protocol to your global `~/.claude/CLAUDE.md` so Claude follows the knowledge store and trap logging rules in every project:
 
 ```markdown
 @~/repos/waypoint/WAYPOINT.md
