@@ -31,6 +31,7 @@ Project intelligence for Claude Code — hooks, file map, traps, ledger.
 - `waypoint --version` prints `waypoint <semver> (<git-short-hash>)`
 - **One version bump per feature branch.** Bump in the first commit that adds or changes functionality. If the branch already has a bump (check `git diff main -- Cargo.toml`), don't bump again
 - Bump minor (`0.x.0`) for new features or breaking changes. Bump patch (`0.0.x`) for bugfixes only
+- After bumping, run `cargo build` to update `Cargo.lock` — commit both together or `Cargo.lock` will be stale
 
 ## Conventions
 
