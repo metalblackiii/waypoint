@@ -40,7 +40,11 @@ pub enum Command {
         command: TrapCommand,
     },
     /// Display waypoint status for the current project
-    Status,
+    Status {
+        /// Show status across all sibling projects
+        #[arg(long)]
+        all: bool,
+    },
     /// Show structural overview of a symbol
     Sketch {
         /// Symbol name to look up

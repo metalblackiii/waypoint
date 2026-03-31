@@ -161,9 +161,13 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             }
         },
 
-        Command::Status => {
+        Command::Status { all } => {
             let project_root = resolve_project_root()?;
-            status::run(&project_root)
+            if all {
+                status::run_all(&project_root)
+            } else {
+                status::run(&project_root)
+            }
         }
 
         Command::Sketch { symbol, context } => {

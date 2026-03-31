@@ -1,7 +1,6 @@
 use crate::{AppError, ledger, map, project};
 
-/// Maximum age before a map is considered stale regardless of file count.
-const MAP_MAX_AGE_DAYS: i64 = 14;
+use crate::map::MAP_STALE_DAYS;
 
 /// File count drift threshold (fraction). If actual count differs from the
 /// map header count by more than this ratio, trigger a rescan.
@@ -48,7 +47,7 @@ pub fn run() -> Result<(), AppError> {
 ///
 /// Triggers a rescan when any of these are true:
 /// - map.md doesn't exist
-/// - map is older than `MAP_MAX_AGE_DAYS`
+/// - map is older than `MAP_STALE_DAYS`
 /// - file count differs from map header by more than `FILE_COUNT_DRIFT_THRESHOLD`
 fn should_rescan(wp_dir: &std::path::Path, project_root: &std::path::Path) -> bool {
     let Some(header) = map::parse_map_header(wp_dir) else {
@@ -58,7 +57,7 @@ fn should_rescan(wp_dir: &std::path::Path, project_root: &std::path::Path) -> bo
 
     // Age check: rescan if map is older than threshold
     let age = chrono::Utc::now() - header.generated_at;
-    if age.num_days() >= MAP_MAX_AGE_DAYS {
+    if age.num_days() >= MAP_STALE_DAYS {
         return true;
     }
 

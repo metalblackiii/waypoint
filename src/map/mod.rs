@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::AppError;
 
+/// Maps older than this many days are considered stale.
+pub const MAP_STALE_DAYS: i64 = 14;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapEntry {
     pub path: String,
