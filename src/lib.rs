@@ -1,6 +1,5 @@
 pub mod cli;
 pub mod hook;
-pub mod learning;
 pub mod ledger;
 pub mod map;
 pub mod project;
@@ -11,7 +10,7 @@ use thiserror::Error;
 
 use colored::Colorize;
 
-use crate::cli::{Cli, Command, HookCommand, LearningCommand, TrapCommand};
+use crate::cli::{Cli, Command, HookCommand, TrapCommand};
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -162,66 +161,6 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             }
         },
 
-        Command::Learning { command } => match command {
-            LearningCommand::Add {
-                entry,
-                tags,
-                r#type,
-                context,
-            } => {
-                let project_root = project::resolve_with_context(context.as_deref())?;
-                let wp_dir = project::ensure_initialized(&project_root)?;
-
-                let learning_type: learning::LearningType = r#type.into();
-                learning::add_learning(
-                    &wp_dir,
-                    &learning::NewLearning {
-                        entry: &entry,
-                        tags_str: &tags,
-                        r#type: learning_type,
-                    },
-                )?;
-                println!("{learning_type} added");
-                Ok(())
-            }
-            LearningCommand::Search { term, context } => {
-                let project_root = project::resolve_with_context(context.as_deref())?;
-                let wp_dir = project::require_waypoint_dir(&project_root)?;
-
-                let learnings = learning::read_learnings(&wp_dir)?;
-                let results = learning::search(&learnings, &term);
-
-                if results.is_empty() {
-                    println!("No learnings found for: {term}");
-                } else {
-                    for l in &results {
-                        println!("{} ({}) [{}]", l.id, l.r#type, l.tags.join(", "));
-                        println!("  {}", l.entry);
-                        println!("  logged: {}", l.logged_at);
-                        println!();
-                    }
-                }
-                Ok(())
-            }
-            LearningCommand::List { context } => {
-                let project_root = project::resolve_with_context(context.as_deref())?;
-                let wp_dir = project::require_waypoint_dir(&project_root)?;
-
-                let learnings = learning::read_learnings(&wp_dir)?;
-                if learnings.is_empty() {
-                    println!("No learnings logged yet");
-                } else {
-                    for l in &learnings {
-                        println!("{} ({}) [{}]", l.id, l.r#type, l.tags.join(", "));
-                        println!("  {}", l.entry);
-                        println!("  logged: {}", l.logged_at);
-                        println!();
-                    }
-                }
-                Ok(())
-            }
-        },
-
         Command::Status => {
             let project_root = resolve_project_root()?;
             status::run(&project_root)
@@ -232,8 +171,18 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             let wp_dir = project::require_waypoint_dir(&project_root)?;
             let results = map::index::sketch(&wp_dir, &symbol)?;
             if results.is_empty() {
+                let _ = ledger::record_event(
+                    ledger::EventKind::SketchMiss,
+                    project_root.to_string_lossy().as_ref(),
+                    0,
+                );
                 println!("No symbols found: {symbol}");
             } else {
+                let _ = ledger::record_event(
+                    ledger::EventKind::SketchHit,
+                    project_root.to_string_lossy().as_ref(),
+                    0,
+                );
                 for row in &results {
                     println!(
                         "  {}:{}-{}  {}",

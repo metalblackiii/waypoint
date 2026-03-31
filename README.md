@@ -1,6 +1,6 @@
 # Waypoint
 
-Project intelligence for Claude Code. Gives your AI assistant a file map, cross-session memory, and bug fix dedup — saving 65-80% token overhead on codebase orientation.
+Project intelligence for Claude Code. Gives your AI assistant a file map and bug fix dedup — saving 65-80% token overhead on codebase orientation.
 
 ## What it does
 
@@ -8,8 +8,8 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 
 | Hook | Trigger | What happens |
 |------|---------|--------------|
-| **session-start** | New conversation | Injects preferences and corrections from the knowledge store. Auto-scans if no map exists. |
-| **pre-read** | Before Claude reads a file | Injects file description, token estimate, and matching learnings from the map (works across projects) |
+| **session-start** | New conversation | Auto-scans if no map exists. Injects trap log reminder. |
+| **pre-read** | Before Claude reads a file | Injects file description and token estimate from the map (works across projects) |
 | **pre-write** | Before Claude edits a file | Surfaces known bug traps for that file |
 | **post-write** | After Claude edits a file | Incrementally updates the file's map entry |
 | **post-failure** | After a tool error | Suggests searching traps for known fixes |
@@ -20,7 +20,6 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 .waypoint/           ← per-project, gitignored
   map.md             ← file descriptions + token estimates (human-readable source of truth)
   map_index.db       ← SQLite index for O(1) map lookups + FTS5 symbol search
-  learnings.json     ← knowledge store (preferences, corrections, discoveries)
   traps.json         ← bug fix log with dedup
 
 ~/Library/Application Support/waypoint/
@@ -70,30 +69,6 @@ waypoint trap prune --older-than 90d
 waypoint trap prune --older-than 90d --all   # prune across all sibling projects
 ```
 
-### `waypoint learning add`
-
-Record knowledge to the unified store. Three types: preferences (permanent, session-start), corrections (session-start), and discoveries (contextual, pre-read).
-
-```sh
-# Contextual discovery (default) — requires --tags
-waypoint learning add "tree-sitter grammar crates use tree-sitter-language as intermediary" \
-  --tags "Cargo.toml,src/scan/"
-
-# Preference — no tags required
-waypoint learning add "Use jiff instead of chrono for timezone-aware dates" --type preference
-
-# Correction — no tags required
-waypoint learning add "Don't use unbuffered File writes — wrap in BufWriter" --type correction
-```
-
-### `waypoint learning search`
-
-Search learnings by keyword.
-
-```sh
-waypoint learning search "tree-sitter"
-```
-
 ### `waypoint sketch`
 
 Look up a symbol's signature and location without reading the full file.
@@ -122,7 +97,7 @@ waypoint gain --global   # all projects
 
 ### `waypoint status`
 
-Health check — map freshness, knowledge store breakdown, trap count.
+Health check — map freshness, trap count, ledger summary.
 
 ```sh
 waypoint status
@@ -130,13 +105,13 @@ waypoint status
 
 ## Getting Claude to use it
 
-The hooks handle the automatic plumbing (map lookups, context injection, incremental updates). To get Claude to *actively record* learnings and traps, import `WAYPOINT.md` into your global `~/.claude/CLAUDE.md`:
+The hooks handle the automatic plumbing (map lookups, context injection, incremental updates). To get Claude to *actively record* traps, import `WAYPOINT.md` into your global `~/.claude/CLAUDE.md`:
 
 ```markdown
 @~/repos/waypoint/WAYPOINT.md
 ```
 
-This gives Claude the operating protocol — knowledge store logging triggers, bug trap rules, and token discipline. See [SETUP.md](SETUP.md) for full details.
+This gives Claude the operating protocol — bug trap rules and token discipline. See [SETUP.md](SETUP.md) for full details.
 
 ## Cross-project map lookups
 

@@ -11,38 +11,10 @@ You are working in a Waypoint-managed project. These rules apply every turn.
    - `waypoint find "<query>"` — symbol names, function signatures, struct/class definitions
    - `Grep` — string literals, comments, config values, error messages, non-code text
 
-## Code Generation
-
-1. Respect preferences and corrections injected at session start — these are past user corrections and style preferences.
-2. Watch for `[waypoint] learnings for <file>:` annotations on pre-read — these are contextual discoveries relevant to the file you're reading.
-
 ## After Actions
 
 1. After renaming or deleting files: run `waypoint scan` to update the map. (Edits and creates are handled automatically by the post-write hook.)
-2. Traps and learnings are **batched at session end** — note key details (error messages, file paths, root causes) inline in your responses as you go, then write them all in the Session End pass. The only inline write is `waypoint scan` for renames/deletes.
-
-## Knowledge Store (MANDATORY — every session)
-
-All cross-session knowledge lives in `.waypoint/learnings.json` with three types:
-
-- **preference** — user style/workflow preferences. Permanent, injected at session start.
-- **correction** — past mistakes with dates. Injected at session start.
-- **discovery** — contextual project knowledge. Surfaced on pre-read via tag match.
-
-**Add when:**
-- User corrects your approach or expresses a preference → `--type preference`
-- You make a mistake or find the right approach after failure → `--type correction`
-- You discover a convention, API quirk, or module connection → `--type discovery` (default)
-
-```sh
-waypoint learning add "<entry>" --type <preference|correction|discovery> --tags "<paths>"
-# --tags required for discovery; optional for preference and correction
-# --type defaults to discovery
-```
-
-**Tagging:** Tag discoveries with file paths or directory prefixes they relate to. Directory tags must end with `/`. Untagged discoveries never surface contextually.
-
-When in doubt, add it — a redundant entry costs nothing; a missing one means rediscovery.
+2. Traps are **batched at session end** — note key details (error messages, file paths, root causes) inline in your responses as you go, then write them all in the Session End pass. The only inline write is `waypoint scan` for renames/deletes.
 
 ## Bug Logging (MANDATORY)
 
@@ -75,9 +47,8 @@ When in doubt, log it — a false positive costs nothing.
 
 Hooks resolve foreign projects automatically. Watch for `[waypoint] foreign: /path/to/other-repo` annotations on pre-read.
 
-When working in a foreign project, use `-C` with the path from the annotation (e.g., `waypoint learning add -C /path/to/other-repo "entry" --tags "src/"`). `trap log --file` auto-resolves — no `-C` needed.
+When working in a foreign project, `trap log --file` auto-resolves — no `-C` needed.
 
-- Learnings and traps belong to the project they're about — don't cross-pollinate
 - If `-C` fails with "no .waypoint/ directory", run `waypoint scan` from that repo first
 
 ## Token Discipline
@@ -90,6 +61,4 @@ When working in a foreign project, use `-C` with the path from the annotation (e
 All writes are batched here. Before ending or when asked to wrap up:
 
 1. **Traps:** Log every bug you fixed or error you encountered (search first to avoid duplicates).
-2. **Discoveries:** Log anything you discovered about the project — conventions, quirks, connections.
-3. **Preferences/corrections:** Log if the user corrected your approach, expressed a preference, or you discovered a gotcha.
-4. If nothing happened worth logging, that's fine — not every session produces writes.
+2. If nothing happened worth logging, that's fine — not every session produces writes.

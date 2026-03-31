@@ -1,6 +1,6 @@
 # Waypoint
 
-Project intelligence for Claude Code — hooks, file map, knowledge store, traps, ledger.
+Project intelligence for Claude Code — hooks, file map, traps, ledger.
 
 ## Non-Negotiables
 
@@ -21,7 +21,6 @@ Project intelligence for Claude Code — hooks, file map, knowledge store, traps
 - `map_index.db` also contains a `symbols` table (structured symbol data from tree-sitter) and a `symbols_fts` FTS5 table for full-text search. Both rebuild on `waypoint scan`.
 - `waypoint sketch <name>` queries symbols by exact name; `waypoint find "<query>"` uses FTS5 with LIKE fallback.
 - `waypoint scan --all [PATH]` discovers immediate child git repos and scans each. Initializes `.waypoint/` if missing. Smart default: from inside a project, walks up to parent and scans siblings.
-- `learnings.json` is the unified knowledge store (preferences, corrections, discoveries). Lazy-created on first `waypoint learning add`. Preferences and corrections are surfaced at session start; discoveries are surfaced on pre-read via tag prefix matching.
 - `traps.json` is a structured error-cause-fix database with Jaccard dedup per file. Surfaced on pre-write.
 - `atomic_write_with(path, |writer| ...)` in `project.rs` — use this for all file writes that need crash safety. The closure receives `&mut BufWriter<File>`.
 - SQLite integers must be `i64`, not `usize` — rusqlite 0.39 dropped `FromSql` for `usize`.

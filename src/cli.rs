@@ -37,11 +37,6 @@ pub enum Command {
         #[command(subcommand)]
         command: TrapCommand,
     },
-    /// Manage the knowledge store (preferences, corrections, discoveries)
-    Learning {
-        #[command(subcommand)]
-        command: LearningCommand,
-    },
     /// Display waypoint status for the current project
     Status,
     /// Show structural overview of a symbol
@@ -113,59 +108,10 @@ pub enum TrapCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum LearningCommand {
-    /// Add a new learning (preference, correction, or discovery)
-    Add {
-        /// Learning text
-        entry: String,
-        /// Comma-separated file paths or topic tags (required for discovery)
-        #[arg(long, default_value = "")]
-        tags: String,
-        /// Entry type: preference, correction, or discovery
-        #[arg(long, value_enum, default_value = "discovery")]
-        r#type: LearningTypeArg,
-        /// Resolve project from this path instead of cwd
-        #[arg(short = 'C', long = "context")]
-        context: Option<String>,
-    },
-    /// Search learnings by keyword
-    Search {
-        /// Search term
-        term: String,
-        /// Resolve project from this path instead of cwd
-        #[arg(short = 'C', long = "context")]
-        context: Option<String>,
-    },
-    /// List all learnings
-    List {
-        /// Resolve project from this path instead of cwd
-        #[arg(short = 'C', long = "context")]
-        context: Option<String>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum LearningTypeArg {
-    Preference,
-    Correction,
-    Discovery,
-}
-
-impl From<LearningTypeArg> for crate::learning::LearningType {
-    fn from(arg: LearningTypeArg) -> Self {
-        match arg {
-            LearningTypeArg::Preference => Self::Preference,
-            LearningTypeArg::Correction => Self::Correction,
-            LearningTypeArg::Discovery => Self::Discovery,
-        }
-    }
-}
-
-#[derive(Debug, Subcommand)]
 pub enum HookCommand {
     /// PreToolUse:Read — inject file map context
     PreRead,
-    /// `SessionStart` — inject preferences/corrections and auto-scan
+    /// `SessionStart` — auto-scan and inject trap log reminder
     SessionStart,
     /// PreToolUse:Edit|Write — inject trap warnings
     PreWrite,

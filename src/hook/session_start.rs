@@ -1,4 +1,3 @@
-use crate::learning::{LearningType, learnings_by_type, read_learnings};
 use crate::{AppError, ledger, map, project};
 
 /// Maximum age before a map is considered stale regardless of file count.
@@ -8,7 +7,7 @@ const MAP_MAX_AGE_DAYS: i64 = 14;
 /// map header count by more than this ratio, trigger a rescan.
 const FILE_COUNT_DRIFT_THRESHOLD: f64 = 0.10;
 
-/// `SessionStart` — inject preferences/corrections and auto-scan.
+/// `SessionStart` — auto-scan and inject trap log reminder.
 ///
 /// `SessionStart` hooks use plain stdout for context injection.
 pub fn run() -> Result<(), AppError> {
@@ -24,46 +23,7 @@ pub fn run() -> Result<(), AppError> {
 
     let mut output = String::new();
 
-    // Inject preferences and corrections from the knowledge store
-    let learnings = read_learnings(&wp_dir)?;
-    let preferences = learnings_by_type(&learnings, LearningType::Preference);
-    let corrections = learnings_by_type(&learnings, LearningType::Correction);
-
-    if !preferences.is_empty() || !corrections.is_empty() {
-        output.push_str("# Waypoint Journal\n\n");
-
-        if !preferences.is_empty() {
-            output.push_str("## Preferences\n");
-            for p in &preferences {
-                output.push_str("- ");
-                output.push_str(&p.entry);
-                output.push('\n');
-            }
-            output.push('\n');
-        }
-
-        if !corrections.is_empty() {
-            output.push_str("## Do-Not-Repeat\n");
-            for c in &corrections {
-                output.push_str("- ");
-                output.push_str(&c.logged_at[..10]);
-                output.push_str(": ");
-                output.push_str(&c.entry);
-                output.push('\n');
-            }
-            output.push('\n');
-        }
-    }
-
-    // Invocation prompts
-    output.push_str(
-        "To log a correction or preference: \
-         waypoint learning add \"<entry>\" --type <preference|correction>\n",
-    );
-    output.push_str(
-        "To log a learning: \
-         waypoint learning add \"<entry>\" --tags \"<file-or-dir-paths>\"\n",
-    );
+    // Invocation prompt
     output.push_str(
         "To log a bug fix: \
          waypoint trap log --error \"<msg>\" --file \"<path>\" \

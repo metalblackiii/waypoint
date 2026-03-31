@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::{AppError, learning, ledger, map, project, trap};
+use crate::{AppError, ledger, map, project, trap};
 
 pub fn run(project_root: &Path) -> Result<(), AppError> {
     let wp_dir = project::waypoint_dir(project_root);
@@ -30,13 +30,6 @@ pub fn run(project_root: &Path) -> Result<(), AppError> {
     } else {
         println!("Map:     not generated (run: waypoint scan)");
     }
-
-    // Knowledge store
-    let learnings = learning::read_learnings(&wp_dir)?;
-    let prefs = learning::learnings_by_type(&learnings, learning::LearningType::Preference).len();
-    let corrs = learning::learnings_by_type(&learnings, learning::LearningType::Correction).len();
-    let discs = learning::learnings_by_type(&learnings, learning::LearningType::Discovery).len();
-    println!("Knowledge: {prefs} preferences, {corrs} corrections, {discs} discoveries");
 
     // Traps
     let traps = trap::read_traps(&wp_dir)?;

@@ -1,6 +1,4 @@
-use std::fmt::Write;
-
-use crate::{AppError, learning, ledger, map, project};
+use crate::{AppError, ledger, map, project};
 
 /// FR-2: PreToolUse:Read — inject file map context.
 /// FR-8: Annotate foreign project availability.
@@ -64,28 +62,6 @@ pub fn run() -> Result<(), AppError> {
         let _ = ledger::record_event(ledger::EventKind::MapMiss, &project_label, 0);
         String::new()
     };
-
-    // FR-7: Surface contextual learnings for this file
-    let learnings = match learning::read_learnings(&wp_dir) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("[waypoint] warning: failed to read learnings: {e}");
-            Vec::new()
-        }
-    };
-    let matching_learnings = learning::learnings_for_file(&learnings, &relative);
-    if !matching_learnings.is_empty() {
-        let entries: Vec<String> = matching_learnings
-            .iter()
-            .map(|l| format!("{}: {}", l.id, l.entry))
-            .collect();
-        let _ = write!(
-            context,
-            "\n[waypoint] learnings for {}: {}",
-            relative,
-            entries.join(" | ")
-        );
-    }
 
     // FR-8: Annotate foreign project so the AI knows cross-project data is available
     if is_foreign {

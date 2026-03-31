@@ -15,6 +15,8 @@ pub enum EventKind {
     MapHit,
     MapMiss,
     TrapHit,
+    SketchHit,
+    SketchMiss,
     FirstEdit,
 }
 
@@ -25,6 +27,8 @@ impl EventKind {
             Self::MapHit => "map_hit",
             Self::MapMiss => "map_miss",
             Self::TrapHit => "trap_hit",
+            Self::SketchHit => "sketch_hit",
+            Self::SketchMiss => "sketch_miss",
             Self::FirstEdit => "first_edit",
         }
     }
@@ -37,6 +41,9 @@ pub struct GainStats {
     pub map_hits: i64,
     pub map_misses: i64,
     pub trap_hits: i64,
+    pub sketch_hits: i64,
+    pub sketch_misses: i64,
+    pub sketch_hit_rate: f64,
     pub first_edit_count: i64,
     pub avg_first_edit_secs: f64,
     pub map_hit_rate: f64,
@@ -114,7 +121,7 @@ fn rate_color(pct: f64) -> Color {
 }
 
 impl fmt::Display for GainStats {
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let sep_double = "═".repeat(DISPLAY_WIDTH);
         let sep_single = "─".repeat(DISPLAY_WIDTH);
@@ -132,6 +139,16 @@ impl fmt::Display for GainStats {
                 Some(Color::Yellow),
             ),
             ("Trap hits:", self.trap_hits.to_string(), Some(Color::Cyan)),
+            (
+                "Sketch hits:",
+                self.sketch_hits.to_string(),
+                Some(Color::Magenta),
+            ),
+            (
+                "Sketch misses:",
+                self.sketch_misses.to_string(),
+                Some(Color::Yellow),
+            ),
             (
                 "Tokens saved:",
                 format_tokens(self.estimated_tokens_saved),
@@ -161,6 +178,21 @@ impl fmt::Display for GainStats {
             meter.color(color),
             format!("{:.1}%", self.map_hit_rate).bold(),
         )?;
+
+        // Sketch hit rate meter
+        if self.sketch_hits + self.sketch_misses > 0 {
+            let sketch_ratio = self.sketch_hit_rate / 100.0;
+            let sketch_meter = bar(sketch_ratio, METER_WIDTH);
+            let sketch_color = rate_color(self.sketch_hit_rate);
+            let padded_label = format!("{:<LABEL_PAD$}", "Sketch rate:");
+            writeln!(
+                f,
+                "{} {} {}",
+                padded_label.bold(),
+                sketch_meter.color(sketch_color),
+                format!("{:.1}%", self.sketch_hit_rate).bold(),
+            )?;
+        }
 
         // First-edit timing
         if self.first_edit_count > 0 {
@@ -363,10 +395,19 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
     let map_hits = query_count_kind(conn, "map_hit", param_ref)?;
     let map_misses = query_count_kind(conn, "map_miss", param_ref)?;
     let trap_hits = query_count_kind(conn, "trap_hit", param_ref)?;
+    let sketch_hits = query_count_kind(conn, "sketch_hit", param_ref)?;
+    let sketch_misses = query_count_kind(conn, "sketch_miss", param_ref)?;
 
     #[allow(clippy::cast_precision_loss)] // ratio of small counters — precision loss irrelevant
     let map_hit_rate = if map_hits + map_misses > 0 {
         map_hits as f64 / (map_hits + map_misses) as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let sketch_hit_rate = if sketch_hits + sketch_misses > 0 {
+        sketch_hits as f64 / (sketch_hits + sketch_misses) as f64 * 100.0
     } else {
         0.0
     };
@@ -413,6 +454,9 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         map_hits,
         map_misses,
         trap_hits,
+        sketch_hits,
+        sketch_misses,
+        sketch_hit_rate,
         first_edit_count,
         avg_first_edit_secs,
         map_hit_rate,
@@ -497,14 +541,19 @@ mod tests {
         record_event_with(&conn, EventKind::MapHit, "/tmp/project", 150).unwrap();
         record_event_with(&conn, EventKind::MapMiss, "/tmp/project", 0).unwrap();
         record_event_with(&conn, EventKind::TrapHit, "/tmp/project", 50).unwrap();
+        record_event_with(&conn, EventKind::SketchHit, "/tmp/project", 0).unwrap();
+        record_event_with(&conn, EventKind::SketchMiss, "/tmp/project", 0).unwrap();
 
         let stats = gain_stats_with(&conn, Some("/tmp/project")).unwrap();
 
-        assert_eq!(stats.total_events, 3);
+        assert_eq!(stats.total_events, 5);
         assert_eq!(stats.map_hits, 1);
         assert_eq!(stats.map_misses, 1);
         assert_eq!(stats.trap_hits, 1);
+        assert_eq!(stats.sketch_hits, 1);
+        assert_eq!(stats.sketch_misses, 1);
         assert!((stats.map_hit_rate - 50.0).abs() < f64::EPSILON);
+        assert!((stats.sketch_hit_rate - 50.0).abs() < f64::EPSILON);
         assert_eq!(stats.estimated_tokens_saved, 200);
     }
 
@@ -575,6 +624,8 @@ mod tests {
         assert_eq!(EventKind::MapHit.as_str(), "map_hit");
         assert_eq!(EventKind::MapMiss.as_str(), "map_miss");
         assert_eq!(EventKind::TrapHit.as_str(), "trap_hit");
+        assert_eq!(EventKind::SketchHit.as_str(), "sketch_hit");
+        assert_eq!(EventKind::SketchMiss.as_str(), "sketch_miss");
         assert_eq!(EventKind::FirstEdit.as_str(), "first_edit");
     }
 
@@ -700,6 +751,9 @@ mod tests {
             map_hits: 75,
             map_misses: 25,
             trap_hits: 3,
+            sketch_hits: 0,
+            sketch_misses: 0,
+            sketch_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
             map_hit_rate: 75.0,
@@ -719,6 +773,9 @@ mod tests {
             map_hits: 325,
             map_misses: 101,
             trap_hits: 7,
+            sketch_hits: 0,
+            sketch_misses: 0,
+            sketch_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
             map_hit_rate: 76.3,
@@ -750,6 +807,9 @@ mod tests {
             map_hits: 8,
             map_misses: 2,
             trap_hits: 0,
+            sketch_hits: 0,
+            sketch_misses: 0,
+            sketch_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
             map_hit_rate: 80.0,
@@ -769,6 +829,9 @@ mod tests {
             map_hits: 8,
             map_misses: 2,
             trap_hits: 1,
+            sketch_hits: 0,
+            sketch_misses: 0,
+            sketch_hit_rate: 0.0,
             first_edit_count: 3,
             avg_first_edit_secs: 42.0,
             map_hit_rate: 80.0,
