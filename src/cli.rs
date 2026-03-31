@@ -2,10 +2,12 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")");
+
 #[derive(Debug, Parser)]
 #[command(
     name = "waypoint",
-    version,
+    version = VERSION,
     about = "Project intelligence for Claude Code"
 )]
 pub struct Cli {

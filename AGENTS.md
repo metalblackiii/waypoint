@@ -25,6 +25,13 @@ Project intelligence for Claude Code — hooks, file map, traps, ledger.
 - `atomic_write_with(path, |writer| ...)` in `project.rs` — use this for all file writes that need crash safety. The closure receives `&mut BufWriter<File>`.
 - SQLite integers must be `i64`, not `usize` — rusqlite 0.39 dropped `FromSql` for `usize`.
 
+## Versioning
+
+- SemVer in `Cargo.toml`, git short hash embedded at build time via `build.rs`
+- `waypoint --version` prints `waypoint <semver> (<git-short-hash>)`
+- **One version bump per feature branch.** Bump in the first commit that adds or changes functionality. If the branch already has a bump (check `git diff main -- Cargo.toml`), don't bump again
+- Bump minor (`0.x.0`) for new features or breaking changes. Bump patch (`0.0.x`) for bugfixes only
+
 ## Conventions
 
 - Conventional commits: `type(scope): message`
