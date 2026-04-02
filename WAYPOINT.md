@@ -5,8 +5,8 @@ You are working in a Waypoint-managed project. These rules apply every turn.
 ## File Navigation
 
 1. Check the `[waypoint] map:` context injected on every Read — it has a description and token estimate for the file.
-2. If the description is sufficient for your task, do NOT read the full file.
-3. When you need a specific symbol (function, class, type), use `waypoint sketch <name>` before reading the file — it gives you the signature and line range. **Skip sketch for files under ~150 tokens** (check the map annotation — roughly 10-15 lines of code).
+2. If the description is sufficient for your task, do NOT read the full file. The map description answering the question is enough — no sketch, no read.
+3. When you need a specific symbol (function, class, type), use `waypoint sketch <name>` before reading the file — it gives you the signature and line range. **Skip sketch for files under ~150 tokens** (check the map annotation — roughly 10-15 lines of code). **For files over ~500 tokens, sketch is mandatory unless the file was already read this session.**
 4. `waypoint find` vs `Grep` — use the right tool for the job:
    - `waypoint find "<query>"` — symbol names, function signatures, struct/class definitions
    - `Grep` — string literals, comments, config values, error messages, non-code text

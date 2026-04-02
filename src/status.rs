@@ -70,9 +70,10 @@ pub fn run_all(base: &Path) -> Result<(), AppError> {
     let now = chrono::Utc::now();
 
     for root in &projects {
-        let name = root
-            .file_name()
-            .map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let name = root.file_name().map_or_else(
+            || root.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
         let wp_dir = project::waypoint_dir(root);
 
         if !wp_dir.exists() {

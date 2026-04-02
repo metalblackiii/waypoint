@@ -1165,6 +1165,37 @@ fn collect_impl_methods(
     }
 }
 
+fn collect_js_class_methods(
+    class_node: tree_sitter::Node,
+    class_name: Option<&str>,
+    source: &str,
+    symbols: &mut Vec<Symbol>,
+    exported: bool,
+) {
+    let mut cursor = class_node.walk();
+    let Some(body) = class_node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "class_body")
+    else {
+        return;
+    };
+    let mut body_cursor = body.walk();
+    for member in body.children(&mut body_cursor) {
+        if member.kind() != "method_definition" {
+            continue;
+        }
+        let method_name = child_text(member, "property_identifier", source)
+            .or_else(|| child_text(member, "private_property_identifier", source));
+        if let Some(method_name) = method_name {
+            let qualified = match class_name {
+                Some(cls) => format!("{cls}::{method_name}"),
+                None => method_name,
+            };
+            symbols.push(build_symbol(qualified, "method", member, source, exported));
+        }
+    }
+}
+
 fn collect_js_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<Symbol>) {
     match node.kind() {
         "function_declaration" => {
@@ -1173,9 +1204,11 @@ fn collect_js_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<S
             }
         }
         "class_declaration" => {
-            if let Some(name) = child_text(node, "identifier", source) {
-                symbols.push(build_symbol(name, "class", node, source, false));
+            let class_name = child_text(node, "identifier", source);
+            if let Some(ref name) = class_name {
+                symbols.push(build_symbol(name.clone(), "class", node, source, false));
             }
+            collect_js_class_methods(node, class_name.as_deref(), source, symbols, false);
         }
         "export_statement" => {
             collect_js_export_symbols(node, source, symbols);
@@ -1210,9 +1243,11 @@ fn collect_js_export_symbols(node: tree_sitter::Node, source: &str, symbols: &mu
                 return;
             }
             "class_declaration" => {
-                if let Some(name) = child_text(child, "identifier", source) {
-                    symbols.push(build_symbol(name, "class", child, source, true));
+                let class_name = child_text(child, "identifier", source);
+                if let Some(ref name) = class_name {
+                    symbols.push(build_symbol(name.clone(), "class", child, source, true));
                 }
+                collect_js_class_methods(child, class_name.as_deref(), source, symbols, true);
                 return;
             }
             "lexical_declaration" | "variable_declaration" => {
@@ -1753,6 +1788,54 @@ module.exports = Router;
         assert!(symbols.iter().any(|s| s.name == "doWork" && s.exported));
         assert!(symbols.iter().any(|s| s.name == "Service" && s.exported));
         assert!(symbols.iter().any(|s| s.name == "helper" && !s.exported));
+    }
+
+    #[test]
+    fn extract_symbols_js_class_methods() {
+        let src = "\
+class NebPracticeApp {
+  connectedCallback() {}
+  __showTwoFactorOnboardingPopup() {}
+  static defaultConfig() {}
+  get isReady() {}
+}
+export class Service {
+  doWork() {}
+}
+";
+        let symbols = extract_symbols(Path::new("test.js"), src);
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "NebPracticeApp" && s.kind == "class")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "NebPracticeApp::connectedCallback" && s.kind == "method")
+        );
+        assert!(symbols.iter().any(
+            |s| s.name == "NebPracticeApp::__showTwoFactorOnboardingPopup"
+                && s.kind == "method"
+                && !s.exported
+        ));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "NebPracticeApp::defaultConfig"
+                    && s.kind == "method"
+                    && !s.exported)
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "NebPracticeApp::isReady" && s.kind == "method" && !s.exported)
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Service::doWork" && s.kind == "method" && s.exported)
+        );
     }
 
     #[test]
