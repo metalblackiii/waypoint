@@ -1755,6 +1755,16 @@ fn resolve_python_import(source_file: &str, raw_path: &str, root: &Path) -> Opti
 }
 
 fn resolve_rust_import(raw_path: &str, root: &Path) -> Option<String> {
+    // `use crate::Item` → raw_path is "crate", item lives in src/lib.rs
+    if raw_path == "crate" {
+        let candidate = "src/lib.rs";
+        return if root.join(candidate).is_file() {
+            Some(candidate.to_string())
+        } else {
+            None
+        };
+    }
+
     let module_path = raw_path.strip_prefix("crate::")?;
     let parts = module_path.replace("::", "/");
 
