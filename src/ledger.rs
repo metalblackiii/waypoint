@@ -18,6 +18,7 @@ pub enum EventKind {
     SketchHit,
     SketchMiss,
     FirstEdit,
+    FirstEditTurns,
 }
 
 impl EventKind {
@@ -30,6 +31,7 @@ impl EventKind {
             Self::SketchHit => "sketch_hit",
             Self::SketchMiss => "sketch_miss",
             Self::FirstEdit => "first_edit",
+            Self::FirstEditTurns => "first_edit_turns",
         }
     }
 }
@@ -46,6 +48,8 @@ pub struct GainStats {
     pub sketch_hit_rate: f64,
     pub first_edit_count: i64,
     pub avg_first_edit_secs: f64,
+    pub first_edit_turns_count: i64,
+    pub avg_first_edit_turns: f64,
     pub map_hit_rate: f64,
     pub estimated_tokens_saved: i64,
     pub daily: Vec<DayStats>,
@@ -194,17 +198,30 @@ impl fmt::Display for GainStats {
             )?;
         }
 
-        // First-edit timing
+        // First-edit timing and turns
         if self.first_edit_count > 0 {
             let padded_label = format!("{:<LABEL_PAD$}", "First edit:");
             let time_str = format_duration(self.avg_first_edit_secs);
+            let turns_str = if self.first_edit_turns_count > 0 {
+                format!(
+                    ", {:.1} turns ({} samples)",
+                    self.avg_first_edit_turns, self.first_edit_turns_count
+                )
+            } else {
+                String::new()
+            };
             let count_str = format!("({} samples)", self.first_edit_count);
             writeln!(
                 f,
-                "{} {:>VALUE_PAD$}  {}",
+                "{} {:>VALUE_PAD$}  {}{}",
                 padded_label.bold(),
                 time_str.color(Color::Cyan),
                 count_str.dimmed(),
+                if turns_str.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", turns_str.color(Color::Cyan))
+                },
             )?;
         }
 
@@ -369,7 +386,20 @@ fn record_first_edit_if_needed_with(conn: &Connection, project_path: &str) -> Re
         None => 0,
     };
 
-    record_event_with(conn, EventKind::FirstEdit, project_path, elapsed_secs)
+    // Count hook invocations since session_start as "turns to first edit"
+    let turns: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE timestamp > ?1 \
+         AND event_kind NOT IN ('session_start', 'first_edit', 'first_edit_turns')",
+        params![cutoff],
+        |row| row.get(0),
+    )?;
+
+    // Atomic: both events land or neither does
+    let tx = conn.unchecked_transaction()?;
+    record_event_with(&tx, EventKind::FirstEdit, project_path, elapsed_secs)?;
+    record_event_with(&tx, EventKind::FirstEditTurns, project_path, turns)?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Get gain statistics, optionally filtered by project.
@@ -414,11 +444,11 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
 
     let estimated_tokens_saved = {
         let sql = if filter.is_empty() {
-            "SELECT COALESCE(SUM(token_impact), 0) FROM events WHERE event_kind != 'first_edit'"
+            "SELECT COALESCE(SUM(token_impact), 0) FROM events WHERE event_kind NOT IN ('first_edit', 'first_edit_turns')"
                 .to_string()
         } else {
             format!(
-                "SELECT COALESCE(SUM(token_impact), 0) FROM events {filter} AND event_kind != 'first_edit'"
+                "SELECT COALESCE(SUM(token_impact), 0) FROM events {filter} AND event_kind NOT IN ('first_edit', 'first_edit_turns')"
             )
         };
         let mut stmt = conn.prepare(&sql)?;
@@ -447,6 +477,27 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         0.0
     };
 
+    let first_edit_turns_count = query_count_kind(conn, "first_edit_turns", param_ref)?;
+
+    #[allow(clippy::cast_precision_loss)]
+    let avg_first_edit_turns: f64 = if first_edit_turns_count > 0 {
+        let sql = match param_ref {
+            Some(_) => {
+                "SELECT COALESCE(AVG(token_impact), 0) FROM events WHERE event_kind = 'first_edit_turns' AND project_path = ?1"
+            }
+            None => {
+                "SELECT COALESCE(AVG(token_impact), 0) FROM events WHERE event_kind = 'first_edit_turns'"
+            }
+        };
+        let mut stmt = conn.prepare(sql)?;
+        match param_ref {
+            Some(p) => stmt.query_row(params![p], |row| row.get(0))?,
+            None => stmt.query_row([], |row| row.get(0))?,
+        }
+    } else {
+        0.0
+    };
+
     let daily = query_daily(conn, param_ref)?;
 
     Ok(GainStats {
@@ -459,6 +510,8 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         sketch_hit_rate,
         first_edit_count,
         avg_first_edit_secs,
+        first_edit_turns_count,
+        avg_first_edit_turns,
         map_hit_rate,
         estimated_tokens_saved,
         daily,
@@ -495,7 +548,7 @@ fn query_daily(conn: &Connection, param: Option<&str>) -> Result<Vec<DayStats>, 
     let (sql, values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match param {
         Some(p) => (
             "SELECT DATE(timestamp) as d, COUNT(*), \
-             COALESCE(SUM(CASE WHEN event_kind = 'first_edit' THEN 0 ELSE token_impact END), 0) \
+             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns') THEN 0 ELSE token_impact END), 0) \
              FROM events WHERE project_path = ?1 \
              GROUP BY d ORDER BY d DESC LIMIT 30"
                 .into(),
@@ -503,7 +556,7 @@ fn query_daily(conn: &Connection, param: Option<&str>) -> Result<Vec<DayStats>, 
         ),
         None => (
             "SELECT DATE(timestamp) as d, COUNT(*), \
-             COALESCE(SUM(CASE WHEN event_kind = 'first_edit' THEN 0 ELSE token_impact END), 0) \
+             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns') THEN 0 ELSE token_impact END), 0) \
              FROM events GROUP BY d ORDER BY d DESC LIMIT 30"
                 .into(),
             vec![],
@@ -614,7 +667,7 @@ mod tests {
         let stats = gain_stats_with(&conn, Some("/tmp/p")).unwrap();
 
         assert_eq!(stats.daily.len(), 1);
-        assert_eq!(stats.daily[0].events, 3);
+        assert_eq!(stats.daily[0].events, 4);
         assert_eq!(stats.daily[0].tokens_saved, 500);
     }
 
@@ -627,6 +680,7 @@ mod tests {
         assert_eq!(EventKind::SketchHit.as_str(), "sketch_hit");
         assert_eq!(EventKind::SketchMiss.as_str(), "sketch_miss");
         assert_eq!(EventKind::FirstEdit.as_str(), "first_edit");
+        assert_eq!(EventKind::FirstEditTurns.as_str(), "first_edit_turns");
     }
 
     #[test]
@@ -636,12 +690,14 @@ mod tests {
         record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
         record_event_with(&conn, EventKind::MapHit, "/tmp/p", 100).unwrap();
         record_event_with(&conn, EventKind::FirstEdit, "/tmp/p", 45).unwrap();
+        record_event_with(&conn, EventKind::FirstEditTurns, "/tmp/p", 1).unwrap();
 
         let stats = gain_stats_with(&conn, Some("/tmp/p")).unwrap();
 
         assert_eq!(stats.first_edit_count, 1);
         assert!((stats.avg_first_edit_secs - 45.0).abs() < f64::EPSILON);
-        // first_edit token_impact (seconds) must not pollute tokens saved
+        assert!((stats.avg_first_edit_turns - 1.0).abs() < f64::EPSILON);
+        // first_edit/first_edit_turns token_impact must not pollute tokens saved
         assert_eq!(stats.estimated_tokens_saved, 100);
     }
 
@@ -701,6 +757,47 @@ mod tests {
     }
 
     #[test]
+    fn first_edit_records_turn_count() {
+        let conn = test_db();
+
+        record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
+        // Simulate 3 hook invocations before first edit
+        record_event_with(&conn, EventKind::MapHit, "/tmp/p", 100).unwrap();
+        record_event_with(&conn, EventKind::SketchHit, "/tmp/p", 50).unwrap();
+        record_event_with(&conn, EventKind::TrapHit, "/tmp/p", 20).unwrap();
+
+        record_first_edit_if_needed_with(&conn, "/tmp/p").unwrap();
+
+        let stats = gain_stats_with(&conn, Some("/tmp/p")).unwrap();
+        assert_eq!(stats.first_edit_count, 1);
+        assert!((stats.avg_first_edit_turns - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn first_edit_turns_avg_across_sessions() {
+        let conn = test_db();
+
+        // Session 1: 2 turns before first edit
+        record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
+        record_event_with(&conn, EventKind::MapHit, "/tmp/p", 100).unwrap();
+        record_event_with(&conn, EventKind::MapMiss, "/tmp/p", 0).unwrap();
+        record_first_edit_if_needed_with(&conn, "/tmp/p").unwrap();
+
+        // Session 2: 4 turns before first edit
+        record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
+        record_event_with(&conn, EventKind::MapHit, "/tmp/p", 100).unwrap();
+        record_event_with(&conn, EventKind::SketchHit, "/tmp/p", 50).unwrap();
+        record_event_with(&conn, EventKind::TrapHit, "/tmp/p", 20).unwrap();
+        record_event_with(&conn, EventKind::MapHit, "/tmp/p", 100).unwrap();
+        record_first_edit_if_needed_with(&conn, "/tmp/p").unwrap();
+
+        let stats = gain_stats_with(&conn, Some("/tmp/p")).unwrap();
+        assert_eq!(stats.first_edit_count, 2);
+        // avg turns = (2 + 4) / 2 = 3.0
+        assert!((stats.avg_first_edit_turns - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn format_tokens_millions() {
         assert_eq!(format_tokens(1_500_000), "1.5M");
         assert_eq!(format_tokens(1_000_000), "1.0M");
@@ -756,6 +853,8 @@ mod tests {
             sketch_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
+            first_edit_turns_count: 0,
+            avg_first_edit_turns: 0.0,
             map_hit_rate: 75.0,
             estimated_tokens_saved: 500_000,
             daily: vec![],
@@ -778,6 +877,8 @@ mod tests {
             sketch_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
+            first_edit_turns_count: 0,
+            avg_first_edit_turns: 0.0,
             map_hit_rate: 76.3,
             estimated_tokens_saved: 1_025_558,
             daily: vec![DayStats {
@@ -812,6 +913,8 @@ mod tests {
             sketch_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
+            first_edit_turns_count: 0,
+            avg_first_edit_turns: 0.0,
             map_hit_rate: 80.0,
             estimated_tokens_saved: 5_000,
             daily: vec![],
@@ -834,6 +937,8 @@ mod tests {
             sketch_hit_rate: 0.0,
             first_edit_count: 3,
             avg_first_edit_secs: 42.0,
+            first_edit_turns_count: 3,
+            avg_first_edit_turns: 2.5,
             map_hit_rate: 80.0,
             estimated_tokens_saved: 5_000,
             daily: vec![],
@@ -841,6 +946,7 @@ mod tests {
         let output = format!("{stats}");
 
         assert!(output.contains("(3 samples)"));
+        assert!(output.contains("2.5 turns"));
         assert!(!output.contains("sessions"));
     }
 }
