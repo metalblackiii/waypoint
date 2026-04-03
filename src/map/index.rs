@@ -242,6 +242,29 @@ pub fn remove_file_symbols(waypoint_dir: &Path, file_path: &str) -> Result<(), A
     Ok(())
 }
 
+/// List all entry paths under a directory prefix. Used for stale-entry cleanup.
+pub fn entries_in_dir(waypoint_dir: &Path, dir_prefix: &str) -> Result<Vec<String>, AppError> {
+    let conn = open_index(waypoint_dir)?;
+
+    if dir_prefix.is_empty() {
+        // Top-level: entries where path contains no '/'
+        let mut stmt = conn.prepare("SELECT path FROM map_entries WHERE path NOT LIKE '%/%'")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    } else {
+        // Escape LIKE wildcards in directory names to prevent over-matching
+        let escaped = dir_prefix.replace('%', r"\%").replace('_', r"\_");
+        let like = format!("{escaped}/%");
+        let deeper = format!("{escaped}/%/%");
+        let mut stmt = conn.prepare(
+            "SELECT path FROM map_entries WHERE path LIKE ?1 ESCAPE '\\' \
+             AND path NOT LIKE ?2 ESCAPE '\\'",
+        )?;
+        let rows = stmt.query_map(params![like, deeper], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    }
+}
+
 /// Look up symbols by exact name. Used by `waypoint sketch`.
 pub fn sketch(waypoint_dir: &Path, name: &str) -> Result<Vec<SymbolRow>, AppError> {
     let conn = open_index(waypoint_dir)?;
@@ -533,5 +556,39 @@ mod tests {
 
         let results = find_symbols(tmp.path(), "extract", 10).unwrap();
         assert!(results.iter().any(|r| r.name == "extract_description"));
+    }
+
+    #[test]
+    fn entries_in_dir_returns_direct_children() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![
+            sample_entry("src/main.rs"),
+            sample_entry("src/lib.rs"),
+            sample_entry("src/map/scan.rs"),
+            sample_entry("Cargo.toml"),
+        ];
+        rebuild(tmp.path(), &entries).unwrap();
+
+        let src_entries = entries_in_dir(tmp.path(), "src").unwrap();
+        assert!(src_entries.contains(&"src/main.rs".to_string()));
+        assert!(src_entries.contains(&"src/lib.rs".to_string()));
+        // Should not include deeper subdirectory entries
+        assert!(!src_entries.contains(&"src/map/scan.rs".to_string()));
+    }
+
+    #[test]
+    fn entries_in_dir_top_level() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![
+            sample_entry("Cargo.toml"),
+            sample_entry("README.md"),
+            sample_entry("src/main.rs"),
+        ];
+        rebuild(tmp.path(), &entries).unwrap();
+
+        let top = entries_in_dir(tmp.path(), "").unwrap();
+        assert!(top.contains(&"Cargo.toml".to_string()));
+        assert!(top.contains(&"README.md".to_string()));
+        assert!(!top.contains(&"src/main.rs".to_string()));
     }
 }
