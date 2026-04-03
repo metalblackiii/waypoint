@@ -1359,6 +1359,431 @@ fn collect_go_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<S
     }
 }
 
+// ---------------------------------------------------------------------------
+// Import extraction
+// ---------------------------------------------------------------------------
+
+/// An import relationship extracted from source code.
+#[derive(Debug, Clone)]
+pub struct Import {
+    /// Relative file path of the importing file (set by caller).
+    pub source_file: String,
+    pub imported_name: String,
+    /// Resolved relative path of the imported file (set by caller via `resolve_import_path`).
+    pub target_path: String,
+    /// Original import path string from source.
+    pub raw_path: String,
+    /// 1-based line number of the import statement.
+    pub line_number: i64,
+}
+
+/// Extract import statements from a source file using tree-sitter.
+/// Returns imports with `source_file` and `target_path` empty — callers fill these.
+#[must_use]
+pub fn extract_imports(path: &Path, content: &str) -> Vec<Import> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    let language = match ext {
+        "rs" => tree_sitter_rust::LANGUAGE,
+        "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+        "tsx" => tree_sitter_typescript::LANGUAGE_TSX,
+        "js" | "jsx" | "mjs" | "cjs" => tree_sitter_javascript::LANGUAGE,
+        "py" => tree_sitter_python::LANGUAGE,
+        "go" => tree_sitter_go::LANGUAGE,
+        _ => return Vec::new(),
+    };
+
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&language.into()).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return Vec::new();
+    };
+
+    let root = tree.root_node();
+    let mut imports = Vec::new();
+    let mut cursor = root.walk();
+
+    for child in root.children(&mut cursor) {
+        match ext {
+            "rs" => import_from_rust(child, content, &mut imports),
+            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => {
+                import_from_js(child, content, &mut imports);
+            }
+            "py" => import_from_python(child, content, &mut imports),
+            "go" => import_from_go(child, content, &mut imports),
+            _ => {}
+        }
+    }
+
+    imports
+}
+
+fn build_raw_import(raw_path: &str, name: &str, line: i64) -> Import {
+    Import {
+        source_file: String::new(),
+        imported_name: name.to_string(),
+        target_path: String::new(),
+        raw_path: raw_path.to_string(),
+        line_number: line,
+    }
+}
+
+/// Strip surrounding quotes from a string literal.
+fn unquote(s: &str) -> &str {
+    s.trim_matches(|c| c == '"' || c == '\'' || c == '`')
+}
+
+// --- JS/TS imports ---
+
+#[allow(clippy::cast_possible_wrap)]
+fn import_from_js(node: tree_sitter::Node, content: &str, imports: &mut Vec<Import>) {
+    match node.kind() {
+        "import_statement" => {
+            let Some(source_node) = node.child_by_field_name("source") else {
+                return;
+            };
+            let raw_path = unquote(node_text(source_node, content));
+            if !raw_path.starts_with('.') {
+                return;
+            }
+            let line = node.start_position().row as i64 + 1;
+
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "import_clause" {
+                    import_js_clause_names(child, content, raw_path, line, imports);
+                }
+            }
+        }
+        "lexical_declaration" | "variable_declaration" => {
+            import_from_cjs_require(node, content, imports);
+        }
+        _ => {}
+    }
+}
+
+fn import_js_clause_names(
+    clause: tree_sitter::Node,
+    content: &str,
+    raw_path: &str,
+    line: i64,
+    imports: &mut Vec<Import>,
+) {
+    let mut cursor = clause.walk();
+    for child in clause.children(&mut cursor) {
+        match child.kind() {
+            "identifier" => {
+                // Default import: `import Foo from './bar'`
+                imports.push(build_raw_import(raw_path, "default", line));
+            }
+            "named_imports" => {
+                let mut inner = child.walk();
+                for spec in child.children(&mut inner) {
+                    if spec.kind() == "import_specifier" {
+                        // FR-3: use original name, not alias
+                        if let Some(name_node) = spec.child_by_field_name("name") {
+                            let name = node_text(name_node, content);
+                            imports.push(build_raw_import(raw_path, name, line));
+                        }
+                    }
+                }
+            }
+            // namespace_import (`import * as foo`) — out of scope per PRD
+            _ => {}
+        }
+    }
+}
+
+#[allow(clippy::cast_possible_wrap)]
+fn import_from_cjs_require(node: tree_sitter::Node, content: &str, imports: &mut Vec<Import>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "variable_declarator" {
+            continue;
+        }
+        let Some(value) = child.child_by_field_name("value") else {
+            continue;
+        };
+        let Some(path) = require_call_path(value, content) else {
+            continue;
+        };
+        if !path.starts_with('.') {
+            continue;
+        }
+
+        let Some(name_node) = child.child_by_field_name("name") else {
+            continue;
+        };
+        if name_node.kind() != "object_pattern" {
+            continue; // non-destructuring require not tracked
+        }
+
+        let line = node.start_position().row as i64 + 1;
+        let mut pattern_cursor = name_node.walk();
+        for prop in name_node.children(&mut pattern_cursor) {
+            match prop.kind() {
+                "shorthand_property_identifier_pattern" => {
+                    imports.push(build_raw_import(&path, node_text(prop, content), line));
+                }
+                "pair_pattern" => {
+                    // { original: renamed } — use key (original name)
+                    if let Some(key) = prop.child_by_field_name("key") {
+                        imports.push(build_raw_import(&path, node_text(key, content), line));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Extract the string path from a `require('...')` call expression.
+fn require_call_path(node: tree_sitter::Node, content: &str) -> Option<String> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    let func = node.child_by_field_name("function")?;
+    if node_text(func, content) != "require" {
+        return None;
+    }
+    let args = node.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    for child in args.children(&mut cursor) {
+        if child.kind() == "string" {
+            return Some(unquote(node_text(child, content)).to_string());
+        }
+    }
+    None
+}
+
+// --- Python imports ---
+
+#[allow(clippy::cast_possible_wrap)]
+fn import_from_python(node: tree_sitter::Node, content: &str, imports: &mut Vec<Import>) {
+    if node.kind() != "import_from_statement" {
+        return;
+    }
+
+    let Some(module_node) = node.child_by_field_name("module_name") else {
+        return;
+    };
+    let module_text = node_text(module_node, content);
+    if !module_text.starts_with('.') {
+        return;
+    }
+
+    let line = node.start_position().row as i64 + 1;
+    let raw_path = module_text.to_string();
+    let module_end = module_node.end_byte();
+
+    // Collect imported names that appear after the module_name node
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.start_byte() <= module_end {
+            continue;
+        }
+        match child.kind() {
+            "dotted_name" | "identifier" => {
+                imports.push(build_raw_import(&raw_path, node_text(child, content), line));
+            }
+            "aliased_import" => {
+                // from .foo import bar as baz → use "bar" (original)
+                if let Some(name) = child.child_by_field_name("name") {
+                    imports.push(build_raw_import(&raw_path, node_text(name, content), line));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+// --- Rust imports ---
+
+#[allow(clippy::cast_possible_wrap)]
+fn import_from_rust(node: tree_sitter::Node, content: &str, imports: &mut Vec<Import>) {
+    if node.kind() != "use_declaration" {
+        return;
+    }
+
+    let Some(arg) = node.child_by_field_name("argument") else {
+        return;
+    };
+    let arg_text = node_text(arg, content);
+    if !arg_text.starts_with("crate::") {
+        return;
+    }
+
+    let line = node.start_position().row as i64 + 1;
+
+    if let Some(brace_start) = arg_text.find('{') {
+        // Braced list: crate::a::b::{X, Y}
+        let module_path = arg_text[..brace_start].trim_end_matches(':');
+        let brace_content = arg_text[brace_start..]
+            .trim_start_matches('{')
+            .trim_end_matches('}');
+        for name in brace_content.split(',') {
+            let name = name.trim();
+            // Handle `Foo as Bar` — use original
+            let original = name.split_whitespace().next().unwrap_or(name);
+            if !original.is_empty() && original != "self" {
+                imports.push(build_raw_import(module_path, original, line));
+            }
+        }
+    } else if let Some((module_path, name)) = arg_text.rsplit_once("::") {
+        // Simple: crate::a::b::Name
+        let original = name.split_whitespace().next().unwrap_or(name);
+        if !original.is_empty() {
+            imports.push(build_raw_import(module_path, original, line));
+        }
+    }
+}
+
+// --- Go imports ---
+
+#[allow(clippy::cast_possible_wrap)]
+fn import_from_go(node: tree_sitter::Node, content: &str, imports: &mut Vec<Import>) {
+    if node.kind() != "import_declaration" {
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "import_spec" => {
+                import_go_spec(child, content, imports);
+            }
+            "import_spec_list" => {
+                let mut inner = child.walk();
+                for spec in child.children(&mut inner) {
+                    if spec.kind() == "import_spec" {
+                        import_go_spec(spec, content, imports);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[allow(clippy::cast_possible_wrap)]
+fn import_go_spec(node: tree_sitter::Node, content: &str, imports: &mut Vec<Import>) {
+    let Some(path_node) = node.child_by_field_name("path") else {
+        return;
+    };
+    let raw_path = unquote(node_text(path_node, content));
+    let line = node.start_position().row as i64 + 1;
+    let pkg_name = raw_path.rsplit('/').next().unwrap_or(raw_path);
+    imports.push(build_raw_import(raw_path, pkg_name, line));
+}
+
+// --- Import path resolution ---
+
+/// Resolve a raw import path to a relative file path within the project.
+/// Returns `None` if the target doesn't exist on disk.
+#[must_use]
+pub fn resolve_import_path(
+    source_file: &str,
+    raw_path: &str,
+    ext: &str,
+    project_root: &Path,
+) -> Option<String> {
+    match ext {
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => {
+            resolve_js_import(source_file, raw_path, project_root)
+        }
+        "py" => resolve_python_import(source_file, raw_path, project_root),
+        "rs" => resolve_rust_import(raw_path, project_root),
+        _ => None,
+    }
+}
+
+fn resolve_js_import(source_file: &str, raw_path: &str, root: &Path) -> Option<String> {
+    let source_dir = Path::new(source_file).parent()?;
+    let joined = source_dir.join(raw_path);
+    let normalized = normalize_path(&joined);
+
+    let extensions = ["", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
+    let index_files = ["index.ts", "index.tsx", "index.js", "index.jsx"];
+
+    for ext in &extensions {
+        let candidate = format!("{}{ext}", normalized.display());
+        if root.join(&candidate).is_file() {
+            return Some(candidate);
+        }
+    }
+    for index in &index_files {
+        let candidate = format!("{}/{index}", normalized.display());
+        if root.join(&candidate).is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn resolve_python_import(source_file: &str, raw_path: &str, root: &Path) -> Option<String> {
+    let source_dir = Path::new(source_file).parent()?;
+    let dots = raw_path.chars().take_while(|&c| c == '.').count();
+    let module = &raw_path[dots..];
+
+    let mut base = source_dir.to_path_buf();
+    for _ in 1..dots {
+        base = base.parent()?.to_path_buf();
+    }
+
+    if module.is_empty() {
+        let candidate = format!("{}/__init__.py", base.display());
+        return if root.join(&candidate).is_file() {
+            Some(candidate)
+        } else {
+            None
+        };
+    }
+
+    let module_path = module.replace('.', "/");
+    let resolved = base.join(&module_path);
+
+    let candidate = format!("{}.py", resolved.display());
+    if root.join(&candidate).is_file() {
+        return Some(candidate);
+    }
+    let candidate = format!("{}/__init__.py", resolved.display());
+    if root.join(&candidate).is_file() {
+        return Some(candidate);
+    }
+    None
+}
+
+fn resolve_rust_import(raw_path: &str, root: &Path) -> Option<String> {
+    let module_path = raw_path.strip_prefix("crate::")?;
+    let parts = module_path.replace("::", "/");
+
+    let candidate = format!("src/{parts}.rs");
+    if root.join(&candidate).is_file() {
+        return Some(candidate);
+    }
+    let candidate = format!("src/{parts}/mod.rs");
+    if root.join(&candidate).is_file() {
+        return Some(candidate);
+    }
+    None
+}
+
+/// Normalize a path by resolving `.` and `..` components without filesystem access.
+fn normalize_path(path: &Path) -> std::path::PathBuf {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                components.pop();
+            }
+            other => components.push(other),
+        }
+    }
+    components.iter().collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -1870,5 +2295,176 @@ export class Service {
         assert_eq!(symbols[0].line_start, 2);
         assert_eq!(symbols[1].name, "beta");
         assert_eq!(symbols[1].line_start, 4);
+    }
+
+    // -- Import extraction tests --
+
+    #[test]
+    fn js_esm_named_imports() {
+        let src = "import { foo, bar } from './utils.js';\n";
+        let imports = extract_imports(Path::new("src/main.js"), src);
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].imported_name, "foo");
+        assert_eq!(imports[1].imported_name, "bar");
+        assert_eq!(imports[0].raw_path, "./utils.js");
+    }
+
+    #[test]
+    fn js_esm_aliased_import() {
+        let src = "import { foo as renamed } from './utils.js';\n";
+        let imports = extract_imports(Path::new("src/main.js"), src);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].imported_name, "foo");
+    }
+
+    #[test]
+    fn js_esm_default_import() {
+        let src = "import Foo from './bar.js';\n";
+        let imports = extract_imports(Path::new("src/main.js"), src);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].imported_name, "default");
+    }
+
+    #[test]
+    fn js_skips_non_relative_imports() {
+        let src = "import { foo } from 'lodash';\nimport { bar } from '@neb/utils';\n";
+        let imports = extract_imports(Path::new("src/main.js"), src);
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn js_skips_namespace_import() {
+        let src = "import * as utils from './utils.js';\n";
+        let imports = extract_imports(Path::new("src/main.js"), src);
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn cjs_require_destructuring() {
+        let src = "const { foo, bar } = require('./utils');\n";
+        let imports = extract_imports(Path::new("src/main.js"), src);
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].imported_name, "foo");
+        assert_eq!(imports[1].imported_name, "bar");
+    }
+
+    #[test]
+    fn cjs_require_non_destructuring_skipped() {
+        let src = "const utils = require('./utils');\n";
+        let imports = extract_imports(Path::new("src/main.js"), src);
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn python_relative_import() {
+        let src = "from .utils import helper\n";
+        let imports = extract_imports(Path::new("src/main.py"), src);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].imported_name, "helper");
+        assert_eq!(imports[0].raw_path, ".utils");
+    }
+
+    #[test]
+    fn python_absolute_import_skipped() {
+        let src = "from os.path import join\n";
+        let imports = extract_imports(Path::new("src/main.py"), src);
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn rust_crate_import() {
+        let src = "use crate::map::scan::ScanOutput;\n";
+        let imports = extract_imports(Path::new("src/lib.rs"), src);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].imported_name, "ScanOutput");
+        assert_eq!(imports[0].raw_path, "crate::map::scan");
+    }
+
+    #[test]
+    fn rust_crate_braced_import() {
+        let src = "use crate::map::{MapEntry, Symbol};\n";
+        let imports = extract_imports(Path::new("src/lib.rs"), src);
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].imported_name, "MapEntry");
+        assert_eq!(imports[1].imported_name, "Symbol");
+    }
+
+    #[test]
+    fn rust_external_crate_skipped() {
+        let src = "use std::path::Path;\nuse serde::Serialize;\n";
+        let imports = extract_imports(Path::new("src/lib.rs"), src);
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn go_import_single() {
+        let src = "package main\nimport \"fmt\"\n";
+        let imports = extract_imports(Path::new("main.go"), src);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].imported_name, "fmt");
+    }
+
+    #[test]
+    fn go_grouped_imports() {
+        let src = "package main\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n";
+        let imports = extract_imports(Path::new("main.go"), src);
+        assert_eq!(imports.len(), 2);
+    }
+
+    #[test]
+    fn extract_imports_unsupported_ext() {
+        assert!(extract_imports(Path::new("styles.css"), ".foo {}").is_empty());
+    }
+
+    #[test]
+    fn import_line_numbers() {
+        let src = "\nimport { foo } from './a.js';\n\nimport { bar } from './b.js';\n";
+        let imports = extract_imports(Path::new("src/main.js"), src);
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].line_number, 2);
+        assert_eq!(imports[1].line_number, 4);
+    }
+
+    #[test]
+    fn resolve_js_import_with_extension() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/utils.js"), "").unwrap();
+        let result = resolve_import_path("src/main.js", "./utils", "js", tmp.path());
+        assert_eq!(result, Some("src/utils.js".to_string()));
+    }
+
+    #[test]
+    fn resolve_js_import_index_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/utils")).unwrap();
+        std::fs::write(tmp.path().join("src/utils/index.ts"), "").unwrap();
+        let result = resolve_import_path("src/main.ts", "./utils", "ts", tmp.path());
+        assert_eq!(result, Some("src/utils/index.ts".to_string()));
+    }
+
+    #[test]
+    fn resolve_python_relative_import() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/utils.py"), "").unwrap();
+        let result = resolve_import_path("src/main.py", ".utils", "py", tmp.path());
+        assert_eq!(result, Some("src/utils.py".to_string()));
+    }
+
+    #[test]
+    fn resolve_rust_crate_import() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/map")).unwrap();
+        std::fs::write(tmp.path().join("src/map/scan.rs"), "").unwrap();
+        let result = resolve_import_path("src/lib.rs", "crate::map::scan", "rs", tmp.path());
+        assert_eq!(result, Some("src/map/scan.rs".to_string()));
+    }
+
+    #[test]
+    fn resolve_unresolvable_returns_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = resolve_import_path("src/main.js", "./nonexistent", "js", tmp.path());
+        assert!(result.is_none());
     }
 }

@@ -57,11 +57,17 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 let output = map::scan::scan_project(&project_root)?;
                 let count = output.entries.len();
                 let sym_count = output.symbols.len();
+                let imp_count = output.imports.len();
                 map::write_map(&wp_dir, &output.entries)?;
                 if let Err(e) = map::index::rebuild_symbols(&wp_dir, &output.symbols) {
                     eprintln!("Warning: symbol index failed: {e}");
                 }
-                println!("Scanned {count} files, {sym_count} symbols → .waypoint/map.md");
+                if let Err(e) = map::index::rebuild_imports(&wp_dir, &output.imports) {
+                    eprintln!("Warning: import index failed: {e}");
+                }
+                println!(
+                    "Scanned {count} files, {sym_count} symbols, {imp_count} imports → .waypoint/map.md"
+                );
             }
             Ok(())
         }
@@ -218,6 +224,28 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             Ok(())
         }
 
+        Command::Callers { symbol, context } => {
+            let project_root = project::resolve_with_context(context.as_deref())?;
+            let wp_dir = project::require_waypoint_dir(&project_root)?;
+            let results = map::index::find_importers(&wp_dir, &symbol, None)?;
+            if results.is_empty() {
+                println!("No importers found for: {symbol}");
+            } else {
+                // Group by file, show lines per file, count unique files
+                let mut by_file: std::collections::BTreeMap<&str, Vec<i64>> =
+                    std::collections::BTreeMap::new();
+                for (file, line) in &results {
+                    by_file.entry(file).or_default().push(*line);
+                }
+                println!("{} file(s) import {symbol}:", by_file.len());
+                for (file, lines) in &by_file {
+                    let line_list: Vec<String> = lines.iter().map(ToString::to_string).collect();
+                    println!("  {file}:{}", line_list.join(","));
+                }
+            }
+            Ok(())
+        }
+
         Command::Hook { command } => match command {
             HookCommand::PreRead => hook::pre_read::run(),
             HookCommand::SessionStart => hook::session_start::run(),
@@ -302,6 +330,9 @@ fn scan_one_project(root: &std::path::Path) -> Result<(usize, usize, bool), AppE
     map::write_map(&wp_dir, &output.entries)?;
     if let Err(e) = map::index::rebuild_symbols(&wp_dir, &output.symbols) {
         eprintln!("    Warning: symbol index failed: {e}");
+    }
+    if let Err(e) = map::index::rebuild_imports(&wp_dir, &output.imports) {
+        eprintln!("    Warning: import index failed: {e}");
     }
     Ok((files, symbols, initialized))
 }

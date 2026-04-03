@@ -56,9 +56,10 @@ fn remove_stale_entries(wp_dir: &Path, stale: &[String]) -> Result<(), AppError>
     for path in stale {
         if map::index::remove(wp_dir, path).is_ok() {
             cleaned.push(path);
-            // Best-effort symbol cleanup — index row (stale discovery driver)
-            // is already gone, so map.md will be updated regardless.
+            // Best-effort symbol + import cleanup — index row (stale discovery
+            // driver) is already gone, so map.md will be updated regardless.
             let _ = map::index::remove_file_symbols(wp_dir, path);
+            let _ = map::index::remove_file_imports(wp_dir, path);
         }
     }
 
@@ -93,6 +94,7 @@ pub fn run() -> Result<(), AppError> {
 
     let abs_path = Path::new(&ctx.file_path);
     let project_root = wp_dir.parent();
+    let mut sig_warnings = String::new();
 
     if abs_path.exists() {
         // Re-parse the changed file and update its map entry + symbols
@@ -108,12 +110,36 @@ pub fn run() -> Result<(), AppError> {
 
             map::update_entry(&wp_dir, entry)?;
 
+            // Snapshot old exported symbols BEFORE the delete-then-insert
+            let old_exported =
+                map::index::exported_symbols_for_file(&wp_dir, &relative).unwrap_or_default();
+
             // Update symbol index for this file
             let mut file_symbols = map::extract::extract_symbols(abs_path, &content);
             for sym in &mut file_symbols {
                 sym.file_path.clone_from(&relative);
             }
             let _ = map::index::update_file_symbols(&wp_dir, &relative, &file_symbols);
+
+            // Update import index for this file
+            let ext_str = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let mut file_imports = map::extract::extract_imports(abs_path, &content);
+            for imp in &mut file_imports {
+                imp.source_file.clone_from(&relative);
+                if let Some(resolved) = map::extract::resolve_import_path(
+                    &relative,
+                    &imp.raw_path,
+                    ext_str,
+                    project_root.unwrap_or(Path::new("")),
+                ) {
+                    imp.target_path = resolved;
+                }
+            }
+            let _ = map::index::update_file_imports(&wp_dir, &relative, &file_imports);
+
+            // Detect signature changes and warn about importers
+            sig_warnings =
+                detect_signature_changes(&wp_dir, &relative, &old_exported, &file_symbols);
         }
 
         // Clean up stale sibling entries (catches renames without manual scan)
@@ -122,20 +148,93 @@ pub fn run() -> Result<(), AppError> {
             remove_stale_entries(&wp_dir, &stale)?;
         }
     } else {
-        // File was deleted — remove from map, index, and symbols
+        // File was deleted — remove from map, index, symbols, and imports
         let _ = map::index::remove(&wp_dir, &relative);
         let _ = map::index::remove_file_symbols(&wp_dir, &relative);
+        let _ = map::index::remove_file_imports(&wp_dir, &relative);
         let mut entries = map::read_map(&wp_dir)?;
         entries.retain(|e| e.path != relative);
         map::write_map(&wp_dir, &entries)?;
     }
 
-    super::emit_hook_output(
-        super::HookEvent::PostToolUse,
-        None,
-        &format!("[waypoint] map updated: {relative}"),
-    );
+    let mut output = format!("[waypoint] map updated: {relative}");
+    if !sig_warnings.is_empty() {
+        output.push('\n');
+        output.push_str(&sig_warnings);
+    }
+    super::emit_hook_output(super::HookEvent::PostToolUse, None, &output);
     Ok(())
+}
+
+/// Names too common to warn about — built-ins and widely-used method names.
+const COMMON_NAMES: &[&str] = &[
+    "new", "from", "default", "toString", "valueOf", "map", "filter", "reduce", "then", "catch",
+    "get", "set", "init", "create", "delete", "update", "find", "clone",
+];
+
+/// Compare old vs new exported symbol signatures, emit warnings for changed ones.
+fn detect_signature_changes(
+    wp_dir: &Path,
+    file_path: &str,
+    old_exported: &[map::index::SymbolRow],
+    new_symbols: &[map::extract::Symbol],
+) -> String {
+    use std::collections::HashMap;
+
+    let old_sigs: HashMap<&str, &str> = old_exported
+        .iter()
+        .map(|s| (s.name.as_str(), s.signature.as_str()))
+        .collect();
+
+    let mut warnings = Vec::new();
+
+    for sym in new_symbols {
+        if !sym.exported {
+            continue;
+        }
+        if COMMON_NAMES.contains(&sym.name.as_str()) {
+            continue;
+        }
+        let Some(old_sig) = old_sigs.get(sym.name.as_str()) else {
+            continue; // new symbol, not a signature change
+        };
+        if *old_sig == sym.signature {
+            continue;
+        }
+
+        // Signature changed — find importers
+        let importers =
+            map::index::find_importers(wp_dir, &sym.name, Some(file_path)).unwrap_or_default();
+        if importers.is_empty() {
+            continue;
+        }
+
+        // Deduplicate by file for count; keep first line per file for display
+        let mut seen = std::collections::BTreeMap::new();
+        for (f, l) in &importers {
+            seen.entry(f.as_str()).or_insert(*l);
+        }
+        let file_count = seen.len();
+        let shown: Vec<String> = seen
+            .iter()
+            .take(5)
+            .map(|(f, l)| format!("{f}:{l}"))
+            .collect();
+        let mut warning = format!(
+            "[waypoint] signature changed for {}: {file_count} file(s) — {}",
+            sym.name,
+            shown.join(", ")
+        );
+        if file_count > 5 {
+            use std::fmt::Write;
+            let _ = write!(warning, " ... and {} more", file_count - 5);
+        }
+        warning.push_str("\n  → run: waypoint callers ");
+        warning.push_str(&sym.name);
+        warnings.push(warning);
+    }
+
+    warnings.join("\n")
 }
 
 #[cfg(test)]
@@ -260,5 +359,129 @@ mod tests {
         let remaining = map::read_map(&wp_dir).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].path, "src/main.rs");
+    }
+
+    #[test]
+    fn detect_signature_changes_warns_on_changed_export() {
+        let tmp = setup_waypoint_project();
+        let wp_dir = tmp.path().join(".waypoint");
+
+        // Seed old exported symbol
+        let old_sym = map::extract::Symbol {
+            file_path: "src/utils.js".into(),
+            name: "process".into(),
+            kind: "fn".into(),
+            signature: "export function process(x)".into(),
+            line_start: 1,
+            line_end: 3,
+            exported: true,
+        };
+        map::index::rebuild_symbols(&wp_dir, &[old_sym]).unwrap();
+
+        // Seed an import pointing at this file
+        let imp = map::extract::Import {
+            source_file: "src/main.js".into(),
+            imported_name: "process".into(),
+            target_path: "src/utils.js".into(),
+            raw_path: "./utils.js".into(),
+            line_number: 1,
+        };
+        map::index::rebuild_imports(&wp_dir, &[imp]).unwrap();
+
+        // Snapshot old exported symbols
+        let old_exported = map::index::exported_symbols_for_file(&wp_dir, "src/utils.js").unwrap();
+
+        // New symbol with changed signature
+        let new_sym = map::extract::Symbol {
+            file_path: "src/utils.js".into(),
+            name: "process".into(),
+            kind: "fn".into(),
+            signature: "export function process(x, y)".into(),
+            line_start: 1,
+            line_end: 3,
+            exported: true,
+        };
+
+        let result = detect_signature_changes(&wp_dir, "src/utils.js", &old_exported, &[new_sym]);
+        assert!(
+            result.contains("signature changed for process"),
+            "got: {result}"
+        );
+        assert!(result.contains("src/main.js:1"), "got: {result}");
+        assert!(result.contains("waypoint callers process"), "got: {result}");
+    }
+
+    #[test]
+    fn detect_signature_changes_skips_non_exported() {
+        let tmp = setup_waypoint_project();
+        let wp_dir = tmp.path().join(".waypoint");
+
+        let old_sym = map::extract::Symbol {
+            file_path: "src/utils.js".into(),
+            name: "helper".into(),
+            kind: "fn".into(),
+            signature: "function helper(x)".into(),
+            line_start: 1,
+            line_end: 1,
+            exported: false,
+        };
+        map::index::rebuild_symbols(&wp_dir, &[old_sym]).unwrap();
+
+        // Non-exported symbol changed — should NOT warn
+        let new_sym = map::extract::Symbol {
+            file_path: "src/utils.js".into(),
+            name: "helper".into(),
+            kind: "fn".into(),
+            signature: "function helper(x, y)".into(),
+            line_start: 1,
+            line_end: 1,
+            exported: false,
+        };
+
+        let result = detect_signature_changes(&wp_dir, "src/utils.js", &[], &[new_sym]);
+        assert!(result.is_empty(), "got: {result}");
+    }
+
+    #[test]
+    fn detect_signature_changes_skips_common_names() {
+        let tmp = setup_waypoint_project();
+        let wp_dir = tmp.path().join(".waypoint");
+
+        let old_sym = map::extract::Symbol {
+            file_path: "src/utils.js".into(),
+            name: "default".into(),
+            kind: "fn".into(),
+            signature: "export default function()".into(),
+            line_start: 1,
+            line_end: 1,
+            exported: true,
+        };
+        map::index::rebuild_symbols(&wp_dir, std::slice::from_ref(&old_sym)).unwrap();
+
+        let old_exported = vec![map::index::SymbolRow {
+            file_path: "src/utils.js".into(),
+            name: "default".into(),
+            kind: "fn".into(),
+            signature: "export default function()".into(),
+            line_start: 1,
+            line_end: 1,
+            exported: true,
+        }];
+
+        let new_sym = map::extract::Symbol {
+            file_path: "src/utils.js".into(),
+            name: "default".into(),
+            kind: "fn".into(),
+            signature: "export default function(x)".into(),
+            line_start: 1,
+            line_end: 1,
+            exported: true,
+        };
+
+        let result = detect_signature_changes(&wp_dir, "src/utils.js", &old_exported, &[new_sym]);
+        assert!(
+            result.is_empty(),
+            "common name should be filtered: {result}"
+        );
     }
 }

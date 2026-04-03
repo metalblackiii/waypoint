@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::MapEntry;
-use super::extract::Symbol;
+use super::extract::{Import, Symbol};
 use crate::AppError;
 
 const INDEX_FILENAME: &str = "map_index.db";
@@ -25,7 +25,18 @@ CREATE TABLE IF NOT EXISTS symbols (
     exported INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
-CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);";
+CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
+CREATE TABLE IF NOT EXISTS imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_file TEXT NOT NULL,
+    imported_name TEXT NOT NULL,
+    target_path TEXT NOT NULL,
+    raw_path TEXT NOT NULL,
+    line_number INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_imports_source ON imports(source_file);
+CREATE INDEX IF NOT EXISTS idx_imports_target ON imports(target_path);
+CREATE INDEX IF NOT EXISTS idx_imports_name ON imports(imported_name);";
 
 const FTS_SCHEMA: &str = "\
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(\
@@ -240,6 +251,138 @@ pub fn remove_file_symbols(waypoint_dir: &Path, file_path: &str) -> Result<(), A
         params![file_path],
     );
     Ok(())
+}
+
+/// Rebuild the imports table from a full scan.
+pub fn rebuild_imports(waypoint_dir: &Path, imports: &[Import]) -> Result<(), AppError> {
+    let conn = open_index(waypoint_dir)?;
+
+    conn.execute_batch("DELETE FROM imports")?;
+
+    let tx = conn.unchecked_transaction()?;
+    let mut stmt = tx.prepare(
+        "INSERT INTO imports (source_file, imported_name, target_path, raw_path, line_number) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+
+    for imp in imports {
+        stmt.execute(params![
+            imp.source_file,
+            imp.imported_name,
+            imp.target_path,
+            imp.raw_path,
+            imp.line_number
+        ])?;
+    }
+
+    drop(stmt);
+    tx.commit()?;
+    Ok(())
+}
+
+/// Update imports for a single file (incremental, used by `post_write` hook).
+pub fn update_file_imports(
+    waypoint_dir: &Path,
+    file_path: &str,
+    imports: &[Import],
+) -> Result<(), AppError> {
+    let conn = open_index(waypoint_dir)?;
+
+    conn.execute(
+        "DELETE FROM imports WHERE source_file = ?1",
+        params![file_path],
+    )?;
+
+    let tx = conn.unchecked_transaction()?;
+    let mut stmt = tx.prepare(
+        "INSERT INTO imports (source_file, imported_name, target_path, raw_path, line_number) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+
+    for imp in imports {
+        stmt.execute(params![
+            file_path,
+            imp.imported_name,
+            imp.target_path,
+            imp.raw_path,
+            imp.line_number
+        ])?;
+    }
+
+    drop(stmt);
+    tx.commit()?;
+    Ok(())
+}
+
+/// Remove all imports for a deleted file (as source).
+pub fn remove_file_imports(waypoint_dir: &Path, file_path: &str) -> Result<(), AppError> {
+    let conn = open_index(waypoint_dir)?;
+    conn.execute(
+        "DELETE FROM imports WHERE source_file = ?1",
+        params![file_path],
+    )?;
+    Ok(())
+}
+
+/// Find all files that import a given symbol name, optionally filtered by target file.
+/// Joins against the symbols table to validate the symbol exists at the target (FR-5).
+/// Returns deduplicated `(source_file, line_number)` pairs.
+pub fn find_importers(
+    waypoint_dir: &Path,
+    symbol_name: &str,
+    target_file: Option<&str>,
+) -> Result<Vec<(String, i64)>, AppError> {
+    let conn = open_index(waypoint_dir)?;
+
+    let results = if let Some(target) = target_file {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT i.source_file, i.line_number FROM imports i \
+             INNER JOIN symbols s ON s.name = i.imported_name AND s.file_path = i.target_path \
+             WHERE i.imported_name = ?1 AND i.target_path = ?2 \
+             ORDER BY i.source_file",
+        )?;
+        let rows = stmt.query_map(params![symbol_name, target], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT i.source_file, i.line_number FROM imports i \
+             INNER JOIN symbols s ON s.name = i.imported_name AND s.file_path = i.target_path \
+             WHERE i.imported_name = ?1 \
+             ORDER BY i.source_file",
+        )?;
+        let rows = stmt.query_map(params![symbol_name], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    Ok(results)
+}
+
+/// Query exported symbols for a file. Used to snapshot before symbol update.
+pub fn exported_symbols_for_file(
+    waypoint_dir: &Path,
+    file_path: &str,
+) -> Result<Vec<SymbolRow>, AppError> {
+    let conn = open_index(waypoint_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT file_path, name, kind, signature, line_start, line_end, exported \
+         FROM symbols WHERE file_path = ?1 AND exported = 1",
+    )?;
+    let rows = stmt.query_map(params![file_path], |row| {
+        Ok(SymbolRow {
+            file_path: row.get(0)?,
+            name: row.get(1)?,
+            kind: row.get(2)?,
+            signature: row.get(3)?,
+            line_start: row.get(4)?,
+            line_end: row.get(5)?,
+            exported: row.get::<_, i64>(6)? != 0,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 /// List all entry paths under a directory prefix. Used for stale-entry cleanup.
@@ -574,6 +717,77 @@ mod tests {
         assert!(src_entries.contains(&"src/lib.rs".to_string()));
         // Should not include deeper subdirectory entries
         assert!(!src_entries.contains(&"src/map/scan.rs".to_string()));
+    }
+
+    fn sample_import(source: &str, name: &str, target: &str) -> Import {
+        Import {
+            source_file: source.into(),
+            imported_name: name.into(),
+            target_path: target.into(),
+            raw_path: format!("./{target}"),
+            line_number: 1,
+        }
+    }
+
+    /// Seed symbols so `find_importers` join succeeds.
+    fn seed_symbols_for_imports(dir: &std::path::Path) {
+        let syms = vec![
+            sample_symbol("src/utils.js", "foo", "fn"),
+            sample_symbol("src/utils.js", "new_fn", "fn"),
+            sample_symbol("src/helpers.js", "bar", "fn"),
+        ];
+        rebuild_symbols(dir, &syms).unwrap();
+    }
+
+    #[test]
+    fn rebuild_imports_then_find() {
+        let tmp = TempDir::new().unwrap();
+        seed_symbols_for_imports(tmp.path());
+        let imports = vec![
+            sample_import("src/a.js", "foo", "src/utils.js"),
+            sample_import("src/b.js", "foo", "src/utils.js"),
+            sample_import("src/a.js", "bar", "src/helpers.js"),
+        ];
+        rebuild_imports(tmp.path(), &imports).unwrap();
+
+        let results = find_importers(tmp.path(), "foo", None).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let results = find_importers(tmp.path(), "foo", Some("src/utils.js")).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let results = find_importers(tmp.path(), "bar", None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "src/a.js");
+    }
+
+    #[test]
+    fn update_file_imports_replaces() {
+        let tmp = TempDir::new().unwrap();
+        seed_symbols_for_imports(tmp.path());
+        let imports = vec![sample_import("src/a.js", "old_fn", "src/utils.js")];
+        rebuild_imports(tmp.path(), &imports).unwrap();
+
+        let new_imports = vec![sample_import("src/a.js", "new_fn", "src/utils.js")];
+        update_file_imports(tmp.path(), "src/a.js", &new_imports).unwrap();
+
+        assert!(
+            find_importers(tmp.path(), "old_fn", None)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(find_importers(tmp.path(), "new_fn", None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remove_file_imports_clears() {
+        let tmp = TempDir::new().unwrap();
+        seed_symbols_for_imports(tmp.path());
+        let imports = vec![sample_import("src/a.js", "foo", "src/utils.js")];
+        rebuild_imports(tmp.path(), &imports).unwrap();
+
+        remove_file_imports(tmp.path(), "src/a.js").unwrap();
+        assert!(find_importers(tmp.path(), "foo", None).unwrap().is_empty());
     }
 
     #[test]

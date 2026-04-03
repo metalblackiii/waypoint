@@ -2,7 +2,9 @@ use std::path::Path;
 
 use ignore::WalkBuilder;
 
-use super::extract::{Symbol, extract_description, extract_symbols};
+use super::extract::{
+    Import, Symbol, extract_description, extract_imports, extract_symbols, resolve_import_path,
+};
 use super::{MapEntry, estimate_tokens};
 use crate::AppError;
 
@@ -10,6 +12,7 @@ use crate::AppError;
 pub struct ScanOutput {
     pub entries: Vec<MapEntry>,
     pub symbols: Vec<Symbol>,
+    pub imports: Vec<Import>,
 }
 
 /// Configured walker shared by `count_scannable_files` and `scan_project`.
@@ -45,6 +48,7 @@ pub fn count_scannable_files(project_root: &Path) -> usize {
 pub fn scan_project(project_root: &Path) -> Result<ScanOutput, AppError> {
     let mut entries = Vec::new();
     let mut symbols = Vec::new();
+    let mut imports = Vec::new();
 
     let walker = project_walker(project_root);
 
@@ -78,7 +82,7 @@ pub fn scan_project(project_root: &Path) -> Result<ScanOutput, AppError> {
         let description = extract_description(path, &content);
         let token_estimate = estimate_tokens(&content, path);
 
-        // Extract structured symbols from tree-sitter-supported files only
+        // Extract structured symbols and imports from tree-sitter-supported files
         let ext = path.extension().and_then(|e| e.to_str());
         if matches!(
             ext,
@@ -89,6 +93,18 @@ pub fn scan_project(project_root: &Path) -> Result<ScanOutput, AppError> {
                 sym.file_path.clone_from(&relative);
             }
             symbols.extend(file_symbols);
+
+            let ext_str = ext.unwrap_or("");
+            let mut file_imports = extract_imports(path, &content);
+            for imp in &mut file_imports {
+                imp.source_file.clone_from(&relative);
+                if let Some(resolved) =
+                    resolve_import_path(&relative, &imp.raw_path, ext_str, project_root)
+                {
+                    imp.target_path = resolved;
+                }
+            }
+            imports.extend(file_imports);
         }
 
         entries.push(MapEntry {
@@ -99,7 +115,11 @@ pub fn scan_project(project_root: &Path) -> Result<ScanOutput, AppError> {
     }
 
     entries.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(ScanOutput { entries, symbols })
+    Ok(ScanOutput {
+        entries,
+        symbols,
+        imports,
+    })
 }
 
 /// Check if a file should appear in the waypoint map: scannable type and no hidden components.
