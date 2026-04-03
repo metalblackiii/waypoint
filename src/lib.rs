@@ -150,6 +150,20 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 }
                 Ok(())
             }
+            TrapCommand::Delete { id, context } => {
+                let project_root = project::resolve_with_context(context.as_deref())?;
+                let wp_dir = if context.is_some() {
+                    project::require_waypoint_dir(&project_root)?
+                } else {
+                    project::waypoint_dir(&project_root)
+                };
+
+                match trap::delete(&wp_dir, &id)? {
+                    Some(entry) => println!("Deleted {} [{}]", entry.id, entry.file),
+                    None => println!("No trap found with id: {id}"),
+                }
+                Ok(())
+            }
             TrapCommand::Prune {
                 older_than,
                 all,

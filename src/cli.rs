@@ -107,6 +107,14 @@ pub enum TrapCommand {
         #[arg(long)]
         tags: String,
     },
+    /// Delete a trap by ID
+    Delete {
+        /// Trap ID (e.g. trap-12c9cca1)
+        id: String,
+        /// Resolve project from this path instead of cwd
+        #[arg(short = 'C', long = "context")]
+        context: Option<String>,
+    },
     /// Remove trap entries older than a duration (e.g., 90d)
     Prune {
         /// Duration threshold, e.g. "90d" (days only)

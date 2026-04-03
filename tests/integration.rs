@@ -147,6 +147,134 @@ fn cli_trap_search_no_results() {
 }
 
 #[test]
+fn cli_trap_delete_removes_entry() {
+    let project = setup_project();
+
+    // Log a trap first
+    waypoint()
+        .args([
+            "trap",
+            "log",
+            "--error",
+            "test error",
+            "--file",
+            "src/main.rs",
+            "--cause",
+            "test cause",
+            "--fix",
+            "test fix",
+            "--tags",
+            "test",
+        ])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Trap logged"));
+
+    // Search to get the ID
+    let output = waypoint()
+        .args(["trap", "search", "test error"])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let id = stdout
+        .lines()
+        .find(|l| l.starts_with("trap-"))
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap();
+
+    // Delete it
+    waypoint()
+        .args(["trap", "delete", id])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted"))
+        .stdout(predicate::str::contains(id));
+
+    // Verify it's gone
+    waypoint()
+        .args(["trap", "search", "test error"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No traps found"));
+}
+
+#[test]
+fn cli_trap_delete_nonexistent_id() {
+    let project = setup_project();
+
+    waypoint()
+        .args(["trap", "delete", "trap-00000000"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No trap found with id"));
+}
+
+#[test]
+fn cli_trap_delete_with_context_flag() {
+    let project = setup_project();
+
+    // Log a trap
+    waypoint()
+        .args([
+            "trap",
+            "log",
+            "--error",
+            "ctx error",
+            "--file",
+            "src/main.rs",
+            "--cause",
+            "ctx cause",
+            "--fix",
+            "ctx fix",
+            "--tags",
+            "ctx",
+        ])
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // Search with -C to get the ID
+    let output = waypoint()
+        .args([
+            "trap",
+            "search",
+            "ctx error",
+            "-C",
+            &project.path().display().to_string(),
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let id = stdout
+        .lines()
+        .find(|l| l.starts_with("trap-"))
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap();
+
+    // Delete with -C from a different cwd
+    waypoint()
+        .args([
+            "trap",
+            "delete",
+            id,
+            "-C",
+            &project.path().display().to_string(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted"));
+}
+
+#[test]
 fn cli_gain_shows_project_stats() {
     let project = setup_project();
 

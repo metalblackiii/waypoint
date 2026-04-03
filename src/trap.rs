@@ -146,6 +146,27 @@ pub fn prune(waypoint_dir: &Path, max_age_days: i64) -> Result<Vec<TrapEntry>, A
     Ok(pruned)
 }
 
+/// Delete a trap by ID. Returns the removed entry, or None if not found.
+pub fn delete(waypoint_dir: &Path, id: &str) -> Result<Option<TrapEntry>, AppError> {
+    let traps = read_traps(waypoint_dir)?;
+    let (removed, keep): (Vec<_>, Vec<_>) = traps.into_iter().partition(|t| t.id == id);
+
+    if removed.is_empty() {
+        return Ok(None);
+    }
+
+    let path = waypoint_dir.join("traps.json");
+    if keep.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+    } else {
+        write_traps(waypoint_dir, &keep)?;
+    }
+
+    Ok(removed.into_iter().next())
+}
+
 /// Find traps relevant to a specific file.
 #[must_use]
 pub fn traps_for_file<'a>(traps: &'a [TrapEntry], file_path: &str) -> Vec<&'a TrapEntry> {
@@ -351,6 +372,44 @@ mod tests {
             .map(ToString::to_string)
             .collect();
         assert!((jaccard_similarity(&a, &a) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn delete_by_id() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("traps.json"), "[]").unwrap();
+
+        log_trap(
+            tmp.path(),
+            &NewTrap {
+                error_message: "some error",
+                file: "src/foo.rs",
+                root_cause: "bad logic",
+                fix: "fixed it",
+                tags_str: "test",
+            },
+        )
+        .unwrap();
+
+        let traps = read_traps(tmp.path()).unwrap();
+        assert_eq!(traps.len(), 1);
+        let id = traps[0].id.clone();
+
+        let removed = delete(tmp.path(), &id).unwrap();
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().id, id);
+
+        let remaining = read_traps(tmp.path()).unwrap();
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn delete_nonexistent_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("traps.json"), "[]").unwrap();
+
+        let removed = delete(tmp.path(), "trap-nonexistent").unwrap();
+        assert!(removed.is_none());
     }
 
     #[test]
