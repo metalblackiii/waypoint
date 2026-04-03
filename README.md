@@ -11,7 +11,7 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 | **session-start** | New conversation | Auto-scans if no map exists. Injects trap log reminder. |
 | **pre-read** | Before Claude reads a file | Injects file description and token estimate from the map (works across projects) |
 | **pre-write** | Before Claude edits a file | Surfaces known bug traps for that file |
-| **post-write** | After Claude edits a file | Incrementally updates the file's map entry |
+| **post-write** | After Claude edits a file | Incrementally updates the file's map entry, warns if exported symbol signatures changed |
 | **post-failure** | After a tool error | Suggests searching traps for known fixes |
 
 ## What lives where
@@ -19,7 +19,7 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 ```
 .waypoint/           ← per-project, gitignored
   map.md             ← file descriptions + token estimates (human-readable source of truth)
-  map_index.db       ← SQLite index for O(1) map lookups + FTS5 symbol search
+  map_index.db       ← SQLite index for O(1) map lookups + FTS5 symbol search + import tracking
   traps.json         ← bug fix log with dedup
 
 ~/Library/Application Support/waypoint/
@@ -84,6 +84,15 @@ Full-text search across all indexed symbols (function names, structs, classes, t
 ```sh
 waypoint find "token savings"     # BM25-ranked results from the symbol index
 waypoint find "scan" --limit 5
+```
+
+### `waypoint callers`
+
+Find all files that import a given symbol. Queries the imports table (populated by `waypoint scan`) joined against the symbols table to validate targets.
+
+```sh
+waypoint callers AppError              # current project
+waypoint callers STATUS_CODES -C ~/repos/neb-ms-billing  # another project
 ```
 
 ### `waypoint gain`

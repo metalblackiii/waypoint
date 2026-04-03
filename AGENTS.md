@@ -18,8 +18,8 @@ Project intelligence for Claude Code — hooks, file map, traps, ledger.
 ## Architecture
 
 - `map.md` is the human-readable source of truth. `map_index.db` is a SQLite cache for O(1) lookups — it can be deleted and will rebuild on next `waypoint scan`.
-- `map_index.db` also contains a `symbols` table (structured symbol data from tree-sitter) and a `symbols_fts` FTS5 table for full-text search. Both rebuild on `waypoint scan`.
-- `waypoint sketch <name>` queries symbols by exact name; `waypoint find "<query>"` uses FTS5 with LIKE fallback.
+- `map_index.db` also contains a `symbols` table (structured symbol data from tree-sitter), a `symbols_fts` FTS5 table for full-text search, and an `imports` table tracking cross-file import relationships. All rebuild on `waypoint scan`.
+- `waypoint sketch <name>` queries symbols by exact name; `waypoint find "<query>"` uses FTS5 with LIKE fallback; `waypoint callers <name>` queries the imports table joined against symbols to find all files importing a given symbol.
 - `waypoint scan --all [PATH]` discovers immediate child git repos and scans each. Initializes `.waypoint/` if missing. Smart default: from inside a project, walks up to parent and scans siblings.
 - `traps.json` is a structured error-cause-fix database with Jaccard dedup per file. Surfaced on pre-write.
 - `atomic_write_with(path, |writer| ...)` in `project.rs` — use this for all file writes that need crash safety. The closure receives `&mut BufWriter<File>`.

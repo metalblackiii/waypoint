@@ -10,6 +10,7 @@ You are working in a Waypoint-managed project. These rules apply every turn.
 4. `waypoint find` vs `Grep` — use the right tool for the job:
    - `waypoint find "<query>"` — symbol names, function signatures, struct/class definitions
    - `Grep` — string literals, comments, config values, error messages, non-code text
+5. When changing an exported function's signature, run `waypoint callers <name>` to find all files that import it. The post-write hook also warns automatically when it detects signature changes on exported symbols.
 
 ## After Actions
 
