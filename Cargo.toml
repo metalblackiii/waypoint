@@ -28,7 +28,6 @@ tree-sitter-javascript = "0.25"
 tree-sitter-python = "0.25"
 tree-sitter-rust = "0.24.1"
 tree-sitter-typescript = "0.23.2"
-uuid = { version = "1.22.0", features = ["v4"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.0"

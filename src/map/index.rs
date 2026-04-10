@@ -186,73 +186,6 @@ pub fn rebuild_symbols(waypoint_dir: &Path, symbols: &[Symbol]) -> Result<(), Ap
     Ok(())
 }
 
-/// Update symbols for a single file (incremental, used by `post_write` hook).
-///
-/// Commits the delete of old symbols first so a mid-insert failure leaves the
-/// file's symbols empty rather than stale.
-pub fn update_file_symbols(
-    waypoint_dir: &Path,
-    file_path: &str,
-    symbols: &[Symbol],
-) -> Result<(), AppError> {
-    let conn = open_index(waypoint_dir)?;
-
-    // Clear stale data in a committed step before inserting new symbols
-    conn.execute(
-        "DELETE FROM symbols WHERE file_path = ?1",
-        params![file_path],
-    )?;
-    let _ = conn.execute(
-        "DELETE FROM symbols_fts WHERE file_path = ?1",
-        params![file_path],
-    );
-
-    let tx = conn.unchecked_transaction()?;
-
-    let mut stmt = tx.prepare(
-        "INSERT INTO symbols (file_path, name, kind, signature, line_start, line_end, exported) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-    )?;
-    let mut fts_stmt = tx.prepare(
-        "INSERT INTO symbols_fts (name, kind, signature, file_path) VALUES (?1, ?2, ?3, ?4)",
-    );
-
-    for sym in symbols {
-        stmt.execute(params![
-            file_path,
-            sym.name,
-            sym.kind,
-            sym.signature,
-            sym.line_start,
-            sym.line_end,
-            i64::from(sym.exported)
-        ])?;
-        if let Ok(ref mut fts) = fts_stmt {
-            let _ = fts.execute(params![sym.name, sym.kind, sym.signature, file_path]);
-        }
-    }
-
-    drop(stmt);
-    drop(fts_stmt);
-    tx.commit()?;
-    Ok(())
-}
-
-/// Remove all symbols for a deleted file.
-pub fn remove_file_symbols(waypoint_dir: &Path, file_path: &str) -> Result<(), AppError> {
-    let conn = open_index(waypoint_dir)?;
-    conn.execute(
-        "DELETE FROM symbols WHERE file_path = ?1",
-        params![file_path],
-    )?;
-    // Best-effort FTS cleanup
-    let _ = conn.execute(
-        "DELETE FROM symbols_fts WHERE file_path = ?1",
-        params![file_path],
-    );
-    Ok(())
-}
-
 /// Rebuild the imports table from a full scan.
 pub fn rebuild_imports(waypoint_dir: &Path, imports: &[Import]) -> Result<(), AppError> {
     let conn = open_index(waypoint_dir)?;
@@ -277,50 +210,6 @@ pub fn rebuild_imports(waypoint_dir: &Path, imports: &[Import]) -> Result<(), Ap
 
     drop(stmt);
     tx.commit()?;
-    Ok(())
-}
-
-/// Update imports for a single file (incremental, used by `post_write` hook).
-pub fn update_file_imports(
-    waypoint_dir: &Path,
-    file_path: &str,
-    imports: &[Import],
-) -> Result<(), AppError> {
-    let conn = open_index(waypoint_dir)?;
-
-    conn.execute(
-        "DELETE FROM imports WHERE source_file = ?1",
-        params![file_path],
-    )?;
-
-    let tx = conn.unchecked_transaction()?;
-    let mut stmt = tx.prepare(
-        "INSERT INTO imports (source_file, imported_name, target_path, raw_path, line_number) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-    )?;
-
-    for imp in imports {
-        stmt.execute(params![
-            file_path,
-            imp.imported_name,
-            imp.target_path,
-            imp.raw_path,
-            imp.line_number
-        ])?;
-    }
-
-    drop(stmt);
-    tx.commit()?;
-    Ok(())
-}
-
-/// Remove all imports for a deleted file (as source).
-pub fn remove_file_imports(waypoint_dir: &Path, file_path: &str) -> Result<(), AppError> {
-    let conn = open_index(waypoint_dir)?;
-    conn.execute(
-        "DELETE FROM imports WHERE source_file = ?1",
-        params![file_path],
-    )?;
     Ok(())
 }
 
@@ -359,53 +248,6 @@ pub fn find_importers(
     };
 
     Ok(results)
-}
-
-/// Query exported symbols for a file. Used to snapshot before symbol update.
-pub fn exported_symbols_for_file(
-    waypoint_dir: &Path,
-    file_path: &str,
-) -> Result<Vec<SymbolRow>, AppError> {
-    let conn = open_index(waypoint_dir)?;
-    let mut stmt = conn.prepare(
-        "SELECT file_path, name, kind, signature, line_start, line_end, exported \
-         FROM symbols WHERE file_path = ?1 AND exported = 1",
-    )?;
-    let rows = stmt.query_map(params![file_path], |row| {
-        Ok(SymbolRow {
-            file_path: row.get(0)?,
-            name: row.get(1)?,
-            kind: row.get(2)?,
-            signature: row.get(3)?,
-            line_start: row.get(4)?,
-            line_end: row.get(5)?,
-            exported: row.get::<_, i64>(6)? != 0,
-        })
-    })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
-}
-
-/// List all entry paths under a directory prefix. Used for stale-entry cleanup.
-pub fn entries_in_dir(waypoint_dir: &Path, dir_prefix: &str) -> Result<Vec<String>, AppError> {
-    let conn = open_index(waypoint_dir)?;
-
-    if dir_prefix.is_empty() {
-        // Top-level: entries where path contains no '/'
-        let mut stmt = conn.prepare("SELECT path FROM map_entries WHERE path NOT LIKE '%/%'")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
-    } else {
-        // Escape LIKE wildcards in directory names to prevent over-matching
-        let escaped = dir_prefix.replace('%', r"\%").replace('_', r"\_");
-        let like = format!("{escaped}/%");
-        let deeper = format!("{escaped}/%/%");
-        let mut stmt = conn.prepare(
-            "SELECT path FROM map_entries WHERE path LIKE ?1 ESCAPE '\\' \
-             AND path NOT LIKE ?2 ESCAPE '\\'",
-        )?;
-        let rows = stmt.query_map(params![like, deeper], |row| row.get::<_, String>(0))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
-    }
 }
 
 /// Look up symbols by exact name. Used by `waypoint sketch`.
@@ -666,29 +508,6 @@ mod tests {
     }
 
     #[test]
-    fn update_file_symbols_replaces() {
-        let tmp = TempDir::new().unwrap();
-        let syms = vec![sample_symbol("src/a.rs", "old_fn", "fn")];
-        rebuild_symbols(tmp.path(), &syms).unwrap();
-
-        let new_syms = vec![sample_symbol("src/a.rs", "new_fn", "fn")];
-        update_file_symbols(tmp.path(), "src/a.rs", &new_syms).unwrap();
-
-        assert!(sketch(tmp.path(), "old_fn").unwrap().is_empty());
-        assert_eq!(sketch(tmp.path(), "new_fn").unwrap().len(), 1);
-    }
-
-    #[test]
-    fn remove_file_symbols_clears() {
-        let tmp = TempDir::new().unwrap();
-        let syms = vec![sample_symbol("src/a.rs", "foo", "fn")];
-        rebuild_symbols(tmp.path(), &syms).unwrap();
-
-        remove_file_symbols(tmp.path(), "src/a.rs").unwrap();
-        assert!(sketch(tmp.path(), "foo").unwrap().is_empty());
-    }
-
-    #[test]
     fn find_symbols_fallback_like() {
         let tmp = TempDir::new().unwrap();
         let syms = vec![
@@ -699,24 +518,6 @@ mod tests {
 
         let results = find_symbols(tmp.path(), "extract", 10).unwrap();
         assert!(results.iter().any(|r| r.name == "extract_description"));
-    }
-
-    #[test]
-    fn entries_in_dir_returns_direct_children() {
-        let tmp = TempDir::new().unwrap();
-        let entries = vec![
-            sample_entry("src/main.rs"),
-            sample_entry("src/lib.rs"),
-            sample_entry("src/map/scan.rs"),
-            sample_entry("Cargo.toml"),
-        ];
-        rebuild(tmp.path(), &entries).unwrap();
-
-        let src_entries = entries_in_dir(tmp.path(), "src").unwrap();
-        assert!(src_entries.contains(&"src/main.rs".to_string()));
-        assert!(src_entries.contains(&"src/lib.rs".to_string()));
-        // Should not include deeper subdirectory entries
-        assert!(!src_entries.contains(&"src/map/scan.rs".to_string()));
     }
 
     fn sample_import(source: &str, name: &str, target: &str) -> Import {
@@ -759,50 +560,5 @@ mod tests {
         let results = find_importers(tmp.path(), "bar", None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "src/a.js");
-    }
-
-    #[test]
-    fn update_file_imports_replaces() {
-        let tmp = TempDir::new().unwrap();
-        seed_symbols_for_imports(tmp.path());
-        let imports = vec![sample_import("src/a.js", "old_fn", "src/utils.js")];
-        rebuild_imports(tmp.path(), &imports).unwrap();
-
-        let new_imports = vec![sample_import("src/a.js", "new_fn", "src/utils.js")];
-        update_file_imports(tmp.path(), "src/a.js", &new_imports).unwrap();
-
-        assert!(
-            find_importers(tmp.path(), "old_fn", None)
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(find_importers(tmp.path(), "new_fn", None).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn remove_file_imports_clears() {
-        let tmp = TempDir::new().unwrap();
-        seed_symbols_for_imports(tmp.path());
-        let imports = vec![sample_import("src/a.js", "foo", "src/utils.js")];
-        rebuild_imports(tmp.path(), &imports).unwrap();
-
-        remove_file_imports(tmp.path(), "src/a.js").unwrap();
-        assert!(find_importers(tmp.path(), "foo", None).unwrap().is_empty());
-    }
-
-    #[test]
-    fn entries_in_dir_top_level() {
-        let tmp = TempDir::new().unwrap();
-        let entries = vec![
-            sample_entry("Cargo.toml"),
-            sample_entry("README.md"),
-            sample_entry("src/main.rs"),
-        ];
-        rebuild(tmp.path(), &entries).unwrap();
-
-        let top = entries_in_dir(tmp.path(), "").unwrap();
-        assert!(top.contains(&"Cargo.toml".to_string()));
-        assert!(top.contains(&"README.md".to_string()));
-        assert!(!top.contains(&"src/main.rs".to_string()));
     }
 }
