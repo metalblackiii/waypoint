@@ -14,7 +14,6 @@ pub enum EventKind {
     SessionStart,
     MapHit,
     MapMiss,
-    TrapHit,
     SketchHit,
     SketchMiss,
     FirstEdit,
@@ -27,7 +26,6 @@ impl EventKind {
             Self::SessionStart => "session_start",
             Self::MapHit => "map_hit",
             Self::MapMiss => "map_miss",
-            Self::TrapHit => "trap_hit",
             Self::SketchHit => "sketch_hit",
             Self::SketchMiss => "sketch_miss",
             Self::FirstEdit => "first_edit",
@@ -42,7 +40,6 @@ pub struct GainStats {
     pub total_events: i64,
     pub map_hits: i64,
     pub map_misses: i64,
-    pub trap_hits: i64,
     pub sketch_hits: i64,
     pub sketch_misses: i64,
     pub sketch_hit_rate: f64,
@@ -142,7 +139,6 @@ impl fmt::Display for GainStats {
                 self.map_misses.to_string(),
                 Some(Color::Yellow),
             ),
-            ("Trap hits:", self.trap_hits.to_string(), Some(Color::Cyan)),
             (
                 "Sketch hits:",
                 self.sketch_hits.to_string(),
@@ -347,15 +343,7 @@ fn record_event_with(
     Ok(())
 }
 
-/// Record a first-edit event if one hasn't been logged for the current session.
-///
-/// Stores elapsed seconds since session start in `token_impact`.
-/// Idempotent within a session — second and subsequent calls are no-ops.
-pub fn record_first_edit_if_needed(project_path: &str) -> Result<(), AppError> {
-    let conn = open_db()?;
-    record_first_edit_if_needed_with(&conn, project_path)
-}
-
+#[cfg(test)]
 fn record_first_edit_if_needed_with(conn: &Connection, project_path: &str) -> Result<(), AppError> {
     // Use the most recent session_start globally — a session has one start
     // time regardless of which (possibly foreign) project files are edited.
@@ -424,7 +412,6 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
 
     let map_hits = query_count_kind(conn, "map_hit", param_ref)?;
     let map_misses = query_count_kind(conn, "map_miss", param_ref)?;
-    let trap_hits = query_count_kind(conn, "trap_hit", param_ref)?;
     let sketch_hits = query_count_kind(conn, "sketch_hit", param_ref)?;
     let sketch_misses = query_count_kind(conn, "sketch_miss", param_ref)?;
 
@@ -504,7 +491,6 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         total_events,
         map_hits,
         map_misses,
-        trap_hits,
         sketch_hits,
         sketch_misses,
         sketch_hit_rate,
@@ -593,21 +579,19 @@ mod tests {
 
         record_event_with(&conn, EventKind::MapHit, "/tmp/project", 150).unwrap();
         record_event_with(&conn, EventKind::MapMiss, "/tmp/project", 0).unwrap();
-        record_event_with(&conn, EventKind::TrapHit, "/tmp/project", 50).unwrap();
         record_event_with(&conn, EventKind::SketchHit, "/tmp/project", 0).unwrap();
         record_event_with(&conn, EventKind::SketchMiss, "/tmp/project", 0).unwrap();
 
         let stats = gain_stats_with(&conn, Some("/tmp/project")).unwrap();
 
-        assert_eq!(stats.total_events, 5);
+        assert_eq!(stats.total_events, 4);
         assert_eq!(stats.map_hits, 1);
         assert_eq!(stats.map_misses, 1);
-        assert_eq!(stats.trap_hits, 1);
         assert_eq!(stats.sketch_hits, 1);
         assert_eq!(stats.sketch_misses, 1);
         assert!((stats.map_hit_rate - 50.0).abs() < f64::EPSILON);
         assert!((stats.sketch_hit_rate - 50.0).abs() < f64::EPSILON);
-        assert_eq!(stats.estimated_tokens_saved, 200);
+        assert_eq!(stats.estimated_tokens_saved, 150);
     }
 
     #[test]
@@ -676,7 +660,6 @@ mod tests {
         assert_eq!(EventKind::SessionStart.as_str(), "session_start");
         assert_eq!(EventKind::MapHit.as_str(), "map_hit");
         assert_eq!(EventKind::MapMiss.as_str(), "map_miss");
-        assert_eq!(EventKind::TrapHit.as_str(), "trap_hit");
         assert_eq!(EventKind::SketchHit.as_str(), "sketch_hit");
         assert_eq!(EventKind::SketchMiss.as_str(), "sketch_miss");
         assert_eq!(EventKind::FirstEdit.as_str(), "first_edit");
@@ -764,13 +747,12 @@ mod tests {
         // Simulate 3 hook invocations before first edit
         record_event_with(&conn, EventKind::MapHit, "/tmp/p", 100).unwrap();
         record_event_with(&conn, EventKind::SketchHit, "/tmp/p", 50).unwrap();
-        record_event_with(&conn, EventKind::TrapHit, "/tmp/p", 20).unwrap();
 
         record_first_edit_if_needed_with(&conn, "/tmp/p").unwrap();
 
         let stats = gain_stats_with(&conn, Some("/tmp/p")).unwrap();
         assert_eq!(stats.first_edit_count, 1);
-        assert!((stats.avg_first_edit_turns - 3.0).abs() < f64::EPSILON);
+        assert!((stats.avg_first_edit_turns - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -787,14 +769,13 @@ mod tests {
         record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
         record_event_with(&conn, EventKind::MapHit, "/tmp/p", 100).unwrap();
         record_event_with(&conn, EventKind::SketchHit, "/tmp/p", 50).unwrap();
-        record_event_with(&conn, EventKind::TrapHit, "/tmp/p", 20).unwrap();
         record_event_with(&conn, EventKind::MapHit, "/tmp/p", 100).unwrap();
         record_first_edit_if_needed_with(&conn, "/tmp/p").unwrap();
 
         let stats = gain_stats_with(&conn, Some("/tmp/p")).unwrap();
         assert_eq!(stats.first_edit_count, 2);
-        // avg turns = (2 + 4) / 2 = 3.0
-        assert!((stats.avg_first_edit_turns - 3.0).abs() < f64::EPSILON);
+        // avg turns = (2 + 3) / 2 = 2.5
+        assert!((stats.avg_first_edit_turns - 2.5).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -847,7 +828,6 @@ mod tests {
             total_events: 100,
             map_hits: 75,
             map_misses: 25,
-            trap_hits: 3,
             sketch_hits: 0,
             sketch_misses: 0,
             sketch_hit_rate: 0.0,
@@ -871,7 +851,6 @@ mod tests {
             total_events: 452,
             map_hits: 325,
             map_misses: 101,
-            trap_hits: 7,
             sketch_hits: 0,
             sketch_misses: 0,
             sketch_hit_rate: 0.0,
@@ -907,7 +886,6 @@ mod tests {
             total_events: 10,
             map_hits: 8,
             map_misses: 2,
-            trap_hits: 0,
             sketch_hits: 0,
             sketch_misses: 0,
             sketch_hit_rate: 0.0,
@@ -931,7 +909,6 @@ mod tests {
             total_events: 12,
             map_hits: 8,
             map_misses: 2,
-            trap_hits: 1,
             sketch_hits: 0,
             sketch_misses: 0,
             sketch_hit_rate: 0.0,

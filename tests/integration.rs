@@ -101,177 +101,50 @@ fn cli_scan_check_detects_stale() {
         .stderr(predicate::str::contains("stale"));
 }
 
+// ── AC-1 / AC-2: removed commands exit non-zero ─────────────────
+
 #[test]
-fn cli_trap_log_and_search() {
+fn cli_trap_subcommand_is_removed() {
     let project = setup_project();
-
     waypoint()
-        .args([
-            "trap",
-            "log",
-            "--error",
-            "TypeError: undefined is not a function",
-            "--file",
-            "src/main.rs",
-            "--cause",
-            "null reference",
-            "--fix",
-            "added null check",
-            "--tags",
-            "null,error",
-        ])
+        .args(["trap", "search", "foo"])
         .current_dir(project.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Trap logged"));
-
-    waypoint()
-        .args(["trap", "search", "TypeError"])
-        .current_dir(project.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("TypeError"))
-        .stdout(predicate::str::contains("null check"));
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 }
 
 #[test]
-fn cli_trap_search_no_results() {
+fn hook_post_write_subcommand_is_removed() {
     let project = setup_project();
-
     waypoint()
-        .args(["trap", "search", "nonexistent"])
+        .args(["hook", "post-write"])
         .current_dir(project.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("No traps found"));
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 }
 
 #[test]
-fn cli_trap_delete_removes_entry() {
+fn hook_pre_write_subcommand_is_removed() {
     let project = setup_project();
-
-    // Log a trap first
     waypoint()
-        .args([
-            "trap",
-            "log",
-            "--error",
-            "test error",
-            "--file",
-            "src/main.rs",
-            "--cause",
-            "test cause",
-            "--fix",
-            "test fix",
-            "--tags",
-            "test",
-        ])
+        .args(["hook", "pre-write"])
         .current_dir(project.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Trap logged"));
-
-    // Search to get the ID
-    let output = waypoint()
-        .args(["trap", "search", "test error"])
-        .current_dir(project.path())
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let id = stdout
-        .lines()
-        .find(|l| l.starts_with("trap-"))
-        .unwrap()
-        .split_whitespace()
-        .next()
-        .unwrap();
-
-    // Delete it
-    waypoint()
-        .args(["trap", "delete", id])
-        .current_dir(project.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Deleted"))
-        .stdout(predicate::str::contains(id));
-
-    // Verify it's gone
-    waypoint()
-        .args(["trap", "search", "test error"])
-        .current_dir(project.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("No traps found"));
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 }
 
 #[test]
-fn cli_trap_delete_nonexistent_id() {
+fn hook_post_failure_subcommand_is_removed() {
     let project = setup_project();
-
     waypoint()
-        .args(["trap", "delete", "trap-00000000"])
+        .args(["hook", "post-failure"])
         .current_dir(project.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("No trap found with id"));
-}
-
-#[test]
-fn cli_trap_delete_with_context_flag() {
-    let project = setup_project();
-
-    // Log a trap
-    waypoint()
-        .args([
-            "trap",
-            "log",
-            "--error",
-            "ctx error",
-            "--file",
-            "src/main.rs",
-            "--cause",
-            "ctx cause",
-            "--fix",
-            "ctx fix",
-            "--tags",
-            "ctx",
-        ])
-        .current_dir(project.path())
-        .assert()
-        .success();
-
-    // Search with -C to get the ID
-    let output = waypoint()
-        .args([
-            "trap",
-            "search",
-            "ctx error",
-            "-C",
-            &project.path().display().to_string(),
-        ])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let id = stdout
-        .lines()
-        .find(|l| l.starts_with("trap-"))
-        .unwrap()
-        .split_whitespace()
-        .next()
-        .unwrap();
-
-    // Delete with -C from a different cwd
-    waypoint()
-        .args([
-            "trap",
-            "delete",
-            id,
-            "-C",
-            &project.path().display().to_string(),
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Deleted"));
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 }
 
 #[test]
@@ -441,7 +314,7 @@ fn hook_pre_read_nested_project_prefers_child() {
 // ── Hook Integration Tests ───────────────────────────────────────
 
 #[test]
-fn hook_session_start_outputs_invocation_prompts_and_creates_map() {
+fn hook_session_start_auto_scans_and_creates_map() {
     let project = setup_project();
     let payload = serde_json::json!({
         "cwd": project.path().to_string_lossy()
@@ -452,14 +325,109 @@ fn hook_session_start_outputs_invocation_prompts_and_creates_map() {
         .args(["hook", "session-start"])
         .write_stdin(payload)
         .assert()
-        .success()
-        // Session-start uses plain stdout, not JSON wrapper
-        .stdout(predicate::str::contains("waypoint trap log"));
+        .success();
 
     // Auto-scan creates map.md on first session
     assert!(
         project.path().join(".waypoint/map.md").exists(),
         "session-start should auto-create map.md"
+    );
+}
+
+#[test]
+fn session_start_drift_threshold_boundary() {
+    // Verify the 3% file-count drift threshold:
+    //   34-file project → 1 file added = 2.94% drift (below) → no rescan
+    //                   → 2nd file added = 5.88% drift (above) → rescan
+    let project = setup_project(); // creates src/main.rs (1 file)
+
+    // Create 33 more files so total = 34
+    for i in 0..33_u32 {
+        fs::write(
+            project.path().join(format!("src/mod_{i}.rs")),
+            format!("// module {i}\n"),
+        )
+        .unwrap();
+    }
+
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let map_after_scan = fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
+    let payload = || serde_json::json!({ "cwd": project.path().to_string_lossy() }).to_string();
+
+    // Add 1 file: drift = 1/34 ≈ 2.94% — below threshold, should NOT rescan
+    fs::write(project.path().join("src/below_threshold.rs"), "// below\n").unwrap();
+    waypoint()
+        .args(["hook", "session-start"])
+        .write_stdin(payload())
+        .assert()
+        .success();
+    let map = fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
+    assert!(
+        !map.contains("below_threshold.rs"),
+        "session-start should not rescan at 2.94% drift; map:\n{map}"
+    );
+    assert_eq!(
+        map, map_after_scan,
+        "map.md should be unchanged below threshold"
+    );
+
+    // Add a 2nd new file: drift = 2/34 ≈ 5.88% — above threshold, SHOULD rescan
+    fs::write(project.path().join("src/above_threshold.rs"), "// above\n").unwrap();
+    waypoint()
+        .args(["hook", "session-start"])
+        .write_stdin(payload())
+        .assert()
+        .success();
+    let map = fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
+    assert!(
+        map.contains("above_threshold.rs"),
+        "session-start should rescan at 5.88% drift; map:\n{map}"
+    );
+}
+
+#[test]
+fn hook_session_start_rebuilds_import_index() {
+    // Regression: session-start rescan must rebuild imports so `waypoint callers` is fresh.
+    let project = setup_project();
+
+    // Add a lib file so main.rs can import from it
+    fs::write(project.path().join("src/lib.rs"), "pub fn greet() {}\n").unwrap();
+    fs::write(
+        project.path().join("src/main.rs"),
+        "use crate::greet;\nfn main() { greet(); }\n",
+    )
+    .unwrap();
+
+    let payload = serde_json::json!({
+        "cwd": project.path().to_string_lossy()
+    })
+    .to_string();
+
+    waypoint()
+        .args(["hook", "session-start"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    // map.md and map_index.db should exist
+    assert!(project.path().join(".waypoint/map.md").exists());
+    assert!(project.path().join(".waypoint/map_index.db").exists());
+
+    // `waypoint callers greet` should return results (import index was built)
+    let output = waypoint()
+        .args(["callers", "greet"])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("src/main.rs"),
+        "session-start should rebuild import index so callers finds src/main.rs; got: {stdout}"
     );
 }
 
@@ -512,165 +480,6 @@ fn hook_pre_read_no_context_for_unknown_file() {
     );
 }
 
-#[test]
-fn hook_pre_write_surfaces_traps() {
-    let project = setup_project();
-
-    // Log a trap for src/main.rs
-    waypoint()
-        .args([
-            "trap",
-            "log",
-            "--error",
-            "null reference error",
-            "--file",
-            "src/main.rs",
-            "--cause",
-            "missing null check",
-            "--fix",
-            "added optional chaining",
-            "--tags",
-            "null",
-        ])
-        .current_dir(project.path())
-        .assert()
-        .success();
-
-    let payload = hook_payload(&project, "src/main.rs");
-
-    let assert = waypoint()
-        .args(["hook", "pre-write"])
-        .write_stdin(payload)
-        .assert()
-        .success();
-
-    let hook = parse_hook_output(&assert);
-    assert_eq!(hook["hookEventName"], "PreToolUse");
-    let ctx = hook["additionalContext"].as_str().unwrap();
-    assert!(ctx.contains("[waypoint] traps for"), "got: {ctx}");
-    assert!(ctx.contains("null reference error"), "got: {ctx}");
-}
-
-#[test]
-fn hook_pre_write_no_traps_for_clean_file() {
-    let project = setup_project();
-    waypoint()
-        .arg("scan")
-        .current_dir(project.path())
-        .assert()
-        .success();
-
-    let payload = hook_payload(&project, "src/main.rs");
-
-    let assert = waypoint()
-        .args(["hook", "pre-write"])
-        .write_stdin(payload)
-        .assert()
-        .success();
-
-    let hook = parse_hook_output(&assert);
-    assert_eq!(hook["hookEventName"], "PreToolUse");
-    assert!(
-        hook.get("additionalContext").is_none(),
-        "clean file should have no trap context, got: {hook}"
-    );
-}
-
-#[test]
-fn hook_post_write_updates_map() {
-    let project = setup_project();
-    waypoint()
-        .arg("scan")
-        .current_dir(project.path())
-        .assert()
-        .success();
-
-    // Modify file to add a new function
-    fs::write(
-        project.path().join("src/main.rs"),
-        "fn main() {}\n\npub fn helper() {}\n",
-    )
-    .unwrap();
-
-    let payload = hook_payload(&project, "src/main.rs");
-
-    let assert = waypoint()
-        .args(["hook", "post-write"])
-        .write_stdin(payload)
-        .assert()
-        .success();
-
-    let hook = parse_hook_output(&assert);
-    assert_eq!(hook["hookEventName"], "PostToolUse");
-    let ctx = hook["additionalContext"].as_str().unwrap();
-    assert!(
-        ctx.contains("[waypoint] map updated: src/main.rs"),
-        "got: {ctx}"
-    );
-
-    // Verify map.md was actually updated with the new function
-    let map = fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
-    assert!(
-        map.contains("helper"),
-        "map should reflect updated file, got:\n{map}"
-    );
-}
-
-#[test]
-fn hook_post_write_ignores_out_of_project_file() {
-    let project = setup_project();
-    waypoint()
-        .arg("scan")
-        .current_dir(project.path())
-        .assert()
-        .success();
-
-    // Payload with a file outside the project
-    let payload = serde_json::json!({
-        "cwd": project.path().to_string_lossy(),
-        "tool_input": {
-            "file_path": "/tmp/outside_project.rs"
-        }
-    })
-    .to_string();
-
-    let assert = waypoint()
-        .args(["hook", "post-write"])
-        .write_stdin(payload)
-        .assert()
-        .success();
-
-    let hook = parse_hook_output(&assert);
-    assert_eq!(hook["hookEventName"], "PostToolUse");
-    // No map update for out-of-project files
-    assert!(
-        hook.get("additionalContext").is_none()
-            || !hook["additionalContext"]
-                .as_str()
-                .unwrap_or("")
-                .contains("map updated"),
-        "out-of-project file should not trigger map update"
-    );
-}
-
-#[test]
-fn hook_post_failure_suggests_trap_search() {
-    let project = setup_project();
-    let payload = hook_payload(&project, "src/main.rs");
-
-    let assert = waypoint()
-        .args(["hook", "post-failure"])
-        .write_stdin(payload)
-        .assert()
-        .success();
-
-    let hook = parse_hook_output(&assert);
-    assert_eq!(hook["hookEventName"], "PostToolUse");
-    let ctx = hook["additionalContext"].as_str().unwrap();
-    assert!(ctx.contains("waypoint trap search"), "got: {ctx}");
-    assert!(ctx.contains("main.rs"), "got: {ctx}");
-}
-
 // ── Cross-Project CLI Tests ─────────────────────────────────────
 
 /// Create a scanned project with .waypoint/ initialized.
@@ -693,173 +502,6 @@ fn cross_project_payload(project_a: &TempDir, project_b: &TempDir, file_path: &s
         }
     })
     .to_string()
-}
-
-// ── AC-1: trap log --file resolves foreign project ──────────────
-
-#[test]
-fn cli_trap_log_foreign_file_writes_to_foreign_project() {
-    let project_a = setup_scanned_project();
-    let project_b = setup_scanned_project();
-
-    let foreign_file = project_b.path().join("src/main.rs");
-
-    waypoint()
-        .args([
-            "trap",
-            "log",
-            "--error",
-            "foreign bug",
-            "--file",
-            foreign_file.to_str().unwrap(),
-            "--cause",
-            "foreign cause",
-            "--fix",
-            "foreign fix",
-            "--tags",
-            "cross-project",
-        ])
-        .current_dir(project_a.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Trap logged"));
-
-    // Trap should be in project B, not project A
-    let traps_b = fs::read_to_string(project_b.path().join(".waypoint/traps.json")).unwrap();
-    assert!(
-        traps_b.contains("foreign bug"),
-        "trap should be in project B: {traps_b}"
-    );
-
-    let traps_a_path = project_a.path().join(".waypoint/traps.json");
-    let traps_a = if traps_a_path.exists() {
-        fs::read_to_string(&traps_a_path).unwrap()
-    } else {
-        String::new()
-    };
-    assert!(
-        !traps_a.contains("foreign bug"),
-        "trap should NOT be in project A: {traps_a}"
-    );
-}
-
-// ── AC-10: trap log normalizes file path to project-relative ────
-
-#[test]
-fn cli_trap_log_foreign_file_stores_relative_path() {
-    let project_a = setup_scanned_project();
-    let project_b = setup_scanned_project();
-
-    let foreign_file = project_b.path().join("src/main.rs");
-
-    waypoint()
-        .args([
-            "trap",
-            "log",
-            "--error",
-            "path test",
-            "--file",
-            foreign_file.to_str().unwrap(),
-            "--cause",
-            "testing",
-            "--fix",
-            "testing",
-            "--tags",
-            "test",
-        ])
-        .current_dir(project_a.path())
-        .assert()
-        .success();
-
-    let traps_b = fs::read_to_string(project_b.path().join(".waypoint/traps.json")).unwrap();
-    let traps: serde_json::Value = serde_json::from_str(&traps_b).unwrap();
-    let file_field = traps[0]["file"].as_str().unwrap();
-    assert_eq!(
-        file_field, "src/main.rs",
-        "file should be project-relative, got: {file_field}"
-    );
-}
-
-// ── AC-11: trap log fallback to cwd when no .waypoint ───────────
-
-#[test]
-fn cli_trap_log_unknown_repo_falls_back_to_cwd() {
-    let project_a = setup_scanned_project();
-    let unknown = TempDir::new().unwrap();
-    fs::create_dir(unknown.path().join(".git")).unwrap();
-    // No .waypoint/ in unknown
-
-    let foreign_file = unknown.path().join("foo.rs");
-    fs::write(&foreign_file, "").unwrap();
-
-    waypoint()
-        .args([
-            "trap",
-            "log",
-            "--error",
-            "fallback bug",
-            "--file",
-            foreign_file.to_str().unwrap(),
-            "--cause",
-            "testing",
-            "--fix",
-            "testing",
-            "--tags",
-            "test",
-        ])
-        .current_dir(project_a.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Trap logged"));
-
-    // Should fall back to project A
-    let traps_a = fs::read_to_string(project_a.path().join(".waypoint/traps.json")).unwrap();
-    assert!(
-        traps_a.contains("fallback bug"),
-        "trap should fall back to cwd project: {traps_a}"
-    );
-}
-
-// ── AC-2: trap search -C targets foreign project ────────────────
-
-#[test]
-fn cli_trap_search_with_context_flag() {
-    let project_a = setup_scanned_project();
-    let project_b = setup_scanned_project();
-
-    // Log a trap in project B
-    waypoint()
-        .args([
-            "trap",
-            "log",
-            "--error",
-            "foreign error",
-            "--file",
-            "src/main.rs",
-            "--cause",
-            "testing",
-            "--fix",
-            "testing",
-            "--tags",
-            "test",
-        ])
-        .current_dir(project_b.path())
-        .assert()
-        .success();
-
-    // Search from project A with -C pointing to project B
-    waypoint()
-        .args([
-            "trap",
-            "search",
-            "-C",
-            project_b.path().to_str().unwrap(),
-            "foreign error",
-        ])
-        .current_dir(project_a.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("foreign error"));
 }
 
 // ── AC-3: sketch -C targets foreign project ─────────────────────
@@ -930,114 +572,6 @@ fn hook_pre_read_annotates_foreign_project() {
     assert!(
         ctx.contains(&project_b.path().to_string_lossy().to_string()),
         "expected project B path in annotation, got: {ctx}"
-    );
-}
-
-// ── AC-7: pre-write checks foreign project traps ────────────────
-
-#[test]
-fn hook_pre_write_checks_foreign_project_traps() {
-    let project_a = setup_scanned_project();
-    let project_b = setup_scanned_project();
-
-    // Log a trap in project B for src/main.rs
-    waypoint()
-        .args([
-            "trap",
-            "log",
-            "--error",
-            "foreign trap error",
-            "--file",
-            "src/main.rs",
-            "--cause",
-            "testing",
-            "--fix",
-            "testing",
-            "--tags",
-            "test",
-        ])
-        .current_dir(project_b.path())
-        .assert()
-        .success();
-
-    // Pre-write on a project B file while cwd is project A
-    let payload = cross_project_payload(&project_a, &project_b, "src/main.rs");
-
-    let assert = waypoint()
-        .args(["hook", "pre-write"])
-        .write_stdin(payload)
-        .assert()
-        .success();
-
-    let hook = parse_hook_output(&assert);
-    let ctx = hook["additionalContext"].as_str().unwrap();
-    assert!(
-        ctx.contains("foreign trap error"),
-        "expected foreign trap warning, got: {ctx}"
-    );
-}
-
-// ── AC-8: post-write updates foreign project map ────────────────
-
-#[test]
-fn hook_post_write_updates_foreign_project_map() {
-    let project_a = setup_scanned_project();
-    let project_b = setup_scanned_project();
-
-    // Modify file in project B
-    fs::write(
-        project_b.path().join("src/main.rs"),
-        "fn main() {}\n\npub fn cross_project_helper() {}\n",
-    )
-    .unwrap();
-
-    let payload = cross_project_payload(&project_a, &project_b, "src/main.rs");
-
-    let assert = waypoint()
-        .args(["hook", "post-write"])
-        .write_stdin(payload)
-        .assert()
-        .success();
-
-    let hook = parse_hook_output(&assert);
-    let ctx = hook["additionalContext"].as_str().unwrap();
-    assert!(
-        ctx.contains("[waypoint] map updated: src/main.rs"),
-        "got: {ctx}"
-    );
-
-    // Verify project B's map was updated
-    let map_b = fs::read_to_string(project_b.path().join(".waypoint/map.md")).unwrap();
-    assert!(
-        map_b.contains("cross_project_helper"),
-        "project B map should reflect update: {map_b}"
-    );
-}
-
-// ── AC-9: post-failure includes -C for foreign files ────────────
-
-#[test]
-fn hook_post_failure_includes_context_flag_for_foreign() {
-    let project_a = setup_scanned_project();
-    let project_b = setup_scanned_project();
-
-    let payload = cross_project_payload(&project_a, &project_b, "src/main.rs");
-
-    let assert = waypoint()
-        .args(["hook", "post-failure"])
-        .write_stdin(payload)
-        .assert()
-        .success();
-
-    let hook = parse_hook_output(&assert);
-    let ctx = hook["additionalContext"].as_str().unwrap();
-    assert!(
-        ctx.contains("-C"),
-        "expected -C flag in suggestion, got: {ctx}"
-    );
-    assert!(
-        ctx.contains(&project_b.path().to_string_lossy().to_string()),
-        "expected project B path in suggestion, got: {ctx}"
     );
 }
 
@@ -1130,17 +664,4 @@ fn cli_scan_all_initializes_new_repos() {
         .stderr(predicate::str::contains("initialized"));
 
     assert!(parent.path().join("fresh/.waypoint/map.md").exists());
-    // traps.json is lazy-created on first log
-}
-
-#[test]
-fn cli_trap_prune_requires_older_than() {
-    let project = setup_project();
-
-    waypoint()
-        .args(["trap", "prune"])
-        .current_dir(project.path())
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("--older-than"));
 }

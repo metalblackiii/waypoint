@@ -2,7 +2,7 @@ use std::path::Path;
 
 use colored::Colorize;
 
-use crate::{AppError, ledger, map, project, trap};
+use crate::{AppError, ledger, map, project};
 
 pub fn run(project_root: &Path) -> Result<(), AppError> {
     let wp_dir = project::waypoint_dir(project_root);
@@ -32,10 +32,6 @@ pub fn run(project_root: &Path) -> Result<(), AppError> {
     } else {
         println!("Map:     not generated (run: waypoint scan)");
     }
-
-    // Traps
-    let traps = trap::read_traps(&wp_dir)?;
-    println!("Traps:   {} logged", traps.len());
 
     // Ledger (silent failure)
     match ledger::gain_stats(Some(&project_root.to_string_lossy())) {
@@ -81,17 +77,9 @@ pub fn run_all(base: &Path) -> Result<(), AppError> {
             continue;
         }
 
-        let trap_display = match trap::read_traps(&wp_dir) {
-            Ok(traps) => traps.len().to_string(),
-            Err(_) => "?".to_string(),
-        };
-
         match map::parse_map_header(&wp_dir) {
             None => {
-                println!(
-                    "  {} {name:<name_width$}  map: not generated  traps: {trap_display}",
-                    "?".yellow()
-                );
+                println!("  {} {name:<name_width$}  map: not generated", "?".yellow());
             }
             Some(header) => {
                 let age_days = (now - header.generated_at).num_days();
@@ -108,7 +96,7 @@ pub fn run_all(base: &Path) -> Result<(), AppError> {
                     String::new()
                 };
                 println!(
-                    "  {indicator} {name:<name_width$}  map: {} files ({age_str:<8})  traps: {trap_display}{stale_tag}",
+                    "  {indicator} {name:<name_width$}  map: {} files ({age_str:<8}){stale_tag}",
                     header.file_count,
                 );
             }

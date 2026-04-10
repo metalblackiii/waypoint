@@ -49,19 +49,6 @@ fn write_map(bencher: Bencher, n: usize) {
     bencher.bench(|| map::write_map(tmp.path(), &entries).unwrap());
 }
 
-// --- update_entry (read + modify + write) ---
-
-#[divan::bench(args = [1000, 3000, 5000])]
-fn update_entry(bencher: Bencher, n: usize) {
-    let (tmp, _entries) = prepared_dir(n);
-    let updated = MapEntry {
-        path: format!("src/module_050/file_{:05}.rs", n / 2),
-        description: "pub fn updated_handler()".into(),
-        token_estimate: 999,
-    };
-    bencher.bench(|| map::update_entry(tmp.path(), updated.clone()).unwrap());
-}
-
 // --- lookup (linear scan on Vec) ---
 
 #[divan::bench(args = [1000, 3000, 5000, 9000])]

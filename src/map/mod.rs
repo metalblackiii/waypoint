@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::AppError;
 
 /// Maps older than this many days are considered stale.
-pub const MAP_STALE_DAYS: i64 = 14;
+pub const MAP_STALE_DAYS: i64 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapEntry {
@@ -252,22 +252,6 @@ pub fn check_staleness(current: &[MapEntry], existing: &[MapEntry]) -> Staleness
     }
 }
 
-/// Update a single entry in `map.md` (parse, replace or insert, write).
-/// The `SQLite` index is rebuilt via `write_map`.
-pub fn update_entry(waypoint_dir: &Path, new_entry: MapEntry) -> Result<(), AppError> {
-    let mut entries = read_map(waypoint_dir)?;
-
-    if let Some(existing) = entries.iter_mut().find(|e| e.path == new_entry.path) {
-        existing.description = new_entry.description;
-        existing.token_estimate = new_entry.token_estimate;
-    } else {
-        entries.push(new_entry);
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
-    }
-
-    write_map(waypoint_dir, &entries)
-}
-
 /// Estimate token count for file content.
 #[must_use]
 pub fn estimate_tokens(content: &str, path: &Path) -> usize {
@@ -337,30 +321,6 @@ mod tests {
         }];
         assert!(lookup(&entries, "src/foo.rs").is_some());
         assert!(lookup(&entries, "src/bar.rs").is_none());
-    }
-
-    #[test]
-    fn update_entry_adds_new() {
-        let tmp = TempDir::new().unwrap();
-        let entries = vec![MapEntry {
-            path: "a.rs".into(),
-            description: "first".into(),
-            token_estimate: 10,
-        }];
-        write_map(tmp.path(), &entries).unwrap();
-
-        update_entry(
-            tmp.path(),
-            MapEntry {
-                path: "b.rs".into(),
-                description: "second".into(),
-                token_estimate: 20,
-            },
-        )
-        .unwrap();
-
-        let result = read_map(tmp.path()).unwrap();
-        assert_eq!(result.len(), 2);
     }
 
     #[test]

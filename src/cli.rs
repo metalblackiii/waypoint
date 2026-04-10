@@ -34,11 +34,6 @@ pub enum Command {
         #[arg(long)]
         global: bool,
     },
-    /// Manage the bug fix trap log
-    Trap {
-        #[command(subcommand)]
-        command: TrapCommand,
-    },
     /// Display waypoint status for the current project
     Status {
         /// Show status across all sibling projects
@@ -80,65 +75,9 @@ pub enum Command {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum TrapCommand {
-    /// Search traps by keyword
-    Search {
-        /// Search term
-        term: String,
-        /// Resolve project from this path instead of cwd
-        #[arg(short = 'C', long = "context")]
-        context: Option<String>,
-    },
-    /// Log a new bug fix trap
-    Log {
-        /// Error message
-        #[arg(long)]
-        error: String,
-        /// File path where the bug occurred
-        #[arg(long)]
-        file: String,
-        /// Root cause of the bug
-        #[arg(long)]
-        cause: String,
-        /// What was done to fix it
-        #[arg(long)]
-        fix: String,
-        /// Comma-separated tags
-        #[arg(long)]
-        tags: String,
-    },
-    /// Delete a trap by ID
-    Delete {
-        /// Trap ID (e.g. trap-12c9cca1)
-        id: String,
-        /// Resolve project from this path instead of cwd
-        #[arg(short = 'C', long = "context")]
-        context: Option<String>,
-    },
-    /// Remove trap entries older than a duration (e.g., 90d)
-    Prune {
-        /// Duration threshold, e.g. "90d" (days only)
-        #[arg(long)]
-        older_than: Option<String>,
-        /// Prune across all sibling projects
-        #[arg(long, conflicts_with = "context")]
-        all: bool,
-        /// Resolve project from this path instead of cwd
-        #[arg(short = 'C', long = "context")]
-        context: Option<String>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
 pub enum HookCommand {
     /// PreToolUse:Read — inject file map context
     PreRead,
-    /// `SessionStart` — auto-scan and inject trap log reminder
+    /// `SessionStart` — auto-scan and record session start
     SessionStart,
-    /// PreToolUse:Edit|Write — inject trap warnings
-    PreWrite,
-    /// PostToolUse:Edit|Write — update map entry
-    PostWrite,
-    /// PostToolUseFailure:Edit|Write — suggest trap search
-    PostFailure,
 }

@@ -4,13 +4,12 @@ pub mod ledger;
 pub mod map;
 pub mod project;
 pub mod status;
-pub mod trap;
 
 use thiserror::Error;
 
 use colored::Colorize;
 
-use crate::cli::{Cli, Command, HookCommand, TrapCommand};
+use crate::cli::{Cli, Command, HookCommand};
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -94,93 +93,6 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             Ok(())
         }
 
-        Command::Trap { command } => match command {
-            TrapCommand::Search { term, context } => {
-                let project_root = project::resolve_with_context(context.as_deref())?;
-                let wp_dir = if context.is_some() {
-                    project::require_waypoint_dir(&project_root)?
-                } else {
-                    project::waypoint_dir(&project_root)
-                };
-
-                let traps = trap::read_traps(&wp_dir)?;
-                let results = trap::search(&traps, &term);
-
-                if results.is_empty() {
-                    println!("No traps found for: {term}");
-                } else {
-                    for t in &results {
-                        println!("{} [{}]", t.id, t.file);
-                        println!("  error: {}", t.error_message);
-                        println!("  cause: {}", t.root_cause);
-                        println!("  fix:   {}", t.fix);
-                        println!("  tags:  {}", t.tags.join(", "));
-                        println!();
-                    }
-                }
-                Ok(())
-            }
-            TrapCommand::Log {
-                error,
-                file,
-                cause,
-                fix,
-                tags,
-            } => {
-                // FR-2: Resolve project from --file path; FR-3: fall back to cwd
-                let (wp_dir, relative_file) =
-                    if let Some(resolved) = project::resolve_foreign(&file) {
-                        (resolved.wp_dir, resolved.relative_path)
-                    } else {
-                        let project_root = resolve_project_root()?;
-                        let wp_dir = project::ensure_initialized(&project_root)?;
-                        (wp_dir, file.clone())
-                    };
-
-                let new_trap = trap::NewTrap {
-                    error_message: &error,
-                    file: &relative_file,
-                    root_cause: &cause,
-                    fix: &fix,
-                    tags_str: &tags,
-                };
-                match trap::log_trap(&wp_dir, &new_trap)? {
-                    Some(warning) => println!("{warning}"),
-                    None => println!("Trap logged"),
-                }
-                Ok(())
-            }
-            TrapCommand::Delete { id, context } => {
-                let project_root = project::resolve_with_context(context.as_deref())?;
-                let wp_dir = if context.is_some() {
-                    project::require_waypoint_dir(&project_root)?
-                } else {
-                    project::waypoint_dir(&project_root)
-                };
-
-                match trap::delete(&wp_dir, &id)? {
-                    Some(entry) => println!("Deleted {} [{}]", entry.id, entry.file),
-                    None => println!("No trap found with id: {id}"),
-                }
-                Ok(())
-            }
-            TrapCommand::Prune {
-                older_than,
-                all,
-                context,
-            } => {
-                let days = parse_older_than(older_than.as_deref())?;
-                if all {
-                    return prune_all_traps(days);
-                }
-                let project_root = project::resolve_with_context(context.as_deref())?;
-                let wp_dir = project::require_waypoint_dir(&project_root)?;
-                let pruned = trap::prune(&wp_dir, days)?;
-                print_pruned_traps(&pruned);
-                Ok(())
-            }
-        },
-
         Command::Status { all } => {
             let project_root = resolve_project_root()?;
             if all {
@@ -263,9 +175,6 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
         Command::Hook { command } => match command {
             HookCommand::PreRead => hook::pre_read::run(),
             HookCommand::SessionStart => hook::session_start::run(),
-            HookCommand::PreWrite => hook::pre_write::run(),
-            HookCommand::PostWrite => hook::post_write::run(),
-            HookCommand::PostFailure => hook::post_failure::run(),
         },
     }
 }
@@ -354,81 +263,4 @@ fn scan_one_project(root: &std::path::Path) -> Result<(usize, usize, bool), AppE
 fn resolve_project_root() -> Result<std::path::PathBuf, AppError> {
     let cwd = std::env::current_dir()?;
     Ok(project::find_root(&cwd).unwrap_or(cwd))
-}
-
-/// Parse `--older-than` flag, requiring `Nd` format.
-fn parse_older_than(value: Option<&str>) -> Result<i64, AppError> {
-    match value {
-        Some(s) => s
-            .trim()
-            .strip_suffix('d')
-            .and_then(|n| n.parse::<i64>().ok())
-            .filter(|&d| d > 0)
-            .ok_or_else(|| {
-                AppError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("Invalid duration: {s}. Use Nd format, e.g. --older-than 90d"),
-                ))
-            }),
-        None => Err(AppError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Required: --older-than <duration> (e.g., --older-than 90d)",
-        ))),
-    }
-}
-
-/// Discover sibling projects for batch prune operations.
-fn discover_prune_targets() -> Result<Vec<std::path::PathBuf>, AppError> {
-    let base = std::env::current_dir()?;
-    let base = project::find_root(&base)
-        .and_then(|r| r.parent().map(std::path::Path::to_path_buf))
-        .unwrap_or(base);
-
-    let projects = project::discover_projects(&base)?;
-    if projects.is_empty() {
-        eprintln!("No git repos found under {}", base.display());
-        std::process::exit(1);
-    }
-    Ok(projects)
-}
-
-fn prune_all_traps(days: i64) -> Result<(), AppError> {
-    for root in &discover_prune_targets()? {
-        let name = root.file_name().map_or_else(
-            || root.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        let wp_dir = root.join(".waypoint");
-        if !wp_dir.exists() {
-            continue;
-        }
-        match trap::prune(&wp_dir, days) {
-            Ok(pruned) if !pruned.is_empty() => {
-                eprintln!(
-                    "  {name}: pruned {} trap(s) older than {days}d",
-                    pruned.len()
-                );
-            }
-            Ok(_) => {}
-            Err(e) => eprintln!("  {name}: error — {e}"),
-        }
-    }
-    Ok(())
-}
-
-fn print_pruned_traps(pruned: &[trap::TrapEntry]) {
-    if pruned.is_empty() {
-        println!("No traps to prune");
-    } else {
-        println!("Pruned {} trap(s):\n", pruned.len());
-        for t in pruned {
-            println!("{} [{}]", t.id, t.file);
-            println!("  error: {}", t.error_message);
-            println!("  cause: {}", t.root_cause);
-            println!("  fix:   {}", t.fix);
-            println!("  tags:  {}", t.tags.join(", "));
-            println!("  logged: {}", t.logged_at);
-            println!();
-        }
-    }
 }

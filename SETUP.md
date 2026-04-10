@@ -39,33 +39,6 @@ INPUT=$(cat)
 echo "$INPUT" | "$WAYPOINT" hook pre-read
 ```
 
-**waypoint-pre-write.sh**
-```sh
-#!/usr/bin/env bash
-WAYPOINT="${HOME}/.cargo/bin/waypoint"
-[[ -x "$WAYPOINT" ]] || exit 0
-INPUT=$(cat)
-echo "$INPUT" | "$WAYPOINT" hook pre-write
-```
-
-**waypoint-post-write.sh**
-```sh
-#!/usr/bin/env bash
-WAYPOINT="${HOME}/.cargo/bin/waypoint"
-[[ -x "$WAYPOINT" ]] || exit 0
-INPUT=$(cat)
-echo "$INPUT" | "$WAYPOINT" hook post-write
-```
-
-**waypoint-post-failure.sh**
-```sh
-#!/usr/bin/env bash
-WAYPOINT="${HOME}/.cargo/bin/waypoint"
-[[ -x "$WAYPOINT" ]] || exit 0
-INPUT=$(cat)
-echo "$INPUT" | "$WAYPOINT" hook post-failure
-```
-
 Make them executable:
 
 ```sh
@@ -89,22 +62,6 @@ Add these entries to the `hooks` object. Waypoint hooks should come **before** o
       {
         "matcher": "Read",
         "hooks": [{ "type": "command", "command": "~/.claude/hooks/waypoint-pre-read.sh" }]
-      },
-      {
-        "matcher": "Edit|Write",
-        "hooks": [{ "type": "command", "command": "~/.claude/hooks/waypoint-pre-write.sh" }]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [{ "type": "command", "command": "~/.claude/hooks/waypoint-post-write.sh" }]
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [{ "type": "command", "command": "~/.claude/hooks/waypoint-post-failure.sh" }]
       }
     ]
   }
@@ -113,7 +70,7 @@ Add these entries to the `hooks` object. Waypoint hooks should come **before** o
 
 ## 5. Import the operating protocol
 
-Add the Waypoint protocol to your global `~/.claude/CLAUDE.md` so Claude follows the knowledge store and trap logging rules in every project:
+Add the Waypoint protocol to your global `~/.claude/CLAUDE.md`:
 
 ```markdown
 @~/repos/waypoint/WAYPOINT.md

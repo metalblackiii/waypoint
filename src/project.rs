@@ -108,7 +108,7 @@ fn child_git_repos(dir: &Path) -> Result<Vec<PathBuf>, AppError> {
 }
 
 /// Ensure the project has a `.waypoint/` directory, returning an error if not.
-/// Use for read-only commands (`sketch`, `find`, `trap search`) that can't create it.
+/// Use for read-only commands (`sketch`, `find`) that can't create it.
 pub fn require_waypoint_dir(project_root: &Path) -> Result<PathBuf, AppError> {
     let wp_dir = waypoint_dir(project_root);
     if !wp_dir.exists() {
@@ -220,7 +220,6 @@ mod tests {
         let wp = ensure_initialized(tmp.path()).unwrap();
 
         assert!(wp.exists());
-        // learnings.json and traps.json are lazy-created
     }
 
     #[test]

@@ -10,46 +10,17 @@ You are working in a Waypoint-managed project. These rules apply every turn.
 4. `waypoint find` vs `Grep` — use the right tool for the job:
    - `waypoint find "<query>"` — symbol names, function signatures, struct/class definitions
    - `Grep` — string literals, comments, config values, error messages, non-code text
-5. When changing an exported function's signature, run `waypoint callers <name>` to find all files that import it. The post-write hook also warns automatically when it detects signature changes on exported symbols.
+5. When changing an exported function's signature, run `waypoint callers <name>` to find all files that import it.
 
 ## After Actions
 
-1. Edits, creates, and deletes are handled automatically by the post-write hook. Same-directory renames are also auto-cleaned. Cross-directory moves may leave a stale entry — run `waypoint scan` if you move a file to a different directory.
+Map freshness is maintained by the session-start hook, which rescans automatically when the map is older than 7 days or file count has drifted more than 3%. Content-only edits (same file count) do not trigger an automatic rescan until the next session. For mid-session freshness after significant edits, run `waypoint scan` manually.
 
-## Bug Logging (MANDATORY)
-
-**Log a trap whenever:**
-- The user reports a bug or unexpected behavior
-- A test, build, lint, or type check fails
-- You fix something that was broken
-- You edit a file more than twice to get it right
-
-**Before fixing:** Search existing traps — the fix may already be known.
-
-```sh
-waypoint trap search "<keyword>"
-```
-
-**Immediately after fixing:** Log the trap inline while the error details are fresh. Do not batch traps at session end — context is lost by then.
-
-```sh
-waypoint trap log \
-  --error "<exact error or complaint>" \
-  --file "<file that was fixed>" \
-  --cause "<why it broke>" \
-  --fix "<what you changed>" \
-  --tags "<relevant,keywords>"
-```
-
-When in doubt, log it — a false positive costs nothing.
+Same-directory renames are auto-cleaned on next scan. Cross-directory moves may leave a stale entry — run `waypoint scan` if you move a file to a different directory.
 
 ## Cross-Project Work
 
 Hooks resolve foreign projects automatically. Watch for `[waypoint] foreign: /path/to/other-repo` annotations on pre-read.
-
-When working in a foreign project, `trap log --file` auto-resolves — no `-C` needed.
-
-- If `-C` fails with "no .waypoint/ directory", run `waypoint scan` from that repo first
 
 ## Token Discipline
 
@@ -58,4 +29,4 @@ When working in a foreign project, `trap log --file` auto-resolves — no `-C` n
 
 ## Session End
 
-No batched writes required — traps are logged inline after each fix.
+No batched writes required — the session-start hook handles index freshness on the next session. Note: session-start only rescans when the map is stale or file count drifted; content-only edits (same file count) won't update descriptions until you run `waypoint scan` manually.

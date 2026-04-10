@@ -1,7 +1,4 @@
-pub mod post_failure;
-pub mod post_write;
 pub mod pre_read;
-pub mod pre_write;
 pub mod session_start;
 
 use std::path::{Path, PathBuf};
@@ -56,7 +53,6 @@ impl HookContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HookEvent {
     PreToolUse,
-    PostToolUse,
 }
 
 impl HookEvent {
@@ -64,7 +60,6 @@ impl HookEvent {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::PreToolUse => "PreToolUse",
-            Self::PostToolUse => "PostToolUse",
         }
     }
 }
@@ -191,26 +186,6 @@ mod tests {
 
         assert_eq!(hook["hookEventName"], "PreToolUse");
         assert_eq!(hook["permissionDecision"], "allow");
-        assert!(hook.get("additionalContext").is_none());
-    }
-
-    #[test]
-    fn build_post_tool_use_no_permission() {
-        let output = build_hook_output(HookEvent::PostToolUse, None, "updated file");
-        let hook = &output["hookSpecificOutput"];
-
-        assert_eq!(hook["hookEventName"], "PostToolUse");
-        assert!(hook.get("permissionDecision").is_none());
-        assert_eq!(hook["additionalContext"], "updated file");
-    }
-
-    #[test]
-    fn build_post_tool_use_empty() {
-        let output = build_hook_output(HookEvent::PostToolUse, None, "");
-        let hook = &output["hookSpecificOutput"];
-
-        assert_eq!(hook["hookEventName"], "PostToolUse");
-        assert!(hook.get("permissionDecision").is_none());
         assert!(hook.get("additionalContext").is_none());
     }
 

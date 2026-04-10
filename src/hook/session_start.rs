@@ -4,9 +4,9 @@ use crate::map::MAP_STALE_DAYS;
 
 /// File count drift threshold (fraction). If actual count differs from the
 /// map header count by more than this ratio, trigger a rescan.
-const FILE_COUNT_DRIFT_THRESHOLD: f64 = 0.10;
+const FILE_COUNT_DRIFT_THRESHOLD: f64 = 0.03;
 
-/// `SessionStart` — auto-scan and inject trap log reminder.
+/// `SessionStart` — auto-scan and record session start.
 ///
 /// `SessionStart` hooks use plain stdout for context injection.
 pub fn run() -> Result<(), AppError> {
@@ -18,16 +18,8 @@ pub fn run() -> Result<(), AppError> {
         let output = map::scan::scan_project(&ctx.project_root)?;
         map::write_map(&wp_dir, &output.entries)?;
         let _ = map::index::rebuild_symbols(&wp_dir, &output.symbols);
+        let _ = map::index::rebuild_imports(&wp_dir, &output.imports);
     }
-
-    let mut output = String::new();
-
-    // Invocation prompt
-    output.push_str(
-        "To log a bug fix: \
-         waypoint trap log --error \"<msg>\" --file \"<path>\" \
-         --cause \"<root cause>\" --fix \"<what you did>\" --tags \"<comma-separated>\"\n",
-    );
 
     // Record session start (silent failure)
     let _ = ledger::record_event(
@@ -39,7 +31,6 @@ pub fn run() -> Result<(), AppError> {
     // Purge old ledger events once per session, not per hook
     let _ = ledger::purge_old_events();
 
-    print!("{output}");
     Ok(())
 }
 

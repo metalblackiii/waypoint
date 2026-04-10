@@ -1,6 +1,6 @@
 # Waypoint
 
-Project intelligence for Claude Code. Gives your AI assistant a file map and bug fix dedup — saving 65-80% token overhead on codebase orientation.
+Project intelligence for Claude Code. Gives your AI assistant a file map and symbol index — saving 65-80% token overhead on codebase orientation.
 
 ## What it does
 
@@ -8,11 +8,8 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 
 | Hook | Trigger | What happens |
 |------|---------|--------------|
-| **session-start** | New conversation | Auto-scans if no map exists. Injects trap log reminder. |
+| **session-start** | New conversation | Auto-scans if no map exists or map is stale. |
 | **pre-read** | Before Claude reads a file | Injects file description and token estimate from the map (works across projects) |
-| **pre-write** | Before Claude edits a file | Surfaces known bug traps for that file |
-| **post-write** | After Claude edits a file | Incrementally updates the file's map entry, warns if exported symbol signatures changed |
-| **post-failure** | After a tool error | Suggests searching traps for known fixes |
 
 ## What lives where
 
@@ -20,7 +17,6 @@ Waypoint runs as Claude Code hooks, injecting context automatically:
 .waypoint/           ← per-project, gitignored
   map.md             ← file descriptions + token estimates (human-readable source of truth)
   map_index.db       ← SQLite index for O(1) map lookups + FTS5 symbol search + import tracking
-  traps.json         ← bug fix log with dedup
 
 ~/Library/Application Support/waypoint/
   ledger.db          ← SQLite analytics (90-day retention)
@@ -37,36 +33,6 @@ waypoint scan              # Generate/regenerate the map
 waypoint scan --check      # Exit non-zero if map is stale
 waypoint scan --all        # Scan all immediate child git repos (smart default: walks up if inside a project)
 waypoint scan --all ~/repos  # Explicit parent directory
-```
-
-### `waypoint trap log`
-
-Record a bug fix so Claude doesn't repeat it. Deduplicates by Jaccard similarity per file.
-
-```sh
-waypoint trap log \
-  --error "FromSql not implemented for usize" \
-  --file "src/ledger.rs" \
-  --cause "rusqlite 0.39 dropped FromSql for usize" \
-  --fix "Change count fields from usize to i64" \
-  --tags "rusqlite,upgrade"
-```
-
-### `waypoint trap search`
-
-Search traps by keyword.
-
-```sh
-waypoint trap search "FromSql"
-```
-
-### `waypoint trap prune`
-
-Remove old trap entries.
-
-```sh
-waypoint trap prune --older-than 90d
-waypoint trap prune --older-than 90d --all   # prune across all sibling projects
 ```
 
 ### `waypoint sketch`
@@ -106,7 +72,7 @@ waypoint gain --global   # all projects
 
 ### `waypoint status`
 
-Health check — map freshness, trap count, ledger summary.
+Health check — map freshness, ledger summary.
 
 ```sh
 waypoint status
@@ -114,13 +80,13 @@ waypoint status
 
 ## Getting Claude to use it
 
-The hooks handle the automatic plumbing (map lookups, context injection, incremental updates). To get Claude to *actively record* traps, import `WAYPOINT.md` into your global `~/.claude/CLAUDE.md`:
+The hooks handle the automatic plumbing (map lookups, context injection). Import `WAYPOINT.md` into your global `~/.claude/CLAUDE.md` to give Claude the operating protocol — token discipline and navigation rules:
 
 ```markdown
 @~/repos/waypoint/WAYPOINT.md
 ```
 
-This gives Claude the operating protocol — bug trap rules and token discipline. See [SETUP.md](SETUP.md) for full details.
+See [SETUP.md](SETUP.md) for full details.
 
 ## Cross-project map lookups
 
@@ -132,7 +98,7 @@ For this to work, the target project needs to have been scanned at least once. P
 waypoint scan --all ~/repos
 ```
 
-Maps stay current in projects you actively edit (the post-write hook updates entries incrementally). For repos you don't touch often, a periodic re-scan keeps them fresh — just re-run `waypoint scan --all`.
+Maps stay current because session-start rescans when the map is stale (older than 7 days or file count drifted more than 3%). For repos you don't touch often, a periodic re-scan keeps them fresh — just re-run `waypoint scan --all`.
 
 ## Setup
 
