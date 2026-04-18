@@ -12,6 +12,10 @@ You are working in a Waypoint-managed project. These rules apply every turn.
    - `rg`/`Grep`/`grep` — string literals, comments, config values, error messages, non-code text
 5. When changing an exported function's signature, run `waypoint callers <name>` to find all files that import it.
 
+## Impact Analysis
+
+Before committing changes, run `waypoint impact` to assess blast radius. It maps changed symbols to their importers and classifies risk (CRITICAL/HIGH/MEDIUM/LOW). Use `waypoint impact --base <ref>` to diff against a specific branch.
+
 ## After Actions
 
 Map freshness is maintained by the session-start hook, which rescans automatically when the map is older than 7 days or file count has drifted more than 3%. Content-only edits (same file count) do not trigger an automatic rescan until the next session. For mid-session freshness after significant edits, run `waypoint scan` manually.

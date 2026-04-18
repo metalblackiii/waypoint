@@ -59,6 +59,15 @@ pub enum Command {
         #[arg(short = 'C', long = "context")]
         context: Option<String>,
     },
+    /// Analyze blast radius of current changes
+    Impact {
+        /// Git ref to diff against (default: auto-detect)
+        #[arg(long)]
+        base: Option<String>,
+        /// Resolve project from this path instead of cwd
+        #[arg(short = 'C', long = "context")]
+        context: Option<String>,
+    },
     /// List files that import a symbol
     Callers {
         /// Symbol name to look up

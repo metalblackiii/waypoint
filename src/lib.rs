@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod hook;
+pub mod impact;
 pub mod ledger;
 pub mod map;
 pub mod project;
@@ -63,6 +64,11 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 }
                 if let Err(e) = map::index::rebuild_imports(&wp_dir, &output.imports) {
                     eprintln!("Warning: import index failed: {e}");
+                }
+                if let Err(e) =
+                    map::index::rebuild_arch_summary(&wp_dir, &output.entries, &output.imports)
+                {
+                    eprintln!("Warning: arch summary failed: {e}");
                 }
                 println!(
                     "Scanned {count} files, {sym_count} symbols, {imp_count} imports → .waypoint/map.md"
@@ -148,6 +154,12 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 }
             }
             Ok(())
+        }
+
+        Command::Impact { base, context } => {
+            let project_root = project::resolve_with_context(context.as_deref())?;
+            let wp_dir = project::require_waypoint_dir(&project_root)?;
+            impact::run(&project_root, &wp_dir, base.as_deref())
         }
 
         Command::Callers { symbol, context } => {
@@ -256,6 +268,9 @@ fn scan_one_project(root: &std::path::Path) -> Result<(usize, usize, bool), AppE
     }
     if let Err(e) = map::index::rebuild_imports(&wp_dir, &output.imports) {
         eprintln!("    Warning: import index failed: {e}");
+    }
+    if let Err(e) = map::index::rebuild_arch_summary(&wp_dir, &output.entries, &output.imports) {
+        eprintln!("    Warning: arch summary failed: {e}");
     }
     Ok((files, symbols, initialized))
 }

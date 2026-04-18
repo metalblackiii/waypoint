@@ -665,3 +665,362 @@ fn cli_scan_all_initializes_new_repos() {
 
     assert!(parent.path().join("fresh/.waypoint/map.md").exists());
 }
+
+// ── Ranked Find Tests ──────────────────────────────────────────
+
+#[test]
+fn cli_find_ranks_by_fan_in() {
+    let project = setup_project();
+    // Create symbols with different import fan-in
+    fs::write(
+        project.path().join("src/core.rs"),
+        "pub fn process_core() {}\npub fn process_extra() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("src/a.rs"),
+        "use crate::process_core;\nfn a() { process_core(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("src/b.rs"),
+        "use crate::process_core;\nfn b() { process_core(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("src/c.rs"),
+        "use crate::process_core;\nfn c() { process_core(); }\n",
+    )
+    .unwrap();
+
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let output = waypoint()
+        .args(["find", "process"])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+
+    // process_core has 3 importers, should appear before process_extra (0 importers)
+    assert!(
+        lines.len() >= 2,
+        "expected at least 2 results, got: {stdout}"
+    );
+    assert!(
+        lines[0].contains("process_core"),
+        "process_core should rank first; got: {stdout}"
+    );
+}
+
+#[test]
+fn cli_find_output_format_unchanged() {
+    let project = setup_project();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // Output should contain kind, name, file, line — same format as before ranking
+    waypoint()
+        .args(["find", "main"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fn"))
+        .stdout(predicate::str::contains("main"))
+        .stdout(predicate::str::contains("src/main.rs"));
+}
+
+// ── Architecture Context Injection Tests ───────────────────────
+
+/// Create a project with N numbered source files for arch gating tests.
+fn setup_project_with_files(n: usize) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir(tmp.path().join(".git")).unwrap();
+    fs::create_dir_all(tmp.path().join("src")).unwrap();
+    fs::write(
+        tmp.path().join("src/main.rs"),
+        "fn main() { println!(\"hello\"); }\n",
+    )
+    .unwrap();
+    for i in 1..n {
+        fs::write(
+            tmp.path().join(format!("src/mod_{i}.rs")),
+            format!("pub fn func_{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+    tmp
+}
+
+#[test]
+fn hook_session_start_emits_arch_context_large_project() {
+    let project = setup_project_with_files(25);
+    let payload = serde_json::json!({
+        "cwd": project.path().to_string_lossy()
+    })
+    .to_string();
+
+    let assert = waypoint()
+        .args(["hook", "session-start"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    let hook = parse_hook_output(&assert);
+    let context = hook["additionalContext"].as_str().unwrap_or("");
+    assert!(
+        context.contains("[waypoint] arch:"),
+        "large project should emit arch context; got: {context}"
+    );
+    assert!(
+        context.contains("Rust"),
+        "arch context should show Rust as primary language; got: {context}"
+    );
+}
+
+#[test]
+fn hook_session_start_suppresses_arch_context_small_project() {
+    let project = setup_project(); // only 1 file — below threshold
+    let payload = serde_json::json!({
+        "cwd": project.path().to_string_lossy()
+    })
+    .to_string();
+
+    let assert = waypoint()
+        .args(["hook", "session-start"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    let stdout = std::str::from_utf8(&assert.get_output().stdout).unwrap();
+    // Small project: either no JSON output at all, or no arch context in it
+    if !stdout.trim().is_empty() {
+        let hook = parse_hook_output(&assert);
+        let context = hook["additionalContext"].as_str().unwrap_or("");
+        assert!(
+            !context.contains("[waypoint] arch:"),
+            "small project should NOT emit arch context; got: {context}"
+        );
+    }
+}
+
+#[test]
+fn scan_persists_arch_summary() {
+    let project = setup_project_with_files(25);
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // The arch_summary table should be populated in the index db
+    let db_path = project.path().join(".waypoint/map_index.db");
+    assert!(db_path.exists(), "index db should exist after scan");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT file_count FROM arch_summary WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        count >= 25,
+        "arch_summary should record file count >= 25; got {count}"
+    );
+}
+
+// ── Impact Analysis Tests ──────────────────────────────────────
+
+/// Create a git-initialized project for impact tests (real git repo, not just .git marker).
+fn setup_git_project() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    fs::create_dir_all(tmp.path().join("src")).unwrap();
+    fs::write(
+        tmp.path().join("src/lib.rs"),
+        "pub fn greet() {}\npub fn farewell() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("src/main.rs"),
+        "use crate::greet;\nfn main() { greet(); }\n",
+    )
+    .unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    // Scan to build the index
+    waypoint()
+        .arg("scan")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    tmp
+}
+
+#[test]
+fn cli_impact_uncommitted_changes() {
+    let project = setup_git_project();
+
+    // Make an uncommitted change to an exported symbol
+    fs::write(
+        project.path().join("src/lib.rs"),
+        "pub fn greet() { println!(\"hi\"); }\npub fn farewell() {}\n",
+    )
+    .unwrap();
+
+    waypoint()
+        .arg("impact")
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Changed:"))
+        .stdout(predicate::str::contains("greet"))
+        .stdout(predicate::str::contains("Risk:"));
+}
+
+#[test]
+fn cli_impact_no_changes() {
+    let project = setup_git_project();
+
+    // No changes — diff against HEAD should report clean
+    waypoint()
+        .args(["impact", "--base", "HEAD"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No symbol changes detected."));
+}
+
+#[test]
+fn cli_impact_non_git_directory() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".waypoint")).unwrap();
+    // Create a dummy map so require_waypoint_dir succeeds
+    fs::write(tmp.path().join(".waypoint/map.md"), "# Map\n").unwrap();
+
+    waypoint()
+        .arg("impact")
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Not a git repository"));
+}
+
+#[test]
+fn cli_impact_private_symbols_shown() {
+    let project = setup_git_project();
+
+    // Add a private function
+    fs::write(
+        project.path().join("src/lib.rs"),
+        "pub fn greet() {}\npub fn farewell() {}\nfn secret_helper() {}\n",
+    )
+    .unwrap();
+
+    // Rescan so the new symbol is indexed
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let output = waypoint()
+        .arg("impact")
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Private symbols appear with (private) marker and Risk: LOW
+    assert!(
+        stdout.contains("secret_helper"),
+        "private symbols should appear in impact output; got: {stdout}"
+    );
+}
+
+#[test]
+fn cli_impact_with_base_flag() {
+    let project = setup_git_project();
+
+    // Create a branch with changes
+    std::process::Command::new("git")
+        .args(["checkout", "-b", "feature"])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    fs::write(
+        project.path().join("src/lib.rs"),
+        "pub fn greet() { println!(\"hello\"); }\npub fn farewell() {}\n",
+    )
+    .unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "feature change"])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+
+    // Rescan to pick up changes
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["impact", "--base", "main"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Changed:"))
+        .stdout(predicate::str::contains("greet"));
+}
+
+// ── Version Test ───────────────────────────────────────────────
+
+#[test]
+fn cli_version_reports_0_8_0() {
+    waypoint()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0.8.0"));
+}

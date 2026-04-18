@@ -6,9 +6,11 @@ use crate::map::MAP_STALE_DAYS;
 /// map header count by more than this ratio, trigger a rescan.
 const FILE_COUNT_DRIFT_THRESHOLD: f64 = 0.03;
 
-/// `SessionStart` — auto-scan and record session start.
-///
-/// `SessionStart` hooks use plain stdout for context injection.
+/// Minimum file count to emit arch context. Small projects don't benefit
+/// from architecture summary — the map is sufficient.
+const ARCH_FILE_THRESHOLD: i64 = 20;
+
+/// `SessionStart` — auto-scan, emit arch context, record session start.
 pub fn run() -> Result<(), AppError> {
     let ctx = super::HookContext::from_stdin()?;
     let wp_dir = project::ensure_initialized(&ctx.project_root)?;
@@ -19,7 +21,11 @@ pub fn run() -> Result<(), AppError> {
         map::write_map(&wp_dir, &output.entries)?;
         let _ = map::index::rebuild_symbols(&wp_dir, &output.symbols);
         let _ = map::index::rebuild_imports(&wp_dir, &output.imports);
+        let _ = map::index::rebuild_arch_summary(&wp_dir, &output.entries, &output.imports);
     }
+
+    // Emit arch context if project is large enough
+    emit_arch_context(&wp_dir, &ctx.project_root);
 
     // Record session start (silent failure)
     let _ = ledger::record_event(
@@ -32,6 +38,29 @@ pub fn run() -> Result<(), AppError> {
     let _ = ledger::purge_old_events();
 
     Ok(())
+}
+
+/// Emit architecture context via hook output if the project has enough files.
+fn emit_arch_context(wp_dir: &std::path::Path, project_root: &std::path::Path) {
+    let project_str = project_root.to_string_lossy();
+    let Ok(Some(arch)) = map::index::get_arch_summary(wp_dir) else {
+        let _ = ledger::record_event(ledger::EventKind::ArchMiss, &project_str, 0);
+        return;
+    };
+
+    if arch.file_count < ARCH_FILE_THRESHOLD {
+        let _ = ledger::record_event(ledger::EventKind::ArchMiss, &project_str, 0);
+        return;
+    }
+
+    let mut context = arch.lang_dist;
+    if !arch.hotspots.is_empty() {
+        context.push('\n');
+        context.push_str(&arch.hotspots);
+    }
+
+    super::emit_hook_output(super::HookEvent::SessionStart, None, &context);
+    let _ = ledger::record_event(ledger::EventKind::ArchHit, &project_str, 0);
 }
 
 /// Decide whether to rescan based on map existence, age, and file count drift.

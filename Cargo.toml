@@ -1,6 +1,6 @@
 [package]
 name = "waypoint"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 
 [lib]
@@ -33,6 +33,7 @@ tree-sitter-typescript = "0.23.2"
 assert_cmd = "2.2.0"
 divan = "0.1.21"
 predicates = "3.1.4"
+rusqlite = { version = "0.39", features = ["bundled"] }
 tempfile = "3.27.0"
 
 [[bench]]

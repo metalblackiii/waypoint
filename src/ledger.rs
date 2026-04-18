@@ -18,6 +18,8 @@ pub enum EventKind {
     SketchMiss,
     FirstEdit,
     FirstEditTurns,
+    ArchHit,
+    ArchMiss,
 }
 
 impl EventKind {
@@ -30,6 +32,8 @@ impl EventKind {
             Self::SketchMiss => "sketch_miss",
             Self::FirstEdit => "first_edit",
             Self::FirstEditTurns => "first_edit_turns",
+            Self::ArchHit => "arch_hit",
+            Self::ArchMiss => "arch_miss",
         }
     }
 }
@@ -47,6 +51,9 @@ pub struct GainStats {
     pub avg_first_edit_secs: f64,
     pub first_edit_turns_count: i64,
     pub avg_first_edit_turns: f64,
+    pub arch_hits: i64,
+    pub arch_misses: i64,
+    pub arch_hit_rate: f64,
     pub map_hit_rate: f64,
     pub estimated_tokens_saved: i64,
     pub daily: Vec<DayStats>,
@@ -191,6 +198,21 @@ impl fmt::Display for GainStats {
                 padded_label.bold(),
                 sketch_meter.color(sketch_color),
                 format!("{:.1}%", self.sketch_hit_rate).bold(),
+            )?;
+        }
+
+        // Arch hit rate meter
+        if self.arch_hits + self.arch_misses > 0 {
+            let arch_ratio = self.arch_hit_rate / 100.0;
+            let arch_meter = bar(arch_ratio, METER_WIDTH);
+            let arch_color = rate_color(self.arch_hit_rate);
+            let padded_label = format!("{:<LABEL_PAD$}", "Arch rate:");
+            writeln!(
+                f,
+                "{} {} {}",
+                padded_label.bold(),
+                arch_meter.color(arch_color),
+                format!("{:.1}%", self.arch_hit_rate).bold(),
             )?;
         }
 
@@ -396,6 +418,7 @@ pub fn gain_stats(project_path: Option<&str>) -> Result<GainStats, AppError> {
     gain_stats_with(&conn, project_path)
 }
 
+#[allow(clippy::too_many_lines)] // flat query sequence, not deep nesting
 fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<GainStats, AppError> {
     let (filter, param): (&str, Option<String>) = match project_path {
         Some(p) => ("WHERE project_path = ?1", Some(p.to_string())),
@@ -414,6 +437,8 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
     let map_misses = query_count_kind(conn, "map_miss", param_ref)?;
     let sketch_hits = query_count_kind(conn, "sketch_hit", param_ref)?;
     let sketch_misses = query_count_kind(conn, "sketch_miss", param_ref)?;
+    let arch_hits = query_count_kind(conn, "arch_hit", param_ref)?;
+    let arch_misses = query_count_kind(conn, "arch_miss", param_ref)?;
 
     #[allow(clippy::cast_precision_loss)] // ratio of small counters — precision loss irrelevant
     let map_hit_rate = if map_hits + map_misses > 0 {
@@ -429,13 +454,22 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         0.0
     };
 
+    #[allow(clippy::cast_precision_loss)]
+    let arch_hit_rate = if arch_hits + arch_misses > 0 {
+        arch_hits as f64 / (arch_hits + arch_misses) as f64 * 100.0
+    } else {
+        0.0
+    };
+
     let estimated_tokens_saved = {
+        let exclude = "('first_edit', 'first_edit_turns', 'arch_hit', 'arch_miss')";
         let sql = if filter.is_empty() {
-            "SELECT COALESCE(SUM(token_impact), 0) FROM events WHERE event_kind NOT IN ('first_edit', 'first_edit_turns')"
-                .to_string()
+            format!(
+                "SELECT COALESCE(SUM(token_impact), 0) FROM events WHERE event_kind NOT IN {exclude}"
+            )
         } else {
             format!(
-                "SELECT COALESCE(SUM(token_impact), 0) FROM events {filter} AND event_kind NOT IN ('first_edit', 'first_edit_turns')"
+                "SELECT COALESCE(SUM(token_impact), 0) FROM events {filter} AND event_kind NOT IN {exclude}"
             )
         };
         let mut stmt = conn.prepare(&sql)?;
@@ -498,6 +532,9 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         avg_first_edit_secs,
         first_edit_turns_count,
         avg_first_edit_turns,
+        arch_hits,
+        arch_misses,
+        arch_hit_rate,
         map_hit_rate,
         estimated_tokens_saved,
         daily,
@@ -534,7 +571,7 @@ fn query_daily(conn: &Connection, param: Option<&str>) -> Result<Vec<DayStats>, 
     let (sql, values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match param {
         Some(p) => (
             "SELECT DATE(timestamp) as d, COUNT(*), \
-             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns') THEN 0 ELSE token_impact END), 0) \
+             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns', 'arch_hit', 'arch_miss') THEN 0 ELSE token_impact END), 0) \
              FROM events WHERE project_path = ?1 \
              GROUP BY d ORDER BY d DESC LIMIT 30"
                 .into(),
@@ -542,7 +579,7 @@ fn query_daily(conn: &Connection, param: Option<&str>) -> Result<Vec<DayStats>, 
         ),
         None => (
             "SELECT DATE(timestamp) as d, COUNT(*), \
-             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns') THEN 0 ELSE token_impact END), 0) \
+             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns', 'arch_hit', 'arch_miss') THEN 0 ELSE token_impact END), 0) \
              FROM events GROUP BY d ORDER BY d DESC LIMIT 30"
                 .into(),
             vec![],
@@ -664,6 +701,8 @@ mod tests {
         assert_eq!(EventKind::SketchMiss.as_str(), "sketch_miss");
         assert_eq!(EventKind::FirstEdit.as_str(), "first_edit");
         assert_eq!(EventKind::FirstEditTurns.as_str(), "first_edit_turns");
+        assert_eq!(EventKind::ArchHit.as_str(), "arch_hit");
+        assert_eq!(EventKind::ArchMiss.as_str(), "arch_miss");
     }
 
     #[test]
@@ -779,6 +818,23 @@ mod tests {
     }
 
     #[test]
+    fn arch_hit_miss_tracking() {
+        let conn = test_db();
+
+        record_event_with(&conn, EventKind::ArchHit, "/tmp/p", 0).unwrap();
+        record_event_with(&conn, EventKind::ArchHit, "/tmp/p", 0).unwrap();
+        record_event_with(&conn, EventKind::ArchMiss, "/tmp/p", 0).unwrap();
+
+        let stats = gain_stats_with(&conn, Some("/tmp/p")).unwrap();
+
+        assert_eq!(stats.arch_hits, 2);
+        assert_eq!(stats.arch_misses, 1);
+        assert!((stats.arch_hit_rate - 66.666_666_666_666_66).abs() < 0.01);
+        // Arch events must not pollute token savings
+        assert_eq!(stats.estimated_tokens_saved, 0);
+    }
+
+    #[test]
     fn format_tokens_millions() {
         assert_eq!(format_tokens(1_500_000), "1.5M");
         assert_eq!(format_tokens(1_000_000), "1.0M");
@@ -835,6 +891,9 @@ mod tests {
             avg_first_edit_secs: 0.0,
             first_edit_turns_count: 0,
             avg_first_edit_turns: 0.0,
+            arch_hits: 0,
+            arch_misses: 0,
+            arch_hit_rate: 0.0,
             map_hit_rate: 75.0,
             estimated_tokens_saved: 500_000,
             daily: vec![],
@@ -858,6 +917,9 @@ mod tests {
             avg_first_edit_secs: 0.0,
             first_edit_turns_count: 0,
             avg_first_edit_turns: 0.0,
+            arch_hits: 0,
+            arch_misses: 0,
+            arch_hit_rate: 0.0,
             map_hit_rate: 76.3,
             estimated_tokens_saved: 1_025_558,
             daily: vec![DayStats {
@@ -893,6 +955,9 @@ mod tests {
             avg_first_edit_secs: 0.0,
             first_edit_turns_count: 0,
             avg_first_edit_turns: 0.0,
+            arch_hits: 0,
+            arch_misses: 0,
+            arch_hit_rate: 0.0,
             map_hit_rate: 80.0,
             estimated_tokens_saved: 5_000,
             daily: vec![],
@@ -916,6 +981,9 @@ mod tests {
             avg_first_edit_secs: 42.0,
             first_edit_turns_count: 3,
             avg_first_edit_turns: 2.5,
+            arch_hits: 0,
+            arch_misses: 0,
+            arch_hit_rate: 0.0,
             map_hit_rate: 80.0,
             estimated_tokens_saved: 5_000,
             daily: vec![],

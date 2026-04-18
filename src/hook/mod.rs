@@ -53,6 +53,7 @@ impl HookContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HookEvent {
     PreToolUse,
+    SessionStart,
 }
 
 impl HookEvent {
@@ -60,6 +61,7 @@ impl HookEvent {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::PreToolUse => "PreToolUse",
+            Self::SessionStart => "SessionStart",
         }
     }
 }
