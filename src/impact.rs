@@ -1,17 +1,35 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 use crate::AppError;
 use crate::map::index;
 
-/// Risk classification thresholds based on importer count.
+/// Importer counts at or above this threshold classify as CRITICAL risk.
+const CRITICAL_IMPORTER_THRESHOLD: i64 = 10;
+/// Importer counts at or above this threshold classify as HIGH risk.
+const HIGH_IMPORTER_THRESHOLD: i64 = 5;
+/// Importer counts at or above this threshold classify as MEDIUM risk.
+const MEDIUM_IMPORTER_THRESHOLD: i64 = 2;
+
+/// Risk classification based on importer count.
 fn classify_risk(importer_count: i64) -> &'static str {
-    match importer_count {
-        n if n >= 10 => "CRITICAL",
-        5..=9 => "HIGH",
-        2..=4 => "MEDIUM",
-        _ => "LOW",
+    if importer_count >= CRITICAL_IMPORTER_THRESHOLD {
+        "CRITICAL"
+    } else if importer_count >= HIGH_IMPORTER_THRESHOLD {
+        "HIGH"
+    } else if importer_count >= MEDIUM_IMPORTER_THRESHOLD {
+        "MEDIUM"
+    } else {
+        "LOW"
     }
+}
+
+/// Run a git subcommand in `project_root` and return its output.
+fn git_output(project_root: &Path, args: &[&str]) -> Result<Output, AppError> {
+    Ok(Command::new("git")
+        .args(args)
+        .current_dir(project_root)
+        .output()?)
 }
 
 /// A symbol affected by the diff.
@@ -76,19 +94,21 @@ pub fn run(project_root: &Path, wp_dir: &Path, base: Option<&str>) -> Result<(),
     }
 
     let mut affected: Vec<AffectedSymbol> = Vec::new();
-    let mut affected_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut affected_files: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+    // Open one connection for the entire loop to avoid N+1 DB opens.
+    let conn = index::open_index(wp_dir)?;
     for changed in &changed_files {
-        let symbols = index::find_symbols_in_ranges(wp_dir, &changed.path, &changed.ranges)?;
+        let symbols = index::find_symbols_in_ranges_with(&conn, &changed.path, &changed.ranges)?;
         for sym in symbols {
             let importer_count = if sym.exported {
-                let importers = index::find_importers(wp_dir, &sym.name, Some(&sym.file_path))?;
+                let importers = index::find_importers_with(&conn, &sym.name, Some(&sym.file_path))?;
                 for (file, _) in &importers {
                     affected_files.insert(file.clone());
                 }
                 #[allow(clippy::cast_possible_wrap)]
-                let count = importers.len() as i64;
-                count
+                let importer_count = importers.len() as i64;
+                importer_count
             } else {
                 0
             };
@@ -139,7 +159,9 @@ pub fn run(project_root: &Path, wp_dir: &Path, base: Option<&str>) -> Result<(),
 
     if !affected_files.is_empty() {
         println!("\nAffected files (deduplicated):");
-        for file in &affected_files {
+        let mut sorted_files: Vec<&String> = affected_files.iter().collect();
+        sorted_files.sort();
+        for file in sorted_files {
             println!("  {file}");
         }
     }
@@ -159,10 +181,10 @@ pub fn run(project_root: &Path, wp_dir: &Path, base: Option<&str>) -> Result<(),
 /// Collect untracked files unknown to git. Used to surface new additions that
 /// `git diff HEAD` omits entirely.
 fn collect_untracked(project_root: &Path) -> Result<Vec<String>, AppError> {
-    let output = Command::new("git")
-        .args(["ls-files", "--others", "--exclude-standard"])
-        .current_dir(project_root)
-        .output()?;
+    let output = git_output(
+        project_root,
+        &["ls-files", "--others", "--exclude-standard"],
+    )?;
     let text = String::from_utf8_lossy(&output.stdout);
     Ok(text.lines().map(str::to_owned).collect())
 }
@@ -172,13 +194,9 @@ fn check_staleness(wp_dir: &Path, project_root: &Path) {
     let Some(index_mtime) = index::index_mtime(wp_dir) else {
         return;
     };
-    let output = Command::new("git")
-        .arg("log")
-        .arg("-1")
-        .arg("--format=%ct")
-        .current_dir(project_root)
-        .output();
-    let Ok(output) = output else { return };
+    let Ok(output) = git_output(project_root, &["log", "-1", "--format=%ct"]) else {
+        return;
+    };
     let timestamp_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let Ok(commit_epoch) = timestamp_str.parse::<u64>() else {
         return;
@@ -197,10 +215,7 @@ fn detect_diff_source(project_root: &Path, base: Option<&str>) -> Result<DiffSou
     }
 
     // FR-15: Check for uncommitted changes
-    let status = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(project_root)
-        .output()?;
+    let status = git_output(project_root, &["status", "--porcelain"])?;
     let status_text = String::from_utf8_lossy(&status.stdout);
     if !status_text.trim().is_empty() {
         return Ok(DiffSource::Uncommitted);
@@ -211,13 +226,10 @@ fn detect_diff_source(project_root: &Path, base: Option<&str>) -> Result<DiffSou
     Ok(DiffSource::Branch(default_branch))
 }
 
-/// Detect the default branch: origin/HEAD → main → master → error.
+/// Detect the default branch: origin/HEAD → origin/main → origin/master → local → error.
 fn detect_default_branch(project_root: &Path) -> Result<String, AppError> {
-    // Try origin/HEAD
-    let output = Command::new("git")
-        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
-        .current_dir(project_root)
-        .output()?;
+    // Try origin/HEAD (fastest path: single read when remote is configured)
+    let output = git_output(project_root, &["symbolic-ref", "refs/remotes/origin/HEAD"])?;
     if output.status.success() {
         let full_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
         // refs/remotes/origin/main → origin/main
@@ -226,60 +238,39 @@ fn detect_default_branch(project_root: &Path) -> Result<String, AppError> {
         }
     }
 
-    // Try main
-    let check_main = Command::new("git")
-        .args(["rev-parse", "--verify", "origin/main"])
-        .current_dir(project_root)
-        .output()?;
-    if check_main.status.success() {
-        return Ok("origin/main".to_string());
-    }
-
-    // Try origin/master
-    let check_master = Command::new("git")
-        .args(["rev-parse", "--verify", "origin/master"])
-        .current_dir(project_root)
-        .output()?;
-    if check_master.status.success() {
-        return Ok("origin/master".to_string());
+    // Probe remote refs, then configured name, then local branches
+    for candidate in &["origin/main", "origin/master"] {
+        if git_output(project_root, &["rev-parse", "--verify", candidate])?
+            .status
+            .success()
+        {
+            return Ok((*candidate).to_string());
+        }
     }
 
     // Try configured default branch name (git config init.defaultBranch)
-    let configured = Command::new("git")
-        .args(["config", "init.defaultBranch"])
-        .current_dir(project_root)
-        .output()?;
+    let configured = git_output(project_root, &["config", "init.defaultBranch"])?;
     if configured.status.success() {
         let branch_name = String::from_utf8_lossy(&configured.stdout)
             .trim()
             .to_string();
-        if !branch_name.is_empty() {
-            let check = Command::new("git")
-                .args(["rev-parse", "--verify", &branch_name])
-                .current_dir(project_root)
-                .output()?;
-            if check.status.success() {
-                return Ok(branch_name);
-            }
+        if !branch_name.is_empty()
+            && git_output(project_root, &["rev-parse", "--verify", &branch_name])?
+                .status
+                .success()
+        {
+            return Ok(branch_name);
         }
     }
 
-    // Try local main (no remote, no config)
-    let check_local_main = Command::new("git")
-        .args(["rev-parse", "--verify", "main"])
-        .current_dir(project_root)
-        .output()?;
-    if check_local_main.status.success() {
-        return Ok("main".to_string());
-    }
-
-    // Try local master (no remote, no config)
-    let check_local_master = Command::new("git")
-        .args(["rev-parse", "--verify", "master"])
-        .current_dir(project_root)
-        .output()?;
-    if check_local_master.status.success() {
-        return Ok("master".to_string());
+    // Fall back to local main / master (no remote, no config)
+    for candidate in &["main", "master"] {
+        if git_output(project_root, &["rev-parse", "--verify", candidate])?
+            .status
+            .success()
+        {
+            return Ok((*candidate).to_string());
+        }
     }
 
     Err(AppError::Io(std::io::Error::new(
@@ -291,10 +282,10 @@ fn detect_default_branch(project_root: &Path) -> Result<String, AppError> {
 /// Run git diff and return raw output.
 fn run_git_diff(project_root: &Path, source: &DiffSource) -> Result<String, AppError> {
     let output = match source {
-        DiffSource::Uncommitted => Command::new("git")
-            .args(["diff", "--unified=0", "--no-color", "HEAD"])
-            .current_dir(project_root)
-            .output()?,
+        DiffSource::Uncommitted => {
+            git_output(project_root, &["diff", "--unified=0", "--no-color", "HEAD"])?
+        }
+        // Dynamic range arg requires .arg(format!(...)) — cannot use git_output helper.
         DiffSource::Branch(base) => Command::new("git")
             .args(["diff", "--unified=0", "--no-color"])
             .arg(format!("{base}...HEAD"))
@@ -308,7 +299,7 @@ fn run_git_diff(project_root: &Path, source: &DiffSource) -> Result<String, AppE
         ))));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Parse unified diff output into changed files with line ranges.

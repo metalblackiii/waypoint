@@ -16,16 +16,24 @@ pub fn run() -> Result<(), AppError> {
     let wp_dir = project::ensure_initialized(&ctx.project_root)?;
 
     // Auto-scan if map.md doesn't exist or is stale
-    if should_rescan(&wp_dir, &ctx.project_root) {
+    let fresh_arch = if should_rescan(&wp_dir, &ctx.project_root) {
         let output = map::scan::scan_project(&ctx.project_root)?;
         map::write_map(&wp_dir, &output.entries)?;
-        let _ = map::index::rebuild_symbols(&wp_dir, &output.symbols);
-        let _ = map::index::rebuild_imports(&wp_dir, &output.imports);
-        let _ = map::index::rebuild_arch_summary(&wp_dir, &output.entries, &output.imports);
-    }
+        if let Err(e) = map::index::rebuild_symbols(&wp_dir, &output.symbols) {
+            eprintln!("Warning: symbol index failed: {e}");
+        }
+        if let Err(e) = map::index::rebuild_imports(&wp_dir, &output.imports) {
+            eprintln!("Warning: import index failed: {e}");
+        }
+        // Pass the computed summary directly to emit_arch_context to avoid a
+        // write-then-read round-trip through SQLite on every rescan.
+        map::index::rebuild_arch_summary(&wp_dir, &output.entries, &output.imports).ok()
+    } else {
+        None
+    };
 
     // Emit arch context if project is large enough
-    emit_arch_context(&wp_dir, &ctx.project_root);
+    emit_arch_context(&wp_dir, &ctx.project_root, fresh_arch);
 
     // Record session start (silent failure)
     let _ = ledger::record_event(
@@ -41,9 +49,18 @@ pub fn run() -> Result<(), AppError> {
 }
 
 /// Emit architecture context via hook output if the project has enough files.
-fn emit_arch_context(wp_dir: &std::path::Path, project_root: &std::path::Path) {
+///
+/// `precomputed` is the `ArchSummary` returned by a rescan that happened this
+/// session. When `Some`, it is used directly to avoid a write-then-read
+/// `SQLite` round-trip. When `None`, the summary is read from the DB instead.
+fn emit_arch_context(
+    wp_dir: &std::path::Path,
+    project_root: &std::path::Path,
+    precomputed: Option<map::index::ArchSummary>,
+) {
     let project_str = project_root.to_string_lossy();
-    let Ok(Some(arch)) = map::index::get_arch_summary(wp_dir) else {
+    let Some(arch) = precomputed.or_else(|| map::index::get_arch_summary(wp_dir).ok().flatten())
+    else {
         let _ = ledger::record_event(ledger::EventKind::ArchMiss, &project_str, 0);
         return;
     };

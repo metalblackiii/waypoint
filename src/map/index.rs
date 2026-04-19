@@ -51,7 +51,12 @@ CREATE TABLE IF NOT EXISTS arch_summary (
     file_count INTEGER NOT NULL
 );";
 
-fn open_index(waypoint_dir: &Path) -> Result<Connection, AppError> {
+/// Top-N languages shown in the arch summary language distribution line.
+const ARCH_LANG_DISPLAY_LIMIT: usize = 4;
+/// Top-N hotspot directories shown in the arch summary hotspots line.
+const ARCH_HOTSPOT_DISPLAY_LIMIT: usize = 3;
+
+pub(crate) fn open_index(waypoint_dir: &Path) -> Result<Connection, AppError> {
     let db_path = waypoint_dir.join(INDEX_FILENAME);
     let conn = Connection::open(&db_path)?;
     conn.execute_batch(SCHEMA)?;
@@ -238,9 +243,16 @@ pub fn rebuild_arch_summary(
     waypoint_dir: &Path,
     entries: &[super::MapEntry],
     imports: &[super::extract::Import],
-) -> Result<(), AppError> {
+) -> Result<ArchSummary, AppError> {
     let conn = open_index(waypoint_dir)?;
+    rebuild_arch_summary_with(&conn, entries, imports)
+}
 
+fn rebuild_arch_summary_with(
+    conn: &Connection,
+    entries: &[super::MapEntry],
+    imports: &[super::extract::Import],
+) -> Result<ArchSummary, AppError> {
     // Language distribution by file count
     let mut ext_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for entry in entries {
@@ -256,7 +268,7 @@ pub fn rebuild_arch_summary(
 
     let lang_parts: Vec<String> = ext_vec
         .iter()
-        .take(4)
+        .take(ARCH_LANG_DISPLAY_LIMIT)
         .map(|(ext, count)| {
             let name = ext_to_lang(ext);
             #[allow(
@@ -286,7 +298,7 @@ pub fn rebuild_arch_summary(
 
     let hotspot_parts: Vec<String> = dir_vec
         .iter()
-        .take(3)
+        .take(ARCH_HOTSPOT_DISPLAY_LIMIT)
         .map(|(dir, count)| format!("{dir}/ ({count} imports-in)"))
         .collect();
     let hotspots = if hotspot_parts.is_empty() {
@@ -303,7 +315,11 @@ pub fn rebuild_arch_summary(
         params![lang_dist, hotspots, file_count],
     )?;
 
-    Ok(())
+    Ok(ArchSummary {
+        lang_dist,
+        hotspots,
+        file_count,
+    })
 }
 
 /// Read cached architecture summary.
@@ -366,10 +382,19 @@ pub fn find_symbols_in_ranges(
     file_path: &str,
     ranges: &[(i64, i64)],
 ) -> Result<Vec<SymbolRow>, AppError> {
+    let conn = open_index(waypoint_dir)?;
+    find_symbols_in_ranges_with(&conn, file_path, ranges)
+}
+
+/// Connection-reuse variant — avoids opening a new DB connection per call.
+pub(crate) fn find_symbols_in_ranges_with(
+    conn: &Connection,
+    file_path: &str,
+    ranges: &[(i64, i64)],
+) -> Result<Vec<SymbolRow>, AppError> {
     if ranges.is_empty() {
         return Ok(vec![]);
     }
-    let conn = open_index(waypoint_dir)?;
     let mut results = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut stmt = conn.prepare(
@@ -431,7 +456,15 @@ pub fn find_importers(
     target_file: Option<&str>,
 ) -> Result<Vec<(String, i64)>, AppError> {
     let conn = open_index(waypoint_dir)?;
+    find_importers_with(&conn, symbol_name, target_file)
+}
 
+/// Connection-reuse variant — avoids opening a new DB connection per call.
+pub(crate) fn find_importers_with(
+    conn: &Connection,
+    symbol_name: &str,
+    target_file: Option<&str>,
+) -> Result<Vec<(String, i64)>, AppError> {
     let results = if let Some(target) = target_file {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT i.source_file, i.line_number FROM imports i \
