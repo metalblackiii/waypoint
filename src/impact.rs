@@ -120,8 +120,8 @@ pub fn run(project_root: &Path, wp_dir: &Path, base: Option<&str>) -> Result<(),
         return Ok(());
     }
 
-    // Sort by risk severity (CRITICAL first)
-    affected.sort_by(|a, b| b.importer_count.cmp(&a.importer_count));
+    // Sort by importer count descending (highest impact first)
+    affected.sort_by_key(|b| std::cmp::Reverse(b.importer_count));
 
     for sym in &affected {
         let export_marker = if sym.exported { "" } else { " (private)" };
@@ -301,6 +301,13 @@ fn run_git_diff(project_root: &Path, source: &DiffSource) -> Result<String, AppE
             .current_dir(project_root)
             .output()?,
     };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "git diff failed: {stderr}"
+        ))));
+    }
+
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 

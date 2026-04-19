@@ -390,9 +390,9 @@ fn record_first_edit_if_needed_with(conn: &Connection, project_path: &str) -> Re
     }
 
     let elapsed_secs = match session_start {
-        Some(ref ts) => chrono::DateTime::parse_from_rfc3339(ts)
-            .map(|start| (Utc::now() - start.with_timezone(&Utc)).num_seconds())
-            .unwrap_or(0),
+        Some(ref ts) => chrono::DateTime::parse_from_rfc3339(ts).map_or(0, |start| {
+            (Utc::now() - start.with_timezone(&Utc)).num_seconds()
+        }),
         None => 0,
     };
 

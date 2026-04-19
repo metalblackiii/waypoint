@@ -252,7 +252,7 @@ pub fn rebuild_arch_summary(
     }
     let total = entries.len().max(1);
     let mut ext_vec: Vec<_> = ext_counts.into_iter().collect();
-    ext_vec.sort_by(|a, b| b.1.cmp(&a.1));
+    ext_vec.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     let lang_parts: Vec<String> = ext_vec
         .iter()
@@ -282,7 +282,7 @@ pub fn rebuild_arch_summary(
         *dir_fan_in.entry(dir).or_default() += 1;
     }
     let mut dir_vec: Vec<_> = dir_fan_in.into_iter().collect();
-    dir_vec.sort_by(|a, b| b.1.cmp(&a.1));
+    dir_vec.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     let hotspot_parts: Vec<String> = dir_vec
         .iter()
