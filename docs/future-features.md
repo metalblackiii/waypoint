@@ -43,6 +43,34 @@ Parked ideas with full context. Not scheduled — recorded so the reasoning surv
 
 **Estimated effort**: Low (after trace), impossible (before trace).
 
+## NL Task Routing (`waypoint ask`)
+
+**What**: Rank files by relevance to a natural-language task description. `waypoint ask "<task>"` returns a scored list of the most relevant files — e.g., `waypoint ask "implement OAuth middleware"` → ranked file paths with match reasons.
+
+**Why it matters**: Waypoint is currently symbol-name-based. If you don't know what symbol to look for, you're stuck. NL task routing removes the bootstrap problem: start from intent, not from symbol names. Evaluated `sigmap` (manojmallick/sigmap) as a candidate drop-in — its `sigmap ask` command does exactly this. Rejected it (NO-GO: 20 days old, sole contributor, MCP-dependent value). The capability is real; the right home is here.
+
+**Implementation sketch**:
+- Scoring pipeline per file: keyword match against map descriptions + symbol names (TF-IDF or simple token overlap), boosted by import-graph adjacency
+- Graph boost: files imported by high-scoring files get a +weight on 1-hop neighbors (sigmap uses +0.4; tune empirically)
+- Waypoint already has all inputs: map descriptions (per-file natural language), symbol names, import graph (used by `callers` and `impact`)
+- New `ask` subcommand: tokenize query, score all indexed files, apply graph boost, return top-N with file path + score + matched terms
+- Optional `--top N` flag (default 5–10)
+
+**Why it's parked**:
+- Map description quality determines result quality — gaps in map coverage produce poor rankings
+- No evaluation harness yet to measure hit@5 against real tasks in the neb codebase
+- Low urgency: `waypoint find` + `waypoint sketch` cover the common case when you know the symbol name
+
+**What would unblock it**:
+- Map coverage reaching ~80%+ of meaningful files (descriptions present and non-trivial)
+- A small benchmark set of task → relevant files pairs for the neb codebase to validate ranking quality before shipping
+
+**Estimated effort**: Medium (~3–5 days). Scoring logic is new but the graph traversal and index are already built.
+
 ---
 
-*Recorded 2026-04-18 during waypoint-intelligence PRD process. See `prd-waypoint-intelligence.md` Resolved Questions table for the full decision context.*
+*NL task routing recorded 2026-04-20 after evaluating sigmap as a candidate. See `docs/evaluation-sigmap-2026-04-20.md` in dotfiles repo for full evaluation context.*
+
+---
+
+*Call graph and dead code recorded 2026-04-18 during waypoint-intelligence PRD process. See `prd-waypoint-intelligence.md` Resolved Questions table for the full decision context.*
