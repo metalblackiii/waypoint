@@ -1,33 +1,15 @@
-# Waypoint Operating Protocol
+### Search: waypoint > rg > Grep tool > grep
 
-You are working in a Waypoint-managed project. These rules apply every turn.
+Prefer `waypoint` for symbols/signatures and `rg` for text/shell contexts. Use `Grep` tool (or `grep`) only as fallback when needed.
 
-## File Navigation
+If your environment enforces stricter search policy, follow local/global policy files and hooks.
 
-1. Check the `[waypoint] map:` context injected on every Read — it has a description and token estimate for the file.
-2. If the description is sufficient for your task, do NOT read the full file. The map description answering the question is enough — no sketch, no read.
-3. When you need a specific symbol (function, class, type), use `waypoint sketch <name>` before reading the file — it gives you the signature and line range. **Skip sketch for files under ~150 tokens** (check the map annotation — roughly 10-15 lines of code). **For files over ~200 tokens, sketch is mandatory unless the file was already read this session.**
-4. `waypoint find` vs grep tools — use the right tool for the job:
-   - `waypoint find "<query>"` — symbol names, function signatures, struct/class definitions
-   - `rg`/`Grep`/`grep` — string literals, comments, config values, error messages, non-code text
-5. When changing an exported function's signature, run `waypoint callers <name>` to find all files that import it.
+## Waypoint
 
-## Impact Analysis
+Use Waypoint for navigation efficiency and impact analysis.
 
-Before committing changes, run `waypoint impact` to assess blast radius. It maps changed symbols to their importers and classifies risk (CRITICAL/HIGH/MEDIUM/LOW). Use `waypoint impact --base <ref>` to diff against a specific branch.
-
-## After Actions
-
-Map freshness is maintained by the session-start hook, which rescans automatically when the map is older than 7 days or file count has drifted more than 3%. Content-only edits (same file count) do not trigger an automatic rescan until the next session. For mid-session freshness after significant edits, run `waypoint scan` manually.
-
-Same-directory renames are auto-cleaned on next scan. Cross-directory moves may leave a stale entry — run `waypoint scan` if you move a file to a different directory.
-
-## Cross-Project Work
-
-Hooks resolve foreign projects automatically. Watch for `[waypoint] foreign: /path/to/other-repo` annotations on pre-read.
-
-## Token Discipline
-
-- Never re-read a file already read this session unless it was modified since.
-- If appending to a file, do not read the entire file first.
-
+- On file reads, check `[waypoint] map:` context first. If it answers the question, skip full file read.
+- Use `waypoint find` for symbols/signatures; use `rg` for text/config/string search.
+- For specific symbol lookup, use `waypoint sketch <name>` before reading. Skip sketch for files under ~150 tokens. **For files over ~200 tokens, sketch is mandatory unless the file was already read this session.**
+- When changing exported signatures, run `waypoint callers <name>`.
+- Before commit, run `waypoint impact` to assess blast radius. It maps changed symbols to their importers and classifies risk (CRITICAL/HIGH/MEDIUM/LOW). Use `waypoint impact --base <ref>` to diff against a specific branch.

@@ -39,11 +39,14 @@ INPUT=$(cat)
 echo "$INPUT" | "$WAYPOINT" hook pre-read
 ```
 
-Make them executable:
+Make them executable (both locations):
 
 ```sh
 chmod +x ~/.claude/hooks/waypoint-*.sh
+chmod +x ~/.codex/hooks/waypoint-*.sh
 ```
+
+If `~/.codex/hooks` is a symlink to `~/.claude/hooks`, either command is sufficient.
 
 ## 4. Register hooks
 
@@ -93,21 +96,22 @@ Codex uses the same hook scripts (via `~/.codex/hooks` → `~/.claude/hooks` sym
 }
 ```
 
-## 5. Add the operating protocol to your global agent instructions
+## 5. Add the minimal protocol to your global agent instructions
 
-Copy `WAYPOINT.md` as a `## Waypoint` section into your global `AGENTS.md` (or `~/.codex/AGENTS.md`). This is the recommended approach — it works across all agents (Claude Code, Codex, Cursor, etc.) and keeps the protocol in a single file you control.
+`WAYPOINT.md` is the single source of truth for the copy/paste template.
+Copy the content of `WAYPOINT.md` into your global `AGENTS.md` (recommended for cross-agent portability).
 
-```sh
-cat WAYPOINT.md >> ~/.codex/AGENTS.md   # or wherever your global AGENTS.md lives
-```
+If you prefer import-based sync, keep the template in `WAYPOINT.md` and add an `@` import to `~/.claude/CLAUDE.md`.
 
-**Claude Code only:** If you use Claude Code exclusively, you can `@`-import instead of copying. Add to `~/.claude/CLAUDE.md`:
+**Claude Code only (optional):** If you want auto-sync instead of copy/paste, add an `@` import in `~/.claude/CLAUDE.md`:
+
+NOTE: Recommend installing rg as it is more efficient than grep.  If not, update rules accordingly
 
 ```markdown
-@~/repos/waypoint/WAYPOINT.md
+@/absolute/path/to/waypoint/WAYPOINT.md
 ```
 
-The `@` import stays in sync automatically when `WAYPOINT.md` updates, but only works in Claude Code.
+Use your local absolute path to this repo.
 
 ## 6. First run
 
@@ -120,5 +124,33 @@ waypoint scan
 To scan all repos at once:
 
 ```sh
-waypoint scan --all ~/repos
+waypoint scan --all /path/to/repos
 ```
+
+## 7. Verify setup
+
+Run these checks after setup:
+
+```sh
+waypoint --version
+waypoint scan --check
+waypoint status
+```
+
+Optional symbol check (for code repos with indexed symbols):
+
+```sh
+waypoint find "scan" --limit 5
+# if find returns symbols, sketch one of them:
+waypoint sketch <symbol-name-from-find-results>
+```
+
+Expected signals:
+
+- `waypoint --version` prints a semver plus git short hash.
+- `waypoint scan --check` exits successfully when the map is present and fresh.
+- `waypoint status` reports map health for the current project.
+- In code repos, `waypoint find "scan" --limit 5` usually returns symbols; in non-code repos it may return "No symbols found".
+- If `find` returns symbols, `waypoint sketch <symbol-name-from-find-results>` returns file, line range, and signature.
+
+If a hook is misconfigured, open a new Claude/Codex session and confirm read operations include `[waypoint] map:` annotations.

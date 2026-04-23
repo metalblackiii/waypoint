@@ -1,0 +1,9 @@
+# Suppress false-positive Cargo schema diagnostics from Even Better TOML/Taplo
+# for valid Clippy lint-group priority syntax in Cargo.toml.
+# Current Taplo schema controls are file-level here; no narrower key-level
+# suppression is available for this specific false-positive.
+[[rule]]
+include = ["Cargo.toml"]
+
+[rule.schema]
+enabled = false

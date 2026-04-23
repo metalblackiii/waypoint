@@ -1,2 +1,1 @@
 @AGENTS.md
-@WAYPOINT.md

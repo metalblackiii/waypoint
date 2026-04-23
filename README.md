@@ -1,15 +1,47 @@
 # Waypoint
 
-Project intelligence for Claude Code. Gives your AI assistant a file map and symbol index — saving 65-80% token overhead on codebase orientation.
+Project intelligence for Claude Code or Codex. Gives your AI assistant a file map and symbol index — saving 65-80% token overhead on codebase orientation.
+
+## Why Waypoint
+
+- Reduces blind full-file reads with map-first context.
+- Speeds up code navigation with symbol search (`waypoint find`, `waypoint sketch`).
+- Makes change risk visible before commit (`waypoint impact`).
+- Works across multiple local repos, not just the current one.
+
+## Language support
+
+- First-class parsing (tree-sitter): Rust, TypeScript, JavaScript, Python, Go.
+- Additional formats: regex-based fallback heuristics for many other source/config file types.
+
+## Quickstart (2 minutes)
+
+```sh
+cargo install --path .
+waypoint scan
+waypoint status
+waypoint impact
+```
+
+For hook setup and global agent instructions, see [SETUP.md](SETUP.md).
 
 ## What it does
 
-Waypoint runs as Claude Code hooks, injecting context automatically:
+Waypoint runs as Claude Code/Codex hooks, injecting context automatically:
 
 | Hook | Trigger | What happens |
 |------|---------|--------------|
-| **session-start** | New conversation | Auto-scans if no map exists or map is stale. |
-| **pre-read** | Before Claude reads a file | Injects file description and token estimate from the map (works across projects) |
+| **session-start** | New conversation | Auto-scans if no map exists or map is stale, then injects 2-line `[waypoint] arch:` context for repos with >=20 scannable files. |
+| **pre-read** | Before the AI Agent reads a file | Injects file description and token estimate from the map (works across projects) |
+
+Session-start arch context details:
+
+- **Map is stale** means map age is over 7 days or file-count drift is over 3%.
+- **Scannable files** means files included by scan after `.gitignore`/filtering rules.
+- Arch context appears only when scannable file count is `>=20`.
+- Output shape is always 2 lines:
+  - `[waypoint] arch: <top languages by %>`
+  - `[waypoint] arch: hotspots: <top dirs by imports-in>`
 
 ## What lives where
 
@@ -32,7 +64,7 @@ Walks the project respecting `.gitignore`, extracts descriptions using tree-sitt
 waypoint scan              # Generate/regenerate the map
 waypoint scan --check      # Exit non-zero if map is stale
 waypoint scan --all        # Scan all immediate child git repos (smart default: walks up if inside a project)
-waypoint scan --all ~/repos  # Explicit parent directory
+waypoint scan --all /path/to/repos  # Explicit parent directory
 ```
 
 ### `waypoint sketch`
@@ -40,7 +72,7 @@ waypoint scan --all ~/repos  # Explicit parent directory
 Look up a symbol's signature and location without reading the full file.
 
 ```sh
-waypoint sketch SessionStart      # shows file, line range, and signature
+waypoint sketch <symbol-name-from-find-results>  # shows file, line range, and signature
 ```
 
 ### `waypoint find`
@@ -58,7 +90,7 @@ Find all files that import a given symbol. Queries the imports table (populated 
 
 ```sh
 waypoint callers AppError              # current project
-waypoint callers STATUS_CODES -C ~/repos/neb-ms-billing  # another project
+waypoint callers STATUS_CODES -C /path/to/repos/another-project  # another project
 ```
 
 ### `waypoint gain`
@@ -78,28 +110,52 @@ Health check — map freshness, ledger summary.
 waypoint status
 ```
 
-## Getting Claude to use it
+## Typical workflow
 
-The hooks handle the automatic plumbing (map lookups, context injection). Import `WAYPOINT.md` into your global `~/.claude/CLAUDE.md` to give Claude the operating protocol — token discipline and navigation rules:
+```sh
+# 1) Build map context
+waypoint scan
 
-```markdown
-@~/repos/waypoint/WAYPOINT.md
+# 2) Locate symbols before opening files
+waypoint find "scan" --limit 5
+waypoint sketch <symbol-name-from-find-results>
+
+# 3) Make changes, then check blast radius
+waypoint impact
 ```
 
-See [SETUP.md](SETUP.md) for full details.
+## Setup
+
+For installation, hooks, and global agent configuration (`WAYPOINT.md` copy/import flow), see [SETUP.md](SETUP.md).
+
+## Known limitations
+
+- Symbol checks are repo-dependent: `waypoint find`/`sketch` may return no matches in non-code or low-symbol repos.
+- `waypoint gain` is an estimated upper bound ("max savings"), not a counterfactual measurement of exact tokens that would have been spent without waypoint.
+- `waypoint impact` depends on a fresh map/index; if you see a staleness warning, run `waypoint scan` first.
+- Hook-powered context injection requires hook setup; without configured hooks, context lines are not auto-injected.
+- `waypoint impact` output is text-only in v1 (no JSON mode yet).
+- Hidden files/directories (`.`-prefixed) are intentionally excluded from scan/indexing to avoid over-indexing system/metadata paths; dotfile-heavy repos may see more lookup misses.
 
 ## Cross-project map lookups
 
 When Claude reads a file outside the current project, the pre-read hook automatically resolves the file's own project root and serves map context from that project's `.waypoint/` directory. This works for sibling repos, nested repos (submodules), and any waypoint-managed project on disk.
 
+Arch context is emitted at session start for the session root repo. On cross-repo pre-read, you get `[waypoint] foreign:` plus file map context for the target repo.
+
+Typical cross-repo signals:
+
+```text
+[waypoint] foreign: /path/to/other-repo
+[waypoint] map: ...
+```
+
+See `docs/future-features.md` (`P0 Fast Follow: waypoint arch`) for a planned explicit cross-repo arch query command.
+
 For this to work, the target project needs to have been scanned at least once. Pre-warm all your repos in one pass:
 
 ```sh
-waypoint scan --all ~/repos
+waypoint scan --all /path/to/repos
 ```
 
 Maps stay current because session-start rescans when the map is stale (older than 7 days or file count drifted more than 3%). For repos you don't touch often, a periodic re-scan keeps them fresh — just re-run `waypoint scan --all`.
-
-## Setup
-
-See [SETUP.md](SETUP.md) for full installation instructions (binary, hooks, settings.json).

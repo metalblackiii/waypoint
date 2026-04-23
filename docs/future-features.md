@@ -2,6 +2,32 @@
 
 Parked ideas with full context. Not scheduled — recorded so the reasoning survives.
 
+## P0 Fast Follow: Arch Query Command (`waypoint arch`)
+
+**What**: Add a first-class architecture query command:
+`waypoint arch [-C <repo>]`
+
+**Why it matters**:
+- Session-start arch context is useful, but not reliably discoverable after cross-repo pivots.
+- Codex pre-read behavior is not guaranteed, so hook-only arch delivery is not sufficient UX.
+- A direct command is deterministic for both humans and agents.
+
+**Implementation sketch**:
+- Add `arch` subcommand in `cli.rs`.
+- Read existing `arch_summary` from SQLite (no new index/table needed).
+- Emit the same 2-line format already used by session-start hook:
+  - language distribution line
+  - hotspots line (`imports-in`)
+- Support `-C <repo>` for explicit cross-repo lookup.
+- If summary missing/stale: print actionable guidance (`waypoint scan`).
+- Optional: mirror a tiny arch summary block in `map.md` header for human visibility (DB remains source of truth).
+
+**Non-goals (v1)**:
+- No hook behavior changes required for first ship.
+- No JSON output required for first ship.
+
+**Estimated effort**: Low (~0.5-1 day). Mostly CLI plumbing + formatting reuse.
+
 ## Call Graph Tracing (`waypoint trace`)
 
 **What**: Track actual function calls (not just imports). `waypoint trace <symbol> [--direction inbound|outbound|both] [--depth N]` walks the call chain.
@@ -56,6 +82,17 @@ Parked ideas with full context. Not scheduled — recorded so the reasoning surv
 - New `ask` subcommand: tokenize query, score all indexed files, apply graph boost, return top-N with file path + score + matched terms
 - Optional `--top N` flag (default 5–10)
 
+**Implementable carry-over from sigmap evaluation**:
+- Build only the NL retrieval capability (`ask`) as a native waypoint command.
+- Keep it local-only and index-backed (reuse `map.md` + SQLite symbols/imports); no MCP dependency required.
+- Return ranked files with compact "why matched" signals (matched terms + graph boost contribution).
+- Add an evaluation harness before shipping: small task→expected-files benchmark, track hit@5 and hit@10.
+
+**Explicit non-goals for v1**:
+- No generated context artifact files (for example, `.github/copilot-instructions.md`).
+- No quality-loop subcommands (`judge`, `validate`, `learn`).
+- No adoption of third-party sigmap runtime or release cadence risk.
+
 **Why it's parked**:
 - Map description quality determines result quality — gaps in map coverage produce poor rankings
 - No evaluation harness yet to measure hit@5 against real tasks in the neb codebase
@@ -69,8 +106,21 @@ Parked ideas with full context. Not scheduled — recorded so the reasoning surv
 
 ---
 
-*NL task routing recorded 2026-04-20 after evaluating sigmap as a candidate. See `docs/evaluation-sigmap-2026-04-20.md` in dotfiles repo for full evaluation context.*
+*NL task routing recorded 2026-04-20 after evaluating sigmap as a candidate (NO-GO for adoption, GO as a native waypoint feature direction).*
 
 ---
 
-*Call graph and dead code recorded 2026-04-18 during waypoint-intelligence PRD process. See `prd-waypoint-intelligence.md` Resolved Questions table for the full decision context.*
+## Delivered Baseline (2026-04-23)
+
+Implemented and now considered baseline behavior:
+
+- Ranked `waypoint find` is default behavior (no `--ranked` flag).
+- Session-start arch context is file-count gated (`<20` files suppresses arch lines).
+- `waypoint impact` is manual-only (no hook auto-trigger), text output only in v1.
+- Impact risk tiers: `CRITICAL >=10`, `HIGH 5-9`, `MEDIUM 2-4`, `LOW 0-1`.
+- Impact includes private/non-exported changed symbols (`0 importers`, `LOW`).
+- Impact uses `std::process::Command` git calls (no `git2` dependency).
+- Stale map in impact is warning-only; command still exits successfully on normal operation.
+- Ledger kept existing data; `ArchHit`/`ArchMiss` were additive (no reset).
+
+Use this baseline when evaluating future features to avoid reopening settled v1 decisions without new evidence.

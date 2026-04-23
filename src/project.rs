@@ -66,7 +66,7 @@ pub fn discover_projects(base: &Path) -> Result<Vec<PathBuf>, AppError> {
     let base_is_repo = base.join(".git").exists();
     let children = child_git_repos(base)?;
 
-    // Base has .git AND child .git repos → it's a parent of repos (e.g., ~/repos that's also a git repo)
+    // Base has .git AND child .git repos -> it's a parent of repos (e.g., /path/to/repos that's also a git repo)
     // Base has .git but NO child repos → it's a single project; walk up to scan siblings
     // Base has no .git → it's a plain parent dir; scan children
     let scan_dir = if base_is_repo && children.is_empty() {
