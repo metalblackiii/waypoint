@@ -50,6 +50,7 @@ struct ChangedFile {
 }
 
 /// Where to source the diff from.
+#[derive(Debug)]
 enum DiffSource {
     /// Uncommitted changes (working tree + staged vs HEAD).
     Uncommitted,
@@ -211,6 +212,12 @@ fn check_staleness(wp_dir: &Path, project_root: &Path) {
 fn detect_diff_source(project_root: &Path, base: Option<&str>) -> Result<DiffSource, AppError> {
     // FR-16: Explicit base override
     if let Some(base_ref) = base {
+        // Git refnames cannot start with '-'; reject early to prevent option injection.
+        if base_ref.starts_with('-') {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "invalid base ref '{base_ref}': refs cannot start with '-'"
+            ))));
+        }
         return Ok(DiffSource::Branch(base_ref.to_string()));
     }
 
@@ -598,5 +605,11 @@ rename to src/new.rs
         assert_eq!(new_file.ranges, vec![(12, 14)]);
         let old_file = files.iter().find(|f| f.path == "src/old.rs").unwrap();
         assert_eq!(old_file.ranges, vec![(10, 11)]);
+    }
+
+    #[test]
+    fn detect_diff_source_rejects_base_ref_starting_with_dash() {
+        let err = detect_diff_source(Path::new("."), Some("--work-tree=/tmp")).unwrap_err();
+        assert!(err.to_string().contains("refs cannot start with '-'"));
     }
 }
