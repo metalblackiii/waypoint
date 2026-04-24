@@ -1,15 +1,23 @@
 # Waypoint Setup
 
-## 1. Build and install the binary
+## 1. Install Rust
 
-Requires Rust 1.85+ (edition 2024).
+Waypoint requires Rust 1.85+ (edition 2024). If you don't have Rust installed (or need to upgrade):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Follow the prompts, then restart your shell or run `source ~/.cargo/env`. Verify with `rustc --version`.
+
+## 2. Build and install the binary
 
 ```sh
 cargo install --path .
 # Installs to ~/.cargo/bin/waypoint
 ```
 
-## 2. Add `.waypoint/` to your global gitignore
+## 3. Add `.waypoint/` to your global gitignore
 
 ```sh
 echo '.waypoint/' >> ~/.gitignore_global
@@ -17,7 +25,7 @@ echo '.waypoint/' >> ~/.gitignore_global
 # git config --global core.excludesfile
 ```
 
-## 3. Create the hook scripts
+## 4. Create the hook scripts
 
 Each hook is a thin shell wrapper that delegates to the waypoint binary. Create these in `~/.claude/hooks/` (Claude Code) — Codex symlinks the same directory via `~/.codex/hooks`.
 
@@ -48,7 +56,7 @@ chmod +x ~/.codex/hooks/waypoint-*.sh
 
 If `~/.codex/hooks` is a symlink to `~/.claude/hooks`, either command is sufficient.
 
-## 4. Register hooks
+## 5. Register hooks
 
 ### Claude Code — `~/.claude/settings.json`
 
@@ -96,7 +104,7 @@ Codex uses the same hook scripts (via `~/.codex/hooks` → `~/.claude/hooks` sym
 }
 ```
 
-## 5. Add the minimal protocol to your global agent instructions
+## 6. Add the minimal protocol to your global agent instructions
 
 `WAYPOINT.md` is the single source of truth for the copy/paste template.
 Copy the content of `WAYPOINT.md` into your global `AGENTS.md` (recommended for cross-agent portability).
@@ -113,7 +121,7 @@ NOTE: Recommend installing rg (ripgrep) as it is more efficient than grep.  If n
 
 Use your local absolute path to this repo.
 
-## 6. First run
+## 7. First run
 
 Open Claude Code or Codex in any project. The session-start hook auto-creates `.waypoint/` and runs the initial scan. Or run manually:
 
@@ -137,7 +145,7 @@ waypoint arch -C /path/to/other-repo
 
 This gives you the current language mix and hotspots before deeper reads.
 
-## 7. Verify setup
+## 8. Verify setup
 
 Run these checks after setup:
 
