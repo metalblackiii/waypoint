@@ -47,7 +47,7 @@ Session-start arch context details:
 
 ```
 .waypoint/           ← per-project, gitignored
-  map.md             ← file descriptions + token estimates (human-readable source of truth)
+  map.md             ← file descriptions + token estimates + architecture summary section (human-readable source of truth)
   map_index.db       ← SQLite index for O(1) map lookups + FTS5 symbol search + import tracking
 
 ~/Library/Application Support/waypoint/
@@ -93,6 +93,17 @@ waypoint callers AppError              # current project
 waypoint callers STATUS_CODES -C /path/to/repos/another-project  # another project
 ```
 
+### `waypoint arch`
+
+Print cached architecture summary for a project in the same hook format (`lang dist` + optional `hotspots`).
+
+```sh
+waypoint arch
+waypoint arch -C /path/to/repos/another-project
+```
+
+If summary data is missing or stale, waypoint prints guidance to run `waypoint scan`.
+
 ### `waypoint gain`
 
 Token savings analytics from the ledger.
@@ -116,11 +127,16 @@ waypoint status
 # 1) Build map context
 waypoint scan
 
-# 2) Locate symbols before opening files
+# 2) Get architecture context (especially when switching repos)
+waypoint arch
+# or:
+waypoint arch -C /path/to/other-repo
+
+# 3) Locate symbols before opening files
 waypoint find "scan" --limit 5
 waypoint sketch <symbol-name-from-find-results>
 
-# 3) Make changes, then check blast radius
+# 4) Make changes, then check blast radius
 waypoint impact
 ```
 
@@ -141,7 +157,7 @@ For installation, hooks, and global agent configuration (`WAYPOINT.md` copy/impo
 
 When Claude reads a file outside the current project, the pre-read hook automatically resolves the file's own project root and serves map context from that project's `.waypoint/` directory. This works for sibling repos, nested repos (submodules), and any waypoint-managed project on disk.
 
-Arch context is emitted at session start for the session root repo. On cross-repo pre-read, you get `[waypoint] foreign:` plus file map context for the target repo.
+Arch context is emitted at session start for the session root repo. On cross-repo pre-read, you get `[waypoint] foreign:` plus file map context for the target repo. For explicit cross-repo architecture lookup at any time, use `waypoint arch -C <repo>`.
 
 Typical cross-repo signals:
 
@@ -149,8 +165,6 @@ Typical cross-repo signals:
 [waypoint] foreign: /path/to/other-repo
 [waypoint] map: ...
 ```
-
-See `docs/future-features.md` (`P0 Fast Follow: waypoint arch`) for a planned explicit cross-repo arch query command.
 
 For this to work, the target project needs to have been scanned at least once. Pre-warm all your repos in one pass:
 

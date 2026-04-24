@@ -105,7 +105,7 @@ If you prefer import-based sync, keep the template in `WAYPOINT.md` and add an `
 
 **Claude Code only (optional):** If you want auto-sync instead of copy/paste, add an `@` import in `~/.claude/CLAUDE.md`:
 
-NOTE: Recommend installing rg as it is more efficient than grep.  If not, update rules accordingly
+NOTE: Recommend installing rg (ripgrep) as it is more efficient than grep.  If not, update rules accordingly
 
 ```markdown
 @/absolute/path/to/waypoint/WAYPOINT.md
@@ -126,6 +126,16 @@ To scan all repos at once:
 ```sh
 waypoint scan --all /path/to/repos
 ```
+
+When switching to a different repo (or when investigating another repo from your current cwd), run:
+
+```sh
+waypoint arch
+# or from another repo:
+waypoint arch -C /path/to/other-repo
+```
+
+This gives you the current language mix and hotspots before deeper reads.
 
 ## 7. Verify setup
 
@@ -152,5 +162,6 @@ Expected signals:
 - `waypoint status` reports map health for the current project.
 - In code repos, `waypoint find "scan" --limit 5` usually returns symbols; in non-code repos it may return "No symbols found".
 - If `find` returns symbols, `waypoint sketch <symbol-name-from-find-results>` returns file, line range, and signature.
+- `waypoint arch` prints architecture context (`Languages`, and `Hotspots` when imports are present).
 
 If a hook is misconfigured, open a new Claude/Codex session and confirm read operations include `[waypoint] map:` annotations.

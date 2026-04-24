@@ -2,32 +2,6 @@
 
 Parked ideas with full context. Not scheduled — recorded so the reasoning survives.
 
-## P0 Fast Follow: Arch Query Command (`waypoint arch`)
-
-**What**: Add a first-class architecture query command:
-`waypoint arch [-C <repo>]`
-
-**Why it matters**:
-- Session-start arch context is useful, but not reliably discoverable after cross-repo pivots.
-- Codex pre-read behavior is not guaranteed, so hook-only arch delivery is not sufficient UX.
-- A direct command is deterministic for both humans and agents.
-
-**Implementation sketch**:
-- Add `arch` subcommand in `cli.rs`.
-- Read existing `arch_summary` from SQLite (no new index/table needed).
-- Emit the same 2-line format already used by session-start hook:
-  - language distribution line
-  - hotspots line (`imports-in`)
-- Support `-C <repo>` for explicit cross-repo lookup.
-- If summary missing/stale: print actionable guidance (`waypoint scan`).
-- Optional: mirror a tiny arch summary block in `map.md` header for human visibility (DB remains source of truth).
-
-**Non-goals (v1)**:
-- No hook behavior changes required for first ship.
-- No JSON output required for first ship.
-
-**Estimated effort**: Low (~0.5-1 day). Mostly CLI plumbing + formatting reuse.
-
 ## Call Graph Tracing (`waypoint trace`)
 
 **What**: Track actual function calls (not just imports). `waypoint trace <symbol> [--direction inbound|outbound|both] [--depth N]` walks the call chain.
@@ -95,12 +69,12 @@ Parked ideas with full context. Not scheduled — recorded so the reasoning surv
 
 **Why it's parked**:
 - Map description quality determines result quality — gaps in map coverage produce poor rankings
-- No evaluation harness yet to measure hit@5 against real tasks in the neb codebase
+- No evaluation harness yet to measure hit@5 against real tasks in a target codebase
 - Low urgency: `waypoint find` + `waypoint sketch` cover the common case when you know the symbol name
 
 **What would unblock it**:
 - Map coverage reaching ~80%+ of meaningful files (descriptions present and non-trivial)
-- A small benchmark set of task → relevant files pairs for the neb codebase to validate ranking quality before shipping
+- A small benchmark set of task → relevant files pairs for a target codebase to validate ranking quality before shipping
 
 **Estimated effort**: Medium (~3–5 days). Scoring logic is new but the graph traversal and index are already built.
 

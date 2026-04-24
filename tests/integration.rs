@@ -839,6 +839,55 @@ fn scan_persists_arch_summary() {
     );
 }
 
+#[test]
+fn cli_arch_prints_summary_for_local_repo() {
+    let project = setup_project_with_files(25);
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .arg("arch")
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[waypoint] arch:"));
+}
+
+#[test]
+fn cli_arch_with_context_flag_targets_foreign_repo() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_project_with_files(25);
+    waypoint()
+        .arg("scan")
+        .current_dir(project_b.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["arch", "-C", project_b.path().to_str().unwrap()])
+        .current_dir(project_a.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[waypoint] arch:"));
+}
+
+#[test]
+fn cli_arch_missing_summary_prints_scan_guidance() {
+    let project = TempDir::new().unwrap();
+    fs::create_dir(project.path().join(".git")).unwrap();
+    fs::create_dir(project.path().join(".waypoint")).unwrap();
+
+    waypoint()
+        .arg("arch")
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("waypoint scan"));
+}
+
 // ── Impact Analysis Tests ──────────────────────────────────────
 
 /// Create a git-initialized project for impact tests (real git repo, not just .git marker).
@@ -1017,10 +1066,10 @@ fn cli_impact_with_base_flag() {
 // ── Version Test ───────────────────────────────────────────────
 
 #[test]
-fn cli_version_reports_0_8_3() {
+fn cli_version_reports_0_9_0() {
     waypoint()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("0.8.3"));
+        .stdout(predicate::str::contains("0.9.0"));
 }

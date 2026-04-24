@@ -1,3 +1,4 @@
+pub mod arch;
 pub mod cli;
 pub mod hook;
 pub mod impact;
@@ -180,6 +181,34 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                     let line_list: Vec<String> = lines.iter().map(ToString::to_string).collect();
                     println!("  {file}:{}", line_list.join(","));
                 }
+            }
+            Ok(())
+        }
+
+        Command::Arch { context } => {
+            let project_root = project::resolve_with_context(context.as_deref())?;
+            let wp_dir = project::waypoint_dir(&project_root);
+            if !wp_dir.exists() {
+                println!(
+                    "{}",
+                    arch::summary_guidance(&project_root, arch::ArchSummaryState::Missing)
+                );
+                return Ok(());
+            }
+
+            let summary = map::index::get_arch_summary(&wp_dir)?;
+            let stale = arch::summary_is_stale(&wp_dir, &project_root);
+
+            match (summary, stale) {
+                (Some(summary), false) => println!("{}", arch::format_summary(&summary)),
+                (Some(_), true) => println!(
+                    "{}",
+                    arch::summary_guidance(&project_root, arch::ArchSummaryState::Stale)
+                ),
+                (None, _) => println!(
+                    "{}",
+                    arch::summary_guidance(&project_root, arch::ArchSummaryState::Missing)
+                ),
             }
             Ok(())
         }

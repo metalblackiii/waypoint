@@ -245,7 +245,9 @@ pub fn rebuild_arch_summary(
     imports: &[super::extract::Import],
 ) -> Result<ArchSummary, AppError> {
     let conn = open_index(waypoint_dir)?;
-    rebuild_arch_summary_with(&conn, entries, imports)
+    let summary = rebuild_arch_summary_with(&conn, entries, imports)?;
+    mirror_arch_section_in_map(waypoint_dir, &summary)?;
+    Ok(summary)
 }
 
 fn rebuild_arch_summary_with(
@@ -320,6 +322,87 @@ fn rebuild_arch_summary_with(
         hotspots,
         file_count,
     })
+}
+
+fn mirror_arch_section_in_map(waypoint_dir: &Path, summary: &ArchSummary) -> Result<(), AppError> {
+    let map_path = waypoint_dir.join("map.md");
+    if !map_path.exists() {
+        return Ok(());
+    }
+    let current = std::fs::read_to_string(&map_path)?;
+    let updated = upsert_architecture_section(&current, summary);
+    if updated != current {
+        crate::project::atomic_write(&map_path, &updated)?;
+    }
+    Ok(())
+}
+
+fn upsert_architecture_section(map_content: &str, summary: &ArchSummary) -> String {
+    let stripped = strip_existing_architecture_section(map_content);
+    let mut lines: Vec<String> = stripped.lines().map(ToString::to_string).collect();
+
+    let insert_at = lines
+        .iter()
+        .position(|line| line.starts_with("## "))
+        .unwrap_or(lines.len());
+    let mut section = vec![
+        "### Architecture".to_string(),
+        format!("- Languages: {}", map_languages_line(summary)),
+    ];
+    if let Some(hotspots) = map_hotspots_line(summary) {
+        section.push(format!("- Hotspots: {hotspots}"));
+    }
+    section.push(String::new());
+
+    if insert_at > 0 && !lines[insert_at - 1].is_empty() {
+        lines.insert(insert_at, String::new());
+    }
+    lines.splice(insert_at..insert_at, section);
+
+    let mut output = lines.join("\n");
+    output.push('\n');
+    output
+}
+
+fn strip_existing_architecture_section(map_content: &str) -> String {
+    let mut cleaned = Vec::new();
+    let mut skipping_arch_section = false;
+
+    for line in map_content.lines() {
+        if line == "### Architecture" {
+            skipping_arch_section = true;
+            continue;
+        }
+        if skipping_arch_section {
+            if line.starts_with("## ") {
+                skipping_arch_section = false;
+            } else {
+                continue;
+            }
+        }
+        cleaned.push(line.to_string());
+    }
+
+    cleaned.join("\n")
+}
+
+fn map_languages_line(summary: &ArchSummary) -> &str {
+    summary
+        .lang_dist
+        .strip_prefix("[waypoint] arch: ")
+        .unwrap_or(summary.lang_dist.as_str())
+}
+
+fn map_hotspots_line(summary: &ArchSummary) -> Option<&str> {
+    if summary.hotspots.trim().is_empty() {
+        return None;
+    }
+    Some(
+        summary
+            .hotspots
+            .strip_prefix("[waypoint] arch: hotspots: ")
+            .unwrap_or(summary.hotspots.as_str()),
+    )
 }
 
 /// Read cached architecture summary.
@@ -955,6 +1038,41 @@ mod tests {
             raw_path: format!("./{target}"),
             line_number: 1,
         }
+    }
+
+    #[test]
+    fn rebuild_arch_summary_mirrors_architecture_section_into_map() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![sample_entry("src/main.rs"), sample_entry("README.md")];
+        crate::map::write_map(tmp.path(), &entries).unwrap();
+        let imports = vec![sample_import("src/main.rs", "helper", "src/lib.rs")];
+
+        rebuild_arch_summary(tmp.path(), &entries, &imports).unwrap();
+
+        let map = std::fs::read_to_string(tmp.path().join("map.md")).unwrap();
+        assert!(map.contains("### Architecture"));
+        assert!(map.contains("- Languages:"));
+        assert!(map.contains("- Hotspots:"));
+    }
+
+    #[test]
+    fn rebuild_arch_summary_replaces_existing_architecture_section() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![sample_entry("src/main.rs"), sample_entry("README.md")];
+        crate::map::write_map(tmp.path(), &entries).unwrap();
+
+        let first_imports = vec![sample_import("src/main.rs", "helper", "src/lib.rs")];
+        rebuild_arch_summary(tmp.path(), &entries, &first_imports).unwrap();
+
+        let second_imports = vec![
+            sample_import("src/main.rs", "helper", "src/lib.rs"),
+            sample_import("src/main.rs", "thing", "src/core.rs"),
+        ];
+        rebuild_arch_summary(tmp.path(), &entries, &second_imports).unwrap();
+
+        let map = std::fs::read_to_string(tmp.path().join("map.md")).unwrap();
+        let section_count = map.matches("### Architecture").count();
+        assert_eq!(section_count, 1, "architecture section should be replaced");
     }
 
     /// Seed symbols so `find_importers` join succeeds.
