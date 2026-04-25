@@ -19,6 +19,7 @@ fn synthetic_entries(n: usize) -> Vec<MapEntry> {
                 path: format!("{dir}/file_{i:05}.rs"),
                 description: format!("pub fn handler_{i}(), pub struct Model{i}"),
                 token_estimate: 200 + (i % 500),
+                ..Default::default()
             }
         })
         .collect()

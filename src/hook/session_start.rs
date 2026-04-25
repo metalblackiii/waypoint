@@ -80,29 +80,81 @@ fn emit_arch_context(
     let _ = ledger::record_event(ledger::EventKind::ArchHit, &project_str, 0);
 }
 
-/// Decide whether to rescan based on map existence, age, and file count drift.
+/// Decide whether to rescan based on map existence and file mtimes.
 ///
 /// Triggers a rescan when any of these are true:
-/// - map.md doesn't exist
-/// - map is older than `MAP_STALE_DAYS`
-/// - file count differs from map header by more than `FILE_COUNT_DRIFT_THRESHOLD`
+/// - map.md doesn't exist or has an unparseable header
+/// - mtime data is available and any file has changed (precise)
+/// - no mtime data (legacy map): falls back to age + file-count drift
 fn should_rescan(wp_dir: &std::path::Path, project_root: &std::path::Path) -> bool {
     let Some(header) = map::parse_map_header(wp_dir) else {
-        // No map or unparseable header → rescan
         return true;
     };
 
-    // Age check: rescan if map is older than threshold
+    // Prefer mtime-based staleness (precise, same cost as stat-only walk)
+    if let Ok(stored_mtimes) = map::index::get_stored_mtimes(wp_dir)
+        && !stored_mtimes.is_empty()
+    {
+        return has_mtime_drift(project_root, &stored_mtimes);
+    }
+
+    // Legacy fallback: age + file-count drift (for maps without mtime data)
     let age = chrono::Utc::now() - header.generated_at;
     if age.num_days() >= MAP_STALE_DAYS {
         return true;
     }
 
-    // File count drift: stat-only walk, compare to header
     let actual_count = map::scan::count_scannable_files(project_root);
     #[allow(clippy::cast_precision_loss)]
     let drift =
         (actual_count as f64 - header.file_count as f64).abs() / header.file_count.max(1) as f64;
 
     drift > FILE_COUNT_DRIFT_THRESHOLD
+}
+
+/// Compare file mtimes against stored values. Returns `true` if any file changed,
+/// was added, or was removed. Stat-only — does not read file content.
+pub(crate) fn has_mtime_drift(
+    project_root: &std::path::Path,
+    stored: &std::collections::HashMap<String, i64>,
+) -> bool {
+    let mut seen = 0usize;
+
+    for entry in map::scan::project_walker(project_root) {
+        let Ok(entry) = entry else { continue };
+        if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+            continue;
+        }
+        if !map::scan::is_scannable(entry.path()) {
+            continue;
+        }
+
+        let relative = entry
+            .path()
+            .strip_prefix(project_root)
+            .unwrap_or(entry.path())
+            .to_string_lossy();
+
+        let current_mtime = std::fs::metadata(entry.path())
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| {
+                #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+                // Millis since epoch fits comfortably in i64
+                {
+                    d.as_millis() as i64
+                }
+            });
+
+        match (stored.get(relative.as_ref()), current_mtime) {
+            (None, Some(_)) | (Some(_), None) => return true, // new or stat-failed
+            (Some(&s), Some(c)) if s != c => return true,     // changed mtime
+            _ => {}
+        }
+        seen += 1;
+    }
+
+    // Fewer files walked than stored → removals
+    seen < stored.len()
 }

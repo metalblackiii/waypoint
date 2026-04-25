@@ -335,10 +335,8 @@ fn hook_session_start_auto_scans_and_creates_map() {
 }
 
 #[test]
-fn session_start_drift_threshold_boundary() {
-    // Verify the 3% file-count drift threshold:
-    //   34-file project → 1 file added = 2.94% drift (below) → no rescan
-    //                   → 2nd file added = 5.88% drift (above) → rescan
+fn session_start_mtime_detects_single_new_file() {
+    // Mtime-based staleness detects even a single new file (no drift threshold).
     let project = setup_project(); // creates src/main.rs (1 file)
 
     // Create 33 more files so total = 34
@@ -356,11 +354,10 @@ fn session_start_drift_threshold_boundary() {
         .assert()
         .success();
 
-    let map_after_scan = fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
     let payload = || serde_json::json!({ "cwd": project.path().to_string_lossy() }).to_string();
 
-    // Add 1 file: drift = 1/34 ≈ 2.94% — below threshold, should NOT rescan
-    fs::write(project.path().join("src/below_threshold.rs"), "// below\n").unwrap();
+    // Add 1 file: only 2.94% drift, but mtime detection catches it immediately
+    fs::write(project.path().join("src/new_file.rs"), "// new\n").unwrap();
     waypoint()
         .args(["hook", "session-start"])
         .write_stdin(payload())
@@ -368,25 +365,35 @@ fn session_start_drift_threshold_boundary() {
         .success();
     let map = fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
     assert!(
-        !map.contains("below_threshold.rs"),
-        "session-start should not rescan at 2.94% drift; map:\n{map}"
+        map.contains("new_file.rs"),
+        "mtime-based staleness should detect a single new file; map:\n{map}"
     );
+}
+
+#[test]
+fn session_start_no_rescan_when_unchanged() {
+    // When no files have changed, mtime-based check should NOT trigger a rescan.
+    let project = setup_project();
+
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let map_after_scan = fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
+    let payload = serde_json::json!({ "cwd": project.path().to_string_lossy() }).to_string();
+
+    // No changes — session-start should not rescan
+    waypoint()
+        .args(["hook", "session-start"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+    let map = fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
     assert_eq!(
         map, map_after_scan,
-        "map.md should be unchanged below threshold"
-    );
-
-    // Add a 2nd new file: drift = 2/34 ≈ 5.88% — above threshold, SHOULD rescan
-    fs::write(project.path().join("src/above_threshold.rs"), "// above\n").unwrap();
-    waypoint()
-        .args(["hook", "session-start"])
-        .write_stdin(payload())
-        .assert()
-        .success();
-    let map = fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
-    assert!(
-        map.contains("above_threshold.rs"),
-        "session-start should rescan at 5.88% drift; map:\n{map}"
+        "map.md should be unchanged when no files changed"
     );
 }
 
@@ -1066,10 +1073,10 @@ fn cli_impact_with_base_flag() {
 // ── Version Test ───────────────────────────────────────────────
 
 #[test]
-fn cli_version_reports_0_9_2() {
+fn cli_version_reports_0_10_0() {
     waypoint()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("0.9.2"));
+        .stdout(predicate::str::contains("0.10.0"));
 }

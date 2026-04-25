@@ -54,10 +54,17 @@ pub fn run() -> Result<(), AppError> {
             },
         );
 
-        format!(
-            "[waypoint] map: {} — {} (~{} tok)",
-            entry.path, entry.description, entry.token_estimate
-        )
+        {
+            let density_suffix = entry
+                .density
+                .and_then(map::density_label)
+                .map(|l| format!(", {l}"))
+                .unwrap_or_default();
+            format!(
+                "[waypoint] map: {} — {} (~{} tok{})",
+                entry.path, entry.description, entry.token_estimate, density_suffix
+            )
+        }
     } else {
         let _ = ledger::record_event(ledger::EventKind::MapMiss, &project_label, 0);
         String::new()

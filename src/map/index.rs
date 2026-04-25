@@ -12,7 +12,10 @@ const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS map_entries (
     path TEXT PRIMARY KEY,
     description TEXT NOT NULL,
-    token_estimate INTEGER NOT NULL
+    token_estimate INTEGER NOT NULL,
+    density REAL,
+    content_hash INTEGER,
+    mtime_secs INTEGER
 );
 CREATE TABLE IF NOT EXISTS symbols (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,6 +63,11 @@ pub(crate) fn open_index(waypoint_dir: &Path) -> Result<Connection, AppError> {
     let db_path = waypoint_dir.join(INDEX_FILENAME);
     let conn = Connection::open(&db_path)?;
     conn.execute_batch(SCHEMA)?;
+    // Migrate existing databases: add columns introduced in v0.10.
+    // ALTER TABLE errors are silently ignored when columns already exist.
+    for col in ["density REAL", "content_hash INTEGER", "mtime_secs INTEGER"] {
+        let _ = conn.execute_batch(&format!("ALTER TABLE map_entries ADD COLUMN {col}"));
+    }
     // FTS5 is best-effort — skip silently if unavailable
     let _ = conn.execute_batch(FTS_SCHEMA);
     let _ = conn.execute_batch(ARCH_SCHEMA);
@@ -89,8 +97,10 @@ pub fn lookup(waypoint_dir: &Path, relative_path: &str) -> Result<Option<MapEntr
         )));
     }
     let conn = open_index(waypoint_dir)?;
-    let mut stmt =
-        conn.prepare("SELECT path, description, token_estimate FROM map_entries WHERE path = ?1")?;
+    let mut stmt = conn.prepare(
+        "SELECT path, description, token_estimate, density, content_hash, mtime_secs \
+         FROM map_entries WHERE path = ?1",
+    )?;
 
     let entry = stmt
         .query_row(params![relative_path], |row| {
@@ -100,6 +110,9 @@ pub fn lookup(waypoint_dir: &Path, relative_path: &str) -> Result<Option<MapEntr
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 // token_estimate is always non-negative and fits in usize
                 token_estimate: row.get::<_, i64>(2)? as usize,
+                density: row.get(3)?,
+                content_hash: row.get(4)?,
+                mtime_ms: row.get(5)?,
             })
         })
         .optional()?;
@@ -116,8 +129,17 @@ pub fn upsert(waypoint_dir: &Path, entry: &MapEntry) -> Result<(), AppError> {
 fn upsert_with(conn: &Connection, entry: &MapEntry) -> Result<(), AppError> {
     #[allow(clippy::cast_possible_wrap)]
     conn.execute(
-        "INSERT OR REPLACE INTO map_entries (path, description, token_estimate) VALUES (?1, ?2, ?3)",
-        params![entry.path, entry.description, entry.token_estimate as i64],
+        "INSERT OR REPLACE INTO map_entries \
+         (path, description, token_estimate, density, content_hash, mtime_secs) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            entry.path,
+            entry.description,
+            entry.token_estimate as i64,
+            entry.density,
+            entry.content_hash,
+            entry.mtime_ms,
+        ],
     )?;
     Ok(())
 }
@@ -140,7 +162,9 @@ pub fn rebuild(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppError
     tx.execute_batch("DELETE FROM map_entries")?;
 
     let mut stmt = tx.prepare(
-        "INSERT INTO map_entries (path, description, token_estimate) VALUES (?1, ?2, ?3)",
+        "INSERT INTO map_entries \
+         (path, description, token_estimate, density, content_hash, mtime_secs) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
 
     for entry in entries {
@@ -148,7 +172,10 @@ pub fn rebuild(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppError
         stmt.execute(params![
             entry.path,
             entry.description,
-            entry.token_estimate as i64
+            entry.token_estimate as i64,
+            entry.density,
+            entry.content_hash,
+            entry.mtime_ms,
         ])?;
     }
 
@@ -530,6 +557,58 @@ pub fn index_mtime(waypoint_dir: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(&db_path).ok()?.modified().ok()
 }
 
+/// Enrich map entries parsed from map.md with stored `content_hash` and
+/// `mtime_ms` from the `SQLite` index. Entries not found in the index are
+/// left unchanged. No-op if the index file does not exist.
+pub fn enrich_metadata(waypoint_dir: &Path, entries: &mut [MapEntry]) -> Result<(), AppError> {
+    let db_path = waypoint_dir.join(INDEX_FILENAME);
+    if !db_path.exists() {
+        return Ok(());
+    }
+    let conn = open_index(waypoint_dir)?;
+    let mut stmt =
+        conn.prepare("SELECT content_hash, mtime_secs FROM map_entries WHERE path = ?1")?;
+    for entry in entries.iter_mut() {
+        if let Some((hash, mtime)) = stmt
+            .query_row(params![entry.path], |row| {
+                Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?))
+            })
+            .optional()?
+        {
+            entry.content_hash = hash;
+            entry.mtime_ms = mtime;
+        }
+    }
+    Ok(())
+}
+
+/// Load all stored mtimes for mtime-based staleness detection.
+/// Returns a map of `relative_path → mtime_ms` (milliseconds despite the
+/// legacy `mtime_secs` column name in `SQLite`).
+///
+/// Pre-v0.10 indexes store seconds here. The unit mismatch causes a one-time
+/// rescan on upgrade, which is intentional — see `scan::file_mtime` for details.
+pub fn get_stored_mtimes(
+    waypoint_dir: &Path,
+) -> Result<std::collections::HashMap<String, i64>, AppError> {
+    let db_path = waypoint_dir.join(INDEX_FILENAME);
+    if !db_path.exists() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let conn = open_index(waypoint_dir)?;
+    let mut stmt =
+        conn.prepare("SELECT path, mtime_secs FROM map_entries WHERE mtime_secs IS NOT NULL")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (path, mtime) = row?;
+        map.insert(path, mtime);
+    }
+    Ok(map)
+}
+
 /// Find all files that import a given symbol name, optionally filtered by target file.
 /// Joins against the symbols table to validate the symbol exists at the target (FR-5).
 /// Returns deduplicated `(source_file, line_number)` pairs.
@@ -772,6 +851,7 @@ mod tests {
             path: path.into(),
             description: format!("desc for {path}"),
             token_estimate: 100,
+            ..Default::default()
         }
     }
 
@@ -813,6 +893,7 @@ mod tests {
             path: "a.rs".into(),
             description: "updated".into(),
             token_estimate: 999,
+            ..Default::default()
         };
         upsert(tmp.path(), &updated).unwrap();
 

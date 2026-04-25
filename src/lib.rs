@@ -46,7 +46,10 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
 
             if check {
                 let output = map::scan::scan_project(&project_root)?;
-                let existing = map::read_map(&wp_dir)?;
+                let mut existing = map::read_map(&wp_dir)?;
+                // Enrich with stored hashes from SQLite so check_staleness
+                // can use content_hash for exact change detection
+                map::index::enrich_metadata(&wp_dir, &mut existing)?;
 
                 let report = map::check_staleness(&output.entries, &existing);
                 if report.is_stale() {

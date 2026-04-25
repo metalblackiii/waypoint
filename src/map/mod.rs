@@ -11,14 +11,40 @@ use serde::{Deserialize, Serialize};
 
 use crate::AppError;
 
-/// Maps older than this many days are considered stale.
+/// Maps older than this many days are considered stale (legacy fallback).
 pub const MAP_STALE_DAYS: i64 = 7;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Gzip ratio below this flags a file as repetitive (highly compressible).
+const DENSITY_REPETITIVE: f32 = 0.15;
+/// Gzip ratio at or above this flags a file as dense (low compressibility).
+const DENSITY_DENSE: f32 = 0.50;
+
+/// Human-readable label for density outliers. Returns `None` for normal files.
+#[must_use]
+pub fn density_label(density: f32) -> Option<&'static str> {
+    if density < DENSITY_REPETITIVE {
+        Some("repetitive")
+    } else if density >= DENSITY_DENSE {
+        Some("dense")
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MapEntry {
     pub path: String,
     pub description: String,
     pub token_estimate: usize,
+    /// Gzip compression ratio (compressed/original). Lower = more repetitive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub density: Option<f32>,
+    /// `SipHash` of file content for change detection (internal, not in map.md).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<i64>,
+    /// File mtime as Unix epoch milliseconds (internal, not in map.md).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtime_ms: Option<i64>,
 }
 
 /// Parse map.md into a list of entries.
@@ -52,12 +78,15 @@ fn parse_map(content: &str) -> Vec<MapEntry> {
             };
 
             let after_backtick = &rest[backtick_end + 1..];
-            let (description, token_estimate) = parse_entry_tail(after_backtick);
+            let (description, token_estimate, density) = parse_entry_tail(after_backtick);
 
             entries.push(MapEntry {
                 path,
                 description,
                 token_estimate,
+                density,
+                content_hash: None,
+                mtime_ms: None,
             });
         }
     }
@@ -65,8 +94,8 @@ fn parse_map(content: &str) -> Vec<MapEntry> {
     entries
 }
 
-/// Parse " — description (~N tok)" from the tail of a map entry line.
-fn parse_entry_tail(s: &str) -> (String, usize) {
+/// Parse " — description (~N tok)" or " — description (~N tok, dense)" from the tail of a map entry line.
+fn parse_entry_tail(s: &str) -> (String, usize, Option<f32>) {
     let s = s
         .strip_prefix(" — ")
         .or_else(|| s.strip_prefix(" - "))
@@ -75,14 +104,29 @@ fn parse_entry_tail(s: &str) -> (String, usize) {
     if let Some(paren_start) = s.rfind("(~") {
         let before_paren = s[..paren_start].trim();
         let in_paren = &s[paren_start + 2..];
+
+        // Try "(~N tok, label)" first
+        if let Some(tok_end) = in_paren.find(" tok, ")
+            && let Ok(tokens) = in_paren[..tok_end].trim().parse::<usize>()
+        {
+            let label = in_paren[tok_end + 6..].trim_end_matches(')').trim();
+            let density = match label {
+                "dense" => Some(0.55),
+                "repetitive" => Some(0.10),
+                _ => None,
+            };
+            return (before_paren.to_string(), tokens, density);
+        }
+
+        // Plain "(~N tok)"
         if let Some(tok_end) = in_paren.find(" tok)")
             && let Ok(tokens) = in_paren[..tok_end].trim().parse::<usize>()
         {
-            return (before_paren.to_string(), tokens);
+            return (before_paren.to_string(), tokens, None);
         }
     }
 
-    (s.trim().to_string(), 0)
+    (s.trim().to_string(), 0, None)
 }
 
 /// Write entries to map.md grouped by directory. Uses atomic write (temp + rename).
@@ -114,10 +158,15 @@ pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppErr
             writeln!(file)?;
             for entry in dir_entries {
                 let filename = entry.path.rsplit('/').next().unwrap_or(&entry.path);
+                let density_suffix = entry
+                    .density
+                    .and_then(density_label)
+                    .map(|l| format!(", {l}"))
+                    .unwrap_or_default();
                 writeln!(
                     file,
-                    "- `{filename}` — {} (~{} tok)",
-                    entry.description, entry.token_estimate
+                    "- `{filename}` — {} (~{} tok{})",
+                    entry.description, entry.token_estimate, density_suffix
                 )?;
             }
         }
@@ -240,7 +289,14 @@ pub fn check_staleness(current: &[MapEntry], existing: &[MapEntry]) -> Staleness
         .iter()
         .filter(|(path, entry)| {
             existing_map.get(*path).is_some_and(|e| {
-                e.description != entry.description || e.token_estimate != entry.token_estimate
+                // Prefer content_hash when both sides have it (exact change detection)
+                match (entry.content_hash, e.content_hash) {
+                    (Some(new_hash), Some(old_hash)) => new_hash != old_hash,
+                    _ => {
+                        e.description != entry.description
+                            || e.token_estimate != entry.token_estimate
+                    }
+                }
             })
         })
         .count();
@@ -285,11 +341,13 @@ mod tests {
                 path: "src/main.rs".into(),
                 description: "entry point".into(),
                 token_estimate: 45,
+                ..Default::default()
             },
             MapEntry {
                 path: "src/lib.rs".into(),
                 description: "library root".into(),
                 token_estimate: 80,
+                ..Default::default()
             },
         ];
 
@@ -307,9 +365,23 @@ mod tests {
 
     #[test]
     fn parse_entry_tail_extracts_tokens() {
-        let (desc, tok) = parse_entry_tail(" — fn main(), struct Config (~120 tok)");
+        let (desc, tok, density) = parse_entry_tail(" — fn main(), struct Config (~120 tok)");
         assert_eq!(desc, "fn main(), struct Config");
         assert_eq!(tok, 120);
+        assert!(density.is_none());
+    }
+
+    #[test]
+    fn parse_entry_tail_extracts_density_label() {
+        let (desc, tok, density) = parse_entry_tail(" — generated config (~500 tok, repetitive)");
+        assert_eq!(desc, "generated config");
+        assert_eq!(tok, 500);
+        assert!(density.is_some());
+
+        let (desc, tok, density) = parse_entry_tail(" — algorithm core (~200 tok, dense)");
+        assert_eq!(desc, "algorithm core");
+        assert_eq!(tok, 200);
+        assert!(density.is_some());
     }
 
     #[test]
@@ -318,6 +390,7 @@ mod tests {
             path: "src/foo.rs".into(),
             description: "test".into(),
             token_estimate: 10,
+            ..Default::default()
         }];
         assert!(lookup(&entries, "src/foo.rs").is_some());
         assert!(lookup(&entries, "src/bar.rs").is_none());
@@ -329,21 +402,25 @@ mod tests {
             path: "src/main.rs".into(),
             description: "fn alpha()".into(),
             token_estimate: 50,
+            ..Default::default()
         }];
         let modified_desc = vec![MapEntry {
             path: "src/main.rs".into(),
             description: "fn beta()".into(),
             token_estimate: 50,
+            ..Default::default()
         }];
         let modified_tokens = vec![MapEntry {
             path: "src/main.rs".into(),
             description: "fn alpha()".into(),
             token_estimate: 999,
+            ..Default::default()
         }];
         let identical = vec![MapEntry {
             path: "src/main.rs".into(),
             description: "fn alpha()".into(),
             token_estimate: 50,
+            ..Default::default()
         }];
 
         let r1 = check_staleness(&modified_desc, &existing);
@@ -364,11 +441,13 @@ mod tests {
             path: "a.rs".into(),
             description: "a".into(),
             token_estimate: 10,
+            ..Default::default()
         }];
         let current = vec![MapEntry {
             path: "b.rs".into(),
             description: "b".into(),
             token_estimate: 20,
+            ..Default::default()
         }];
 
         let report = check_staleness(&current, &existing);
@@ -385,6 +464,7 @@ mod tests {
             path: "src/main.rs".into(),
             description: "entry point".into(),
             token_estimate: 45,
+            ..Default::default()
         }];
 
         write_map(tmp.path(), &entries).unwrap();
@@ -402,6 +482,7 @@ mod tests {
             path: "src/main.rs".into(),
             description: "original".into(),
             token_estimate: 45,
+            ..Default::default()
         }];
         write_map(tmp.path(), &entries).unwrap();
 
@@ -415,6 +496,7 @@ mod tests {
             path: "src/new.rs".into(),
             description: "new file".into(),
             token_estimate: 100,
+            ..Default::default()
         }];
         write_map(tmp.path(), &new_entries).unwrap();
 
@@ -435,11 +517,13 @@ mod tests {
                 path: "a.rs".into(),
                 description: "a".into(),
                 token_estimate: 10,
+                ..Default::default()
             },
             MapEntry {
                 path: "b.rs".into(),
                 description: "b".into(),
                 token_estimate: 20,
+                ..Default::default()
             },
         ];
         write_map(tmp.path(), &entries).unwrap();
@@ -476,6 +560,72 @@ mod tests {
         .unwrap();
         // Malformed count → None (triggers rescan)
         assert!(parse_map_header(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn check_staleness_uses_content_hash_when_available() {
+        // Same description and token_estimate, but different hash → modified
+        let existing = vec![MapEntry {
+            path: "src/main.rs".into(),
+            description: "fn alpha()".into(),
+            token_estimate: 50,
+            content_hash: Some(1111),
+            ..Default::default()
+        }];
+        let changed_body = vec![MapEntry {
+            path: "src/main.rs".into(),
+            description: "fn alpha()".into(),
+            token_estimate: 50,
+            content_hash: Some(2222),
+            ..Default::default()
+        }];
+        let same_hash = vec![MapEntry {
+            path: "src/main.rs".into(),
+            description: "fn alpha()".into(),
+            token_estimate: 50,
+            content_hash: Some(1111),
+            ..Default::default()
+        }];
+
+        let r1 = check_staleness(&changed_body, &existing);
+        assert_eq!(r1.modified, 1, "different hash should detect modification");
+
+        let r2 = check_staleness(&same_hash, &existing);
+        assert!(!r2.is_stale(), "identical hash should be up to date");
+    }
+
+    #[test]
+    fn density_label_boundary_values() {
+        // Below DENSITY_REPETITIVE (0.15) → "repetitive"
+        assert_eq!(density_label(0.14), Some("repetitive"));
+        // At DENSITY_REPETITIVE → normal (not repetitive)
+        assert_eq!(density_label(0.15), None);
+        // Just below DENSITY_DENSE (0.50) → normal
+        assert_eq!(density_label(0.49), None);
+        // At DENSITY_DENSE → "dense"
+        assert_eq!(density_label(0.50), Some("dense"));
+        // Above DENSITY_DENSE → "dense"
+        assert_eq!(density_label(0.75), Some("dense"));
+    }
+
+    #[test]
+    fn density_roundtrips_through_map() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![MapEntry {
+            path: "src/core.rs".into(),
+            description: "algorithm core".into(),
+            token_estimate: 200,
+            density: Some(0.60),
+            ..Default::default()
+        }];
+
+        write_map(tmp.path(), &entries).unwrap();
+        let read_back = read_map(tmp.path()).unwrap();
+
+        assert_eq!(read_back.len(), 1);
+        // Dense label (>= 0.50) should survive write → parse roundtrip
+        assert!(read_back[0].density.is_some());
+        assert_eq!(density_label(read_back[0].density.unwrap()), Some("dense"));
     }
 
     #[test]

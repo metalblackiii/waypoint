@@ -20,12 +20,22 @@ pub fn format_summary(summary: &ArchSummary) -> String {
 
 /// Whether map metadata indicates stale architecture data.
 ///
-/// Mirrors `session_start::should_rescan`: triggers on age threshold or file-count drift >3%.
+/// Mirrors `session_start::should_rescan`: prefers mtime-based staleness when
+/// stored mtimes exist, falls back to age + file-count drift for legacy maps.
 #[must_use]
 pub fn summary_is_stale(waypoint_dir: &Path, project_root: &Path) -> bool {
     let Some(header) = map::parse_map_header(waypoint_dir) else {
         return true;
     };
+
+    // Prefer mtime-based staleness (mirrors session_start::should_rescan)
+    if let Ok(stored_mtimes) = map::index::get_stored_mtimes(waypoint_dir)
+        && !stored_mtimes.is_empty()
+    {
+        return crate::hook::session_start::has_mtime_drift(project_root, &stored_mtimes);
+    }
+
+    // Legacy fallback: age + file-count drift (for maps without mtime data)
     let age = chrono::Utc::now() - header.generated_at;
     if age.num_days() >= map::MAP_STALE_DAYS {
         return true;
