@@ -347,6 +347,30 @@ fn describe_default_export(export_node: tree_sitter::Node, source: &str) -> Decl
     for child in export_node.children(&mut cursor) {
         match child.kind() {
             "arrow_function" | "function_expression" => {
+                // Sequelize/factory pattern: `export default () => class Foo extends Model`
+                // Walk the arrow body — if it contains a class expression, surface that name.
+                if let Some(body) = child.child_by_field_name("body")
+                    && matches!(body.kind(), "class" | "class_declaration")
+                {
+                    let name = child_text(body, "identifier", source)
+                        .or_else(|| child_text(body, "type_identifier", source))
+                        .unwrap_or_default();
+                    let full_text = node_text(body, source);
+                    let wc = full_text.contains("HTMLElement")
+                        || full_text.contains("LitElement")
+                        || full_text.contains("customElement");
+                    let suffix = if wc { " (web component)" } else { "" };
+                    let text = if name.is_empty() {
+                        format!("export default class{suffix}")
+                    } else {
+                        format!("export default class {name}{suffix}")
+                    };
+                    return Declaration {
+                        name: name.clone(),
+                        text,
+                        exported: true,
+                    };
+                }
                 let name = child_text(child, "identifier", source).unwrap_or_default();
                 return if name.is_empty() {
                     Declaration {
@@ -530,6 +554,11 @@ fn extract_js_commonjs(node: tree_sitter::Node, source: &str) -> Option<Declarat
 fn collect_export_names(node: tree_sitter::Node, source: &str, names: &mut HashSet<String>) {
     match node.kind() {
         "export_statement" => {
+            // Skip re-exports (`export { X } from '...'`) — those reference names from
+            // another module and must not mark same-named local declarations as exported.
+            if node.child_by_field_name("source").is_some() {
+                return;
+            }
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "export_clause" {
@@ -997,6 +1026,12 @@ pub fn extract_symbols(path: &Path, content: &str) -> Vec<Symbol> {
     for child in root.children(&mut cursor) {
         collect_node_symbol(child, ext, content, &mut symbols);
     }
+    // Deferred pass: mark symbols exported by local `export { X }` statements.
+    // Runs after full collection so source order doesn't matter — a symbol declared
+    // after its export clause is still flipped correctly.
+    if matches!(ext, "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx") {
+        mark_js_local_exports(root, content, &mut symbols);
+    }
     symbols
 }
 
@@ -1268,7 +1303,76 @@ fn collect_js_export_symbols(node: tree_sitter::Node, source: &str, symbols: &mu
                 }
                 return;
             }
+            // `export { X, Y } from '...'` — add each re-exported name to the index.
+            // Prefer the alias (public name): `export { Foo as Bar }` → index "Bar".
+            // Local `export { X }` (no `from`) is handled by the deferred
+            // `mark_js_local_exports` pass in `extract_symbols` so that source order
+            // doesn't matter.
+            "export_clause" if node.child_by_field_name("source").is_some() => {
+                let mut spec_cursor = child.walk();
+                for specifier in child.children(&mut spec_cursor) {
+                    if specifier.kind() == "export_specifier" {
+                        let name = specifier
+                            .child_by_field_name("alias")
+                            .or_else(|| specifier.child_by_field_name("name"))
+                            .map(|n| node_text(n, source).to_string());
+                        if let Some(name) = name {
+                            symbols.push(build_symbol(name, "const", specifier, source, true));
+                        }
+                    }
+                }
+                return;
+            }
+            // `export default () => class Foo` — Sequelize factory pattern.
+            "arrow_function" | "function_expression" => {
+                if let Some(body) = child.child_by_field_name("body")
+                    && matches!(body.kind(), "class" | "class_declaration")
+                {
+                    let class_name = child_text(body, "identifier", source)
+                        .or_else(|| child_text(body, "type_identifier", source));
+                    if let Some(ref name) = class_name {
+                        symbols.push(build_symbol(name.clone(), "class", body, source, true));
+                    }
+                    collect_js_class_methods(body, class_name.as_deref(), source, symbols, true);
+                }
+                return;
+            }
             _ => {}
+        }
+    }
+}
+
+/// Deferred pass: mark symbols exported by local `export { X }` statements.
+///
+/// Runs after all symbols are collected so source order is irrelevant —
+/// `export { fn }` before `function fn() {}` is handled correctly.
+fn mark_js_local_exports(root: tree_sitter::Node, source: &str, symbols: &mut [Symbol]) {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() != "export_statement" || child.child_by_field_name("source").is_some() {
+            continue;
+        }
+        let mut clause_cursor = child.walk();
+        for clause in child.children(&mut clause_cursor) {
+            if clause.kind() != "export_clause" {
+                continue;
+            }
+            let mut spec_cursor = clause.walk();
+            for specifier in clause.children(&mut spec_cursor) {
+                if specifier.kind() != "export_specifier" {
+                    continue;
+                }
+                if let Some(local_name) = specifier
+                    .child_by_field_name("name")
+                    .map(|n| node_text(n, source))
+                {
+                    for sym in symbols.iter_mut() {
+                        if sym.name == local_name {
+                            sym.exported = true;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -2476,5 +2580,109 @@ export class Service {
         let tmp = tempfile::TempDir::new().unwrap();
         let result = resolve_import_path("src/main.js", "./nonexistent", "js", tmp.path());
         assert!(result.is_none());
+    }
+
+    // -- New tests for JS export extraction fixes --
+
+    #[test]
+    fn js_reexport_from_indexes_exported_names() {
+        let src = r#"export { INSURANCE_TIERS, CLEARINGHOUSES } from '@neb/entitlements';"#;
+        let syms = extract_symbols(Path::new("test.js"), src);
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"INSURANCE_TIERS"), "got: {names:?}");
+        assert!(names.contains(&"CLEARINGHOUSES"), "got: {names:?}");
+    }
+
+    #[test]
+    fn js_reexport_alias_indexes_public_name() {
+        let src = r#"export { Foo as Bar } from './model';"#;
+        let syms = extract_symbols(Path::new("test.js"), src);
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"Bar"),
+            "alias should be indexed, got: {names:?}"
+        );
+        assert!(
+            !names.contains(&"Foo"),
+            "source name should not be indexed, got: {names:?}"
+        );
+    }
+
+    #[test]
+    fn js_local_reexport_marks_exported_no_duplicate() {
+        // Declaration before export — deferred pass must flip exported = true, no duplicate.
+        let src = r#"
+function doWork() {}
+export { doWork };
+"#;
+        let syms = extract_symbols(Path::new("test.js"), src);
+        let matching: Vec<_> = syms.iter().filter(|s| s.name == "doWork").collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "expected exactly one doWork symbol, got: {}",
+            matching.len()
+        );
+        assert!(
+            matching[0].exported,
+            "doWork should be marked exported after export {{ doWork }}"
+        );
+    }
+
+    #[test]
+    fn js_local_reexport_order_independent() {
+        // Export clause before declaration — deferred pass must still flip exported = true.
+        let src = r#"
+export { doWork };
+function doWork() {}
+"#;
+        let syms = extract_symbols(Path::new("test.js"), src);
+        let matching: Vec<_> = syms.iter().filter(|s| s.name == "doWork").collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "expected exactly one doWork symbol, got: {}",
+            matching.len()
+        );
+        assert!(
+            matching[0].exported,
+            "doWork should be exported even when export clause precedes declaration"
+        );
+    }
+
+    #[test]
+    fn js_factory_arrow_class_description() {
+        // Sequelize pattern: `export default () => class Foo extends Model`
+        let src = "export default () => class Tenant extends Model {}\n";
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(desc.contains("export default class Tenant"), "got: {desc}");
+        assert!(
+            !desc.contains("export default class Tenant "),
+            "trailing space, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn js_factory_arrow_anonymous_class_no_trailing_space() {
+        let src = "export default () => class extends Model {}\n";
+        let desc = extract_description(Path::new("test.js"), src);
+        assert!(
+            desc.contains("export default class") && !desc.contains("export default class "),
+            "anonymous class should not produce trailing space, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn js_factory_arrow_class_indexed_as_symbol() {
+        // Sequelize pattern: symbol index path (collect_js_export_symbols), not just description.
+        let src = "export default () => class Tenant extends Model {}\n";
+        let syms = extract_symbols(Path::new("test.js"), src);
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"Tenant"),
+            "Tenant should appear in symbol index, got: {names:?}"
+        );
+        let tenant = syms.iter().find(|s| s.name == "Tenant").unwrap();
+        assert!(tenant.exported, "Tenant should be marked exported");
     }
 }
