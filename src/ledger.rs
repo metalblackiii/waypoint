@@ -163,11 +163,7 @@ impl fmt::Display for GainStats {
                 self.sketch_misses.to_string(),
                 Some(Color::Yellow),
             ),
-            (
-                "Find hits:",
-                self.find_hits.to_string(),
-                Some(Color::Blue),
-            ),
+            ("Find hits:", self.find_hits.to_string(), Some(Color::Blue)),
             (
                 "Find misses:",
                 self.find_misses.to_string(),
