@@ -84,6 +84,67 @@ Parked ideas with full context. Not scheduled — recorded so the reasoning surv
 
 ---
 
+## Codebase Indexing Integration Ideas
+
+**Source**: [research-codebase-indexing-and-waypoint.md](https://github.com/user/dotvault/blob/main/docs/research/research-codebase-indexing-and-waypoint.md) (dual-LLM research, 2026-05-10). Evaluated which ideas from the MCP codebase indexing ecosystem are worth integrating into waypoint.
+
+**Context**: Waypoint already covers 60-70% of what dedicated indexing tools (codebase-memory-mcp, CodeGraphContext, SymDex) offer for the neb stack. The research recommended extending waypoint rather than adopting an external indexer.
+
+### HTTP Route Extraction (`waypoint routes` / `waypoint trace`)
+
+**What**: Index Express/Koa server routes and `fetch`/`axios` client calls during scan. Cross-repo endpoint matching via `scan --all`.
+
+**Why it matters**: Highest-value capability gap vs codebase-memory-mcp for microservice ecosystems. "Which service calls this endpoint?" currently requires `neb-explorer` subagent reading full files across repos.
+
+**Implementation sketch**:
+- New `http_routes` table: `(id, file_path, method, path_pattern, handler_symbol, line_number)`
+- New `http_calls` table: `(id, file_path, method, url_pattern, line_number)`
+- Extract routes via tree-sitter (Express `app.get('/...')` patterns) + regex fallback
+- Extract client calls via regex (`fetch('/api/...')`, `axios.post(...)`)
+- Cross-repo matching: query sibling project indexes discovered by `scan --all`
+- New commands: `waypoint routes [--method GET]`, `waypoint trace <endpoint>`
+
+**Estimated effort**: Medium (~1-2 weeks). Builds on existing scan pipeline and cross-project infrastructure.
+
+### Community Detection
+
+**What**: Louvain clustering on the import graph to identify logical modules that don't align with directory structure.
+
+**Why it matters**: Reveals unexpected coupling, helps scope code reviews, could enhance `waypoint impact` with "this change affects community X."
+
+**Implementation sketch**:
+- Louvain algorithm on import adjacency (~100 lines of Rust, no external deps)
+- New `communities` table or fold into `arch_summary`
+- Surface via `waypoint arch` or new `waypoint communities` command
+
+**Why it's parked**: Import graph may be too shallow (2-3 hops) for meaningful clusters. Higher value after HTTP routes or call graph add edge density.
+
+**Estimated effort**: Low (~1-2 days).
+
+### Byte-Precise Symbol Offsets
+
+**What**: Add `byte_start`/`byte_end` nullable columns alongside existing `line_start`/`line_end`. Tree-sitter already provides byte offsets.
+
+**Why it matters**: Unlocks precision for future features (call graph edges, incremental scan, route extraction). No user-visible change — CLI output stays line-based.
+
+**Estimated effort**: Low (~half day). Schema migration + populate during extract.
+
+### Find Hit Rate Instrumentation
+
+**Status**: ✅ Delivered in v0.10.2. `FindHit`/`FindMiss` events recorded in the ledger. `waypoint gain` now shows Find rate alongside Sketch rate. Tracks end-to-end `waypoint find` success (FTS5 + LIKE fallback combined), not FTS5-specific miss rate. Data gate for whether semantic/embedding search earns its weight — if >20% of find queries miss, vector search is justified.
+
+### Ideas Explicitly Deferred
+
+- **PageRank-style ranking**: Fan-in is sufficient at current graph scale. Revisit when call graph edges increase density.
+- **Full embedding model (ONNX + MiniLM)**: ~30MB binary weight, too heavy for core. If find miss rate justifies it, lightest path is TF-IDF vectors in sqlite-vec (no ML model). Full embeddings should be optional/sidecar.
+- **MCP server interface**: Low urgency — hooks serve the primary consumer (Claude Code) well. Revisit if other tools need to query waypoint's index.
+
+---
+
+*Indexing integration ideas recorded 2026-05-10 from codebase indexing research review.*
+
+---
+
 ## Delivered Baseline (2026-04-23)
 
 Implemented and now considered baseline behavior:

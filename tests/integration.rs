@@ -745,6 +745,58 @@ fn cli_find_output_format_unchanged() {
         .stdout(predicate::str::contains("src/main.rs"));
 }
 
+#[test]
+fn cli_find_miss_records_ledger_event() {
+    let project = setup_project();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // A miss should print the message AND record a ledger event
+    waypoint()
+        .args(["find", "xyzzy_nonexistent_symbol_42"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No symbols found"));
+
+    // "Find rate:" only renders when find_hits + find_misses > 0,
+    // so its presence proves a FindMiss event was actually recorded.
+    waypoint()
+        .arg("gain")
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Find rate:"));
+}
+
+#[test]
+fn cli_find_limit_zero_clamps_to_one() {
+    let project = setup_project();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // --limit 0 is clamped to 1 — should still return the "main" result
+    let output = waypoint()
+        .args(["find", "main", "--limit", "0"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&output);
+    assert!(stdout.contains("main"), "should find the main symbol");
+    // Clamped to 1: exactly one result line (lines starting with whitespace + kind)
+    let result_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("  ")).collect();
+    assert_eq!(result_lines.len(), 1, "limit 0 should clamp to 1 result");
+}
+
 // ── Architecture Context Injection Tests ───────────────────────
 
 /// Create a project with N numbered source files for arch gating tests.
@@ -1073,10 +1125,10 @@ fn cli_impact_with_base_flag() {
 // ── Version Test ───────────────────────────────────────────────
 
 #[test]
-fn cli_version_reports_0_10_1() {
+fn cli_version_reports_0_10_2() {
     waypoint()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("0.10.1"));
+        .stdout(predicate::str::contains("0.10.2"));
 }

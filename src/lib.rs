@@ -144,12 +144,23 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             limit,
             context,
         } => {
+            let limit = limit.max(1);
             let project_root = project::resolve_with_context(context.as_deref())?;
             let wp_dir = project::require_waypoint_dir(&project_root)?;
             let results = map::index::find_symbols(&wp_dir, &query, limit)?;
             if results.is_empty() {
+                let _ = ledger::record_event(
+                    ledger::EventKind::FindMiss,
+                    project_root.to_string_lossy().as_ref(),
+                    0,
+                );
                 println!("No symbols found: {query}");
             } else {
+                let _ = ledger::record_event(
+                    ledger::EventKind::FindHit,
+                    project_root.to_string_lossy().as_ref(),
+                    0,
+                );
                 for row in &results {
                     println!(
                         "  {:6}  {:<30}  {}:{}",

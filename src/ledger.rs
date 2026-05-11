@@ -16,6 +16,8 @@ pub enum EventKind {
     MapMiss,
     SketchHit,
     SketchMiss,
+    FindHit,
+    FindMiss,
     FirstEdit,
     FirstEditTurns,
     ArchHit,
@@ -30,6 +32,8 @@ impl EventKind {
             Self::MapMiss => "map_miss",
             Self::SketchHit => "sketch_hit",
             Self::SketchMiss => "sketch_miss",
+            Self::FindHit => "find_hit",
+            Self::FindMiss => "find_miss",
             Self::FirstEdit => "first_edit",
             Self::FirstEditTurns => "first_edit_turns",
             Self::ArchHit => "arch_hit",
@@ -47,6 +51,9 @@ pub struct GainStats {
     pub sketch_hits: i64,
     pub sketch_misses: i64,
     pub sketch_hit_rate: f64,
+    pub find_hits: i64,
+    pub find_misses: i64,
+    pub find_hit_rate: f64,
     pub first_edit_count: i64,
     pub avg_first_edit_secs: f64,
     pub first_edit_turns_count: i64,
@@ -157,6 +164,16 @@ impl fmt::Display for GainStats {
                 Some(Color::Yellow),
             ),
             (
+                "Find hits:",
+                self.find_hits.to_string(),
+                Some(Color::Blue),
+            ),
+            (
+                "Find misses:",
+                self.find_misses.to_string(),
+                Some(Color::Yellow),
+            ),
+            (
                 "Tokens saved:",
                 format_tokens(self.estimated_tokens_saved),
                 Some(Color::BrightGreen),
@@ -198,6 +215,21 @@ impl fmt::Display for GainStats {
                 padded_label.bold(),
                 sketch_meter.color(sketch_color),
                 format!("{:.1}%", self.sketch_hit_rate).bold(),
+            )?;
+        }
+
+        // Find hit rate meter
+        if self.find_hits + self.find_misses > 0 {
+            let find_ratio = self.find_hit_rate / 100.0;
+            let find_meter = bar(find_ratio, METER_WIDTH);
+            let find_color = rate_color(self.find_hit_rate);
+            let padded_label = format!("{:<LABEL_PAD$}", "Find rate:");
+            writeln!(
+                f,
+                "{} {} {}",
+                padded_label.bold(),
+                find_meter.color(find_color),
+                format!("{:.1}%", self.find_hit_rate).bold(),
             )?;
         }
 
@@ -437,6 +469,8 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
     let map_misses = query_count_kind(conn, "map_miss", param_ref)?;
     let sketch_hits = query_count_kind(conn, "sketch_hit", param_ref)?;
     let sketch_misses = query_count_kind(conn, "sketch_miss", param_ref)?;
+    let find_hits = query_count_kind(conn, "find_hit", param_ref)?;
+    let find_misses = query_count_kind(conn, "find_miss", param_ref)?;
     let arch_hits = query_count_kind(conn, "arch_hit", param_ref)?;
     let arch_misses = query_count_kind(conn, "arch_miss", param_ref)?;
 
@@ -450,6 +484,13 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
     #[allow(clippy::cast_precision_loss)]
     let sketch_hit_rate = if sketch_hits + sketch_misses > 0 {
         sketch_hits as f64 / (sketch_hits + sketch_misses) as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let find_hit_rate = if find_hits + find_misses > 0 {
+        find_hits as f64 / (find_hits + find_misses) as f64 * 100.0
     } else {
         0.0
     };
@@ -528,6 +569,9 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         sketch_hits,
         sketch_misses,
         sketch_hit_rate,
+        find_hits,
+        find_misses,
+        find_hit_rate,
         first_edit_count,
         avg_first_edit_secs,
         first_edit_turns_count,
@@ -568,19 +612,25 @@ fn query_count_kind(conn: &Connection, kind: &str, param: Option<&str>) -> Resul
 }
 
 fn query_daily(conn: &Connection, param: Option<&str>) -> Result<Vec<DayStats>, AppError> {
+    // Inner query selects the 30 most recent days (DESC); outer re-sorts
+    // ascending so the display reads oldest-to-newest (like rtk gain).
     let (sql, values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match param {
         Some(p) => (
-            "SELECT DATE(timestamp) as d, COUNT(*), \
-             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns', 'arch_hit', 'arch_miss') THEN 0 ELSE token_impact END), 0) \
+            "SELECT d, events, saved FROM (\
+             SELECT DATE(timestamp) as d, COUNT(*) as events, \
+             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns', 'arch_hit', 'arch_miss') THEN 0 ELSE token_impact END), 0) as saved \
              FROM events WHERE project_path = ?1 \
-             GROUP BY d ORDER BY d DESC LIMIT 30"
+             GROUP BY d ORDER BY d DESC LIMIT 30\
+             ) ORDER BY d ASC"
                 .into(),
             vec![Box::new(p.to_string())],
         ),
         None => (
-            "SELECT DATE(timestamp) as d, COUNT(*), \
-             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns', 'arch_hit', 'arch_miss') THEN 0 ELSE token_impact END), 0) \
-             FROM events GROUP BY d ORDER BY d DESC LIMIT 30"
+            "SELECT d, events, saved FROM (\
+             SELECT DATE(timestamp) as d, COUNT(*) as events, \
+             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns', 'arch_hit', 'arch_miss') THEN 0 ELSE token_impact END), 0) as saved \
+             FROM events GROUP BY d ORDER BY d DESC LIMIT 30\
+             ) ORDER BY d ASC"
                 .into(),
             vec![],
         ),
@@ -618,16 +668,21 @@ mod tests {
         record_event_with(&conn, EventKind::MapMiss, "/tmp/project", 0).unwrap();
         record_event_with(&conn, EventKind::SketchHit, "/tmp/project", 0).unwrap();
         record_event_with(&conn, EventKind::SketchMiss, "/tmp/project", 0).unwrap();
+        record_event_with(&conn, EventKind::FindHit, "/tmp/project", 0).unwrap();
+        record_event_with(&conn, EventKind::FindMiss, "/tmp/project", 0).unwrap();
 
         let stats = gain_stats_with(&conn, Some("/tmp/project")).unwrap();
 
-        assert_eq!(stats.total_events, 4);
+        assert_eq!(stats.total_events, 6);
         assert_eq!(stats.map_hits, 1);
         assert_eq!(stats.map_misses, 1);
         assert_eq!(stats.sketch_hits, 1);
         assert_eq!(stats.sketch_misses, 1);
+        assert_eq!(stats.find_hits, 1);
+        assert_eq!(stats.find_misses, 1);
         assert!((stats.map_hit_rate - 50.0).abs() < f64::EPSILON);
         assert!((stats.sketch_hit_rate - 50.0).abs() < f64::EPSILON);
+        assert!((stats.find_hit_rate - 50.0).abs() < f64::EPSILON);
         assert_eq!(stats.estimated_tokens_saved, 150);
     }
 
@@ -699,6 +754,8 @@ mod tests {
         assert_eq!(EventKind::MapMiss.as_str(), "map_miss");
         assert_eq!(EventKind::SketchHit.as_str(), "sketch_hit");
         assert_eq!(EventKind::SketchMiss.as_str(), "sketch_miss");
+        assert_eq!(EventKind::FindHit.as_str(), "find_hit");
+        assert_eq!(EventKind::FindMiss.as_str(), "find_miss");
         assert_eq!(EventKind::FirstEdit.as_str(), "first_edit");
         assert_eq!(EventKind::FirstEditTurns.as_str(), "first_edit_turns");
         assert_eq!(EventKind::ArchHit.as_str(), "arch_hit");
@@ -887,6 +944,9 @@ mod tests {
             sketch_hits: 0,
             sketch_misses: 0,
             sketch_hit_rate: 0.0,
+            find_hits: 0,
+            find_misses: 0,
+            find_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
             first_edit_turns_count: 0,
@@ -913,6 +973,9 @@ mod tests {
             sketch_hits: 0,
             sketch_misses: 0,
             sketch_hit_rate: 0.0,
+            find_hits: 0,
+            find_misses: 0,
+            find_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
             first_edit_turns_count: 0,
@@ -951,6 +1014,9 @@ mod tests {
             sketch_hits: 0,
             sketch_misses: 0,
             sketch_hit_rate: 0.0,
+            find_hits: 0,
+            find_misses: 0,
+            find_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
             first_edit_turns_count: 0,
@@ -977,6 +1043,9 @@ mod tests {
             sketch_hits: 0,
             sketch_misses: 0,
             sketch_hit_rate: 0.0,
+            find_hits: 0,
+            find_misses: 0,
+            find_hit_rate: 0.0,
             first_edit_count: 3,
             avg_first_edit_secs: 42.0,
             first_edit_turns_count: 3,

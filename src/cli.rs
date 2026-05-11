@@ -52,7 +52,7 @@ pub enum Command {
     Find {
         /// Search query
         query: String,
-        /// Maximum results
+        /// Maximum results (minimum 1)
         #[arg(long, default_value = "20")]
         limit: usize,
         /// Resolve project from this path instead of cwd
