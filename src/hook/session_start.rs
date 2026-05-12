@@ -135,9 +135,11 @@ pub(crate) fn has_mtime_drift(
             .unwrap_or(entry.path())
             .to_string_lossy();
 
-        let current_mtime = std::fs::metadata(entry.path())
-            .and_then(|m| m.modified())
-            .ok()
+        // Capture metadata once — used for both mtime and the empty-file guard below.
+        let meta = std::fs::metadata(entry.path()).ok();
+        let current_mtime = meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| {
                 #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
@@ -148,13 +150,98 @@ pub(crate) fn has_mtime_drift(
             });
 
         match (stored.get(relative.as_ref()), current_mtime) {
-            (None, Some(_)) | (Some(_), None) => return true, // new or stat-failed
-            (Some(&s), Some(c)) if s != c => return true,     // changed mtime
-            _ => {}
+            // New file not in stored — only flag drift if scan_project would index it.
+            // `meta` is always Some here: current_mtime is derived from meta,
+            // so Some(_) in the pattern implies meta is Some.
+            (None, Some(_)) => {
+                // Only flag drift if scan_project would index this file.
+                // Read content to mirror its trim().is_empty() check — avoids
+                // perpetual rescans for whitespace-only files scan_project skips.
+                let would_index = meta.as_ref().is_some_and(|m| m.len() > 0)
+                    && std::fs::read_to_string(entry.path()).is_ok_and(|s| !s.trim().is_empty());
+                if would_index {
+                    return true;
+                }
+            }
+            // Stored file disappeared or stat failed.
+            (Some(_), None) => return true,
+            // Stored file mtime changed.
+            (Some(&s), Some(c)) if s != c => return true,
+            // Stored file found with matching mtime — count it.
+            _ => seen += 1,
         }
-        seen += 1;
     }
 
     // Fewer files walked than stored → removals
     seen < stored.len()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::time::UNIX_EPOCH;
+    use tempfile::TempDir;
+
+    fn mtime_ms(path: &std::path::Path) -> i64 {
+        #[allow(clippy::cast_possible_truncation)]
+        // Unix millis (~1.7 trillion) fits comfortably in i64 (~9.2 quintillion)
+        {
+            std::fs::metadata(path)
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64
+        }
+    }
+
+    /// Regression: 0-byte scannable files were never stored by `scan_project`,
+    /// so `has_mtime_drift` incorrectly treated them as new files and returned true.
+    #[test]
+    fn zero_byte_scannable_file_does_not_cause_drift() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("empty.js"), "").unwrap();
+        let stored: HashMap<String, i64> = HashMap::new();
+        assert!(!has_mtime_drift(tmp.path(), &stored));
+    }
+
+    /// Whitespace-only files are also skipped by `scan_project` — perpetual rescans
+    /// would occur if they were treated as new indexable files.
+    #[test]
+    fn whitespace_only_scannable_file_does_not_cause_drift() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("blank.js"), "\n  \n\t\n").unwrap();
+        let stored: HashMap<String, i64> = HashMap::new();
+        assert!(!has_mtime_drift(tmp.path(), &stored));
+    }
+
+    #[test]
+    fn new_non_empty_file_causes_drift() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("main.js"), "console.log('hi');").unwrap();
+        let stored: HashMap<String, i64> = HashMap::new();
+        assert!(has_mtime_drift(tmp.path(), &stored));
+    }
+
+    #[test]
+    fn deleted_stored_file_causes_drift() {
+        let tmp = TempDir::new().unwrap();
+        // stored references a file that no longer exists on disk
+        let mut stored = HashMap::new();
+        stored.insert("gone.js".to_string(), 12345_i64);
+        assert!(has_mtime_drift(tmp.path(), &stored));
+    }
+
+    #[test]
+    fn unchanged_stored_file_does_not_cause_drift() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("main.js");
+        std::fs::write(&file, "console.log('hi');").unwrap();
+        let mut stored = HashMap::new();
+        stored.insert("main.js".to_string(), mtime_ms(&file));
+        assert!(!has_mtime_drift(tmp.path(), &stored));
+    }
 }
