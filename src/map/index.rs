@@ -282,29 +282,29 @@ fn rebuild_arch_summary_with(
     entries: &[super::MapEntry],
     imports: &[super::extract::Import],
 ) -> Result<ArchSummary, AppError> {
-    // Language distribution by file count
-    let mut ext_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    // Language distribution by file count — group by language name, not raw extension
+    let mut lang_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for entry in entries {
         let ext = std::path::Path::new(&entry.path)
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("other");
-        *ext_counts.entry(ext).or_default() += 1;
+        let lang = ext_to_lang(ext);
+        *lang_counts.entry(lang).or_default() += 1;
     }
     let total = entries.len().max(1);
-    let mut ext_vec: Vec<_> = ext_counts.into_iter().collect();
-    ext_vec.sort_by_key(|b| std::cmp::Reverse(b.1));
+    let mut lang_vec: Vec<_> = lang_counts.into_iter().collect();
+    lang_vec.sort_by_key(|b| std::cmp::Reverse(b.1));
 
-    let lang_parts: Vec<String> = ext_vec
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let lang_parts: Vec<String> = lang_vec
         .iter()
         .take(ARCH_LANG_DISPLAY_LIMIT)
-        .map(|(ext, count)| {
-            let name = ext_to_lang(ext);
-            #[allow(
-                clippy::cast_precision_loss,
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss
-            )]
+        .map(|(name, count)| {
             let pct = (*count as f64 / total as f64 * 100.0).round() as u32;
             format!("{name} {pct}%")
         })
@@ -1134,6 +1134,42 @@ mod tests {
         assert!(map.contains("### Architecture"));
         assert!(map.contains("- Languages:"));
         assert!(map.contains("- Hotspots:"));
+    }
+
+    #[test]
+    fn rebuild_arch_summary_groups_js_variants_into_single_language() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![
+            sample_entry("src/index.js"),
+            sample_entry("src/utils.mjs"),
+            sample_entry("src/config.cjs"),
+            sample_entry("src/app.jsx"),
+            sample_entry("package.json"),
+        ];
+        crate::map::write_map(tmp.path(), &entries).unwrap();
+
+        let summary = rebuild_arch_summary(tmp.path(), &entries, &[]).unwrap();
+
+        // All four JS variants should merge into one "JavaScript 80%" entry
+        assert!(
+            summary.lang_dist.contains("JavaScript 80%"),
+            "expected 'JavaScript 80%' but got: {0}",
+            summary.lang_dist
+        );
+        let js_count = summary.lang_dist.matches("JavaScript").count();
+        assert_eq!(
+            js_count, 1,
+            "JS variants (.js/.mjs/.cjs/.jsx) must be grouped: {0}",
+            summary.lang_dist
+        );
+        // Raw extensions must not leak through as separate entries
+        for raw in &["js ", "mjs ", "cjs ", "jsx "] {
+            assert!(
+                !summary.lang_dist.contains(raw),
+                "raw extension '{raw}' leaked into lang_dist: {0}",
+                summary.lang_dist
+            );
+        }
     }
 
     #[test]
