@@ -1,0 +1,14 @@
+{
+  "name": "waypoint-plugins",
+  "interface": {
+    "displayName": "Waypoint"
+  },
+  "plugins": [
+    {
+      "name": "waypoint",
+      "source": { "source": "local", "path": "./plugins/waypoint" },
+      "policy": { "installation": "INSTALLED_BY_DEFAULT" },
+      "category": "Developer Tools"
+    }
+  ]
+}

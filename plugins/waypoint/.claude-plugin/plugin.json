@@ -1,0 +1,6 @@
+{
+  "name": "waypoint",
+  "version": "0.1.0",
+  "description": "Project intelligence hooks — session context injection and read advisory",
+  "author": { "name": "Martin Burch" }
+}

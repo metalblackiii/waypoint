@@ -1125,10 +1125,10 @@ fn cli_impact_with_base_flag() {
 // ── Version Test ───────────────────────────────────────────────
 
 #[test]
-fn cli_version_reports_0_10_2() {
+fn cli_version_reports_0_11_0() {
     waypoint()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("0.10.2"));
+        .stdout(predicate::str::contains("0.11.0"));
 }

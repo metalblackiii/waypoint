@@ -25,9 +25,29 @@ echo '.waypoint/' >> ~/.gitignore_global
 # git config --global core.excludesfile
 ```
 
-## 4. Create the hook scripts
+## 4. Register the plugin
 
-Each hook is a thin shell wrapper that delegates to the waypoint binary. Create these in `~/.claude/hooks/` (Claude Code) — Codex symlinks the same directory via `~/.codex/hooks`.
+`setup-plugins.sh` handles hook registration for both Claude Code and Codex in one step. Run it once after `cargo install`:
+
+```sh
+./setup-plugins.sh
+```
+
+**Prerequisites:** `jq` is required for the Codex path (`brew install jq`). The Claude Code path has no extra dependencies.
+
+What it does:
+- **Claude Code** — registers the `waypoint-plugins` marketplace and installs the `waypoint` plugin (hooks fire automatically).
+- **Codex** — writes `~/.agents/plugins/waypoint.json` and ensures `plugin_hooks = true` in `~/.codex/config.toml`.
+
+To uninstall: `./setup-plugins.sh --uninstall`
+
+After running, restart Claude Code / Codex sessions to activate the hooks.
+
+### Alternative: manual hook setup
+
+Skip this if you used `setup-plugins.sh`. For environments without the `claude` binary or where you need fine-grained hook control:
+
+Create these scripts in `~/.claude/hooks/`:
 
 **waypoint-session-start.sh**
 ```sh
@@ -35,7 +55,7 @@ Each hook is a thin shell wrapper that delegates to the waypoint binary. Create 
 WAYPOINT="${HOME}/.cargo/bin/waypoint"
 [[ -x "$WAYPOINT" ]] || exit 0
 INPUT=$(cat)
-echo "$INPUT" | "$WAYPOINT" hook session-start
+printf '%s\n' "$INPUT" | "$WAYPOINT" hook session-start
 ```
 
 **waypoint-pre-read.sh**
@@ -44,23 +64,16 @@ echo "$INPUT" | "$WAYPOINT" hook session-start
 WAYPOINT="${HOME}/.cargo/bin/waypoint"
 [[ -x "$WAYPOINT" ]] || exit 0
 INPUT=$(cat)
-echo "$INPUT" | "$WAYPOINT" hook pre-read
+printf '%s\n' "$INPUT" | "$WAYPOINT" hook pre-read
 ```
 
-Make them executable (both locations):
+Make them executable:
 
 ```sh
 chmod +x ~/.claude/hooks/waypoint-*.sh
-chmod +x ~/.codex/hooks/waypoint-*.sh
 ```
 
-If `~/.codex/hooks` is a symlink to `~/.claude/hooks`, either command is sufficient.
-
-## 5. Register hooks
-
-### Claude Code — `~/.claude/settings.json`
-
-Add these entries to the `hooks` object. Waypoint hooks should come **before** other hooks of the same type so context is available early.
+Then add to **`~/.claude/settings.json`** (hooks should come **before** other hooks of the same type):
 
 ```json
 {
@@ -81,30 +94,9 @@ Add these entries to the `hooks` object. Waypoint hooks should come **before** o
 }
 ```
 
-### Codex — `~/.codex/hooks.json`
+For **Codex**, the manual path uses a raw `~/.codex/hooks.json` (different from the plugin-based mechanism `setup-plugins.sh` uses). Copy the same hook scripts to `~/.codex/hooks/`, make them executable, and add the equivalent JSON to `~/.codex/hooks.json` pointing at those paths. Also ensure `plugin_hooks = true` under `[features]` in `~/.codex/config.toml`.
 
-Codex uses the same hook scripts (via `~/.codex/hooks` → `~/.claude/hooks` symlink or direct copy). Requires `codex_hooks = true` in `~/.codex/config.toml`.
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "",
-        "hooks": [{ "type": "command", "command": "~/.codex/hooks/waypoint-session-start.sh" }]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Read",
-        "hooks": [{ "type": "command", "command": "~/.codex/hooks/waypoint-pre-read.sh" }]
-      }
-    ]
-  }
-}
-```
-
-## 6. Add the minimal protocol to your global agent instructions
+## 5. Add the minimal protocol to your global agent instructions
 
 `WAYPOINT.md` is the single source of truth for the copy/paste template.
 Copy the content of `WAYPOINT.md` into your global `AGENTS.md` (recommended for cross-agent portability).
@@ -121,7 +113,7 @@ NOTE: Recommend installing rg (ripgrep) as it is more efficient than grep.  If n
 
 Use your local absolute path to this repo.
 
-## 7. First run
+## 6. First run
 
 Open Claude Code or Codex in any project. The session-start hook auto-creates `.waypoint/` and runs the initial scan. Or run manually:
 
@@ -145,7 +137,7 @@ waypoint arch -C /path/to/other-repo
 
 This gives you the current language mix and hotspots before deeper reads.
 
-## 8. Verify setup
+## 7. Verify setup
 
 Run these checks after setup:
 

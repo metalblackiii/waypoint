@@ -15,6 +15,23 @@ Project intelligence for Claude Code — hooks, file map, symbol index, ledger.
 - `cargo bench` — divan benchmarks in `benches/hook_latency.rs`
 - CI runs fmt check, clippy, and test in parallel on ubuntu-latest
 
+## Plugin Setup
+
+Waypoint ships a Claude Code / Codex plugin that auto-injects session context and read advisories via hooks. Run once after `cargo install`:
+
+Prerequisites: `jq` (`brew install jq`) — only required if Codex is installed.
+
+```bash
+./setup-plugins.sh          # register + install
+./setup-plugins.sh --uninstall  # remove
+```
+
+What it does:
+- **Claude Code** — registers the `waypoint-plugins` marketplace and installs the `waypoint` plugin
+- **Codex** — writes `~/.agents/plugins/waypoint.json` and ensures `plugin_hooks = true` in `~/.codex/config.toml`
+
+After running, restart Claude Code / Codex to activate the `SessionStart` and `PreToolUse:Read` hooks.
+
 ## Architecture
 
 - `map.md` is the human-readable source of truth. `map_index.db` is a SQLite cache for O(1) lookups — it can be deleted and will rebuild on next `waypoint scan`.

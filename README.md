@@ -18,12 +18,13 @@ Project intelligence for Claude Code or Codex. Gives your AI assistant a file ma
 
 ```sh
 cargo install --path .
+./setup-plugins.sh      # register plugin + install hooks for Claude Code / Codex
 waypoint scan
 waypoint status
 waypoint impact
 ```
 
-For hook setup and global agent instructions, see [SETUP.md](SETUP.md).
+For full setup details and global agent instructions, see [SETUP.md](SETUP.md).
 
 ## What it does
 
@@ -149,7 +150,7 @@ For installation, hooks, and global agent configuration (`WAYPOINT.md` copy/impo
 - Symbol checks are repo-dependent: `waypoint find`/`sketch` may return no matches in non-code or low-symbol repos.
 - `waypoint gain` is an estimated upper bound ("max savings"), not a counterfactual measurement of exact tokens that would have been spent without waypoint.
 - `waypoint impact` depends on a fresh map/index; if you see a staleness warning, run `waypoint scan` first.
-- Hook-powered context injection requires hook setup; without configured hooks, context lines are not auto-injected.
+- Hook-powered context injection requires hook setup; without it, context lines are not auto-injected. Run `./setup-plugins.sh` once after `cargo install` to wire this up.
 - `waypoint impact` output is text-only in v1 (no JSON mode yet).
 - Hidden files/directories (`.`-prefixed) are intentionally excluded from scan/indexing to avoid over-indexing system/metadata paths; dotfile-heavy repos may see more lookup misses.
 
