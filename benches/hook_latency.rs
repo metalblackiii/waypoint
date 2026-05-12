@@ -1,9 +1,12 @@
 #![allow(clippy::unwrap_used)]
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use divan::Bencher;
 use tempfile::TempDir;
+use waypoint::hook::session_start::has_mtime_drift;
 use waypoint::map::{self, MapEntry};
 
 fn main() {
@@ -173,4 +176,64 @@ fn estimate_tokens(bencher: Bencher, size: usize) {
     let content = "x".repeat(size);
     let path = Path::new("src/big.rs");
     bencher.bench(|| map::estimate_tokens(&content, path));
+}
+
+// --- has_mtime_drift ---
+
+/// Build a temp project with `n` non-empty `.rs` files, return it alongside
+/// a stored-mtimes map that matches every file exactly (steady-state baseline).
+/// Mtime-capture logic mirrors `mtime_ms` in `session_start` unit tests.
+fn make_project_with_stored(n: usize) -> (TempDir, HashMap<String, i64>) {
+    let tmp = TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    let mut stored = HashMap::new();
+    for i in 0..n {
+        let rel = format!("src/file_{i:05}.rs");
+        let path = tmp.path().join(&rel);
+        std::fs::write(&path, format!("pub fn f_{i}() {{}}")).unwrap();
+        #[allow(clippy::cast_possible_truncation)]
+        // Unix millis (~1.7 trillion) fits comfortably in i64 (~9.2 quintillion)
+        let mtime = std::fs::metadata(&path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        stored.insert(rel, mtime);
+    }
+    (tmp, stored)
+}
+
+/// Steady state: every on-disk file is in stored with a matching mtime.
+/// Hot path — runs on every session-start when nothing has changed.
+/// Measures pure walk + stat cost; no content reads.
+#[divan::bench(args = [1000, 3000, 5000, 9000])]
+fn mtime_drift_steady_state(bencher: Bencher, n: usize) {
+    let (tmp, stored) = make_project_with_stored(n);
+    bencher.bench(|| has_mtime_drift(tmp.path(), &stored));
+}
+
+/// One new non-empty file: walk until the new file is found, do one content
+/// read, return true. Named `z_new.rs` (alphabetically late among the
+/// `file_NNNNN.rs` set) to encourage a longer walk before early-return;
+/// actual order depends on `ignore::WalkBuilder` traversal, not guaranteed.
+#[divan::bench(args = [1000, 3000, 5000, 9000])]
+fn mtime_drift_one_new_file(bencher: Bencher, n: usize) {
+    let (tmp, stored) = make_project_with_stored(n);
+    std::fs::write(tmp.path().join("src/z_new.rs"), "pub fn new() {}").unwrap();
+    bencher.bench(|| has_mtime_drift(tmp.path(), &stored));
+}
+
+/// Whitespace-only new files: the walk completes in full because blank files
+/// are read and skipped rather than triggering an early return. Measures the
+/// per-blank-file content-read overhead added by the fix.
+/// Fixed stored count (1000); varying blank counts isolate the per-file cost.
+#[divan::bench(args = [10, 50, 100])]
+fn mtime_drift_whitespace_only_new_files(bencher: Bencher, n_blank: usize) {
+    let (tmp, stored) = make_project_with_stored(1000);
+    for i in 0..n_blank {
+        std::fs::write(tmp.path().join(format!("src/blank_{i:03}.js")), "\n").unwrap();
+    }
+    bencher.bench(|| has_mtime_drift(tmp.path(), &stored));
 }

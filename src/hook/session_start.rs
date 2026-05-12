@@ -114,9 +114,10 @@ fn should_rescan(wp_dir: &std::path::Path, project_root: &std::path::Path) -> bo
 
 /// Compare file mtimes against stored values. Returns `true` if any file changed,
 /// was added, or was removed. Stat-only — does not read file content.
-pub(crate) fn has_mtime_drift(
+#[must_use]
+pub fn has_mtime_drift<S: std::hash::BuildHasher>(
     project_root: &std::path::Path,
-    stored: &std::collections::HashMap<String, i64>,
+    stored: &std::collections::HashMap<String, i64, S>,
 ) -> bool {
     let mut seen = 0usize;
 
