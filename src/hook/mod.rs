@@ -1,3 +1,4 @@
+pub mod post_write;
 pub mod pre_read;
 pub mod session_start;
 
@@ -53,6 +54,7 @@ impl HookContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HookEvent {
     PreToolUse,
+    PostToolUse,
     SessionStart,
 }
 
@@ -61,6 +63,7 @@ impl HookEvent {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::PreToolUse => "PreToolUse",
+            Self::PostToolUse => "PostToolUse",
             Self::SessionStart => "SessionStart",
         }
     }

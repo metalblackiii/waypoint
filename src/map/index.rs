@@ -254,6 +254,162 @@ pub fn rebuild_imports(waypoint_dir: &Path, imports: &[Import]) -> Result<(), Ap
     Ok(())
 }
 
+/// Replace symbols for a single file (atomic delete + insert in one transaction).
+pub fn update_file_symbols(
+    waypoint_dir: &Path,
+    file_path: &str,
+    symbols: &[Symbol],
+) -> Result<(), AppError> {
+    let conn = open_index(waypoint_dir)?;
+    let tx = conn.unchecked_transaction()?;
+
+    // Delete and insert in one transaction — rollback preserves old data on failure
+    tx.execute(
+        "DELETE FROM symbols WHERE file_path = ?1",
+        params![file_path],
+    )?;
+    let _ = tx.execute(
+        "DELETE FROM symbols_fts WHERE file_path = ?1",
+        params![file_path],
+    );
+
+    let mut stmt = tx.prepare(
+        "INSERT INTO symbols (file_path, name, kind, signature, line_start, line_end, exported) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+    let mut fts_stmt = tx.prepare(
+        "INSERT INTO symbols_fts (name, kind, signature, file_path) VALUES (?1, ?2, ?3, ?4)",
+    );
+
+    for sym in symbols {
+        stmt.execute(params![
+            sym.file_path,
+            sym.name,
+            sym.kind,
+            sym.signature,
+            sym.line_start,
+            sym.line_end,
+            i64::from(sym.exported)
+        ])?;
+        if let Ok(ref mut fts) = fts_stmt {
+            let _ = fts.execute(params![sym.name, sym.kind, sym.signature, sym.file_path]);
+        }
+    }
+
+    drop(stmt);
+    drop(fts_stmt);
+    tx.commit()?;
+    Ok(())
+}
+
+/// Remove all symbols for a single file.
+pub fn remove_file_symbols(waypoint_dir: &Path, file_path: &str) -> Result<(), AppError> {
+    let conn = open_index(waypoint_dir)?;
+    conn.execute(
+        "DELETE FROM symbols WHERE file_path = ?1",
+        params![file_path],
+    )?;
+    let _ = conn.execute(
+        "DELETE FROM symbols_fts WHERE file_path = ?1",
+        params![file_path],
+    );
+    Ok(())
+}
+
+/// Replace imports for a single file (atomic delete + insert in one transaction).
+pub fn update_file_imports(
+    waypoint_dir: &Path,
+    file_path: &str,
+    imports: &[Import],
+) -> Result<(), AppError> {
+    let conn = open_index(waypoint_dir)?;
+    let tx = conn.unchecked_transaction()?;
+
+    // Delete and insert in one transaction — rollback preserves old data on failure
+    tx.execute(
+        "DELETE FROM imports WHERE source_file = ?1",
+        params![file_path],
+    )?;
+
+    let mut stmt = tx.prepare(
+        "INSERT INTO imports (source_file, imported_name, target_path, raw_path, line_number) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+
+    for imp in imports {
+        stmt.execute(params![
+            imp.source_file,
+            imp.imported_name,
+            imp.target_path,
+            imp.raw_path,
+            imp.line_number
+        ])?;
+    }
+
+    drop(stmt);
+    tx.commit()?;
+    Ok(())
+}
+
+/// Remove all imports sourced from a single file.
+pub fn remove_file_imports(waypoint_dir: &Path, file_path: &str) -> Result<(), AppError> {
+    let conn = open_index(waypoint_dir)?;
+    conn.execute(
+        "DELETE FROM imports WHERE source_file = ?1",
+        params![file_path],
+    )?;
+    Ok(())
+}
+
+/// Return all exported symbols for a file (snapshot before update for signature comparison).
+pub fn exported_symbols_for_file(
+    waypoint_dir: &Path,
+    file_path: &str,
+) -> Result<Vec<SymbolRow>, AppError> {
+    let conn = open_index(waypoint_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT file_path, name, kind, signature, line_start, line_end, exported \
+         FROM symbols WHERE file_path = ?1 AND exported = 1",
+    )?;
+    let rows = stmt.query_map(params![file_path], |row| {
+        Ok(SymbolRow {
+            file_path: row.get(0)?,
+            name: row.get(1)?,
+            kind: row.get(2)?,
+            signature: row.get(3)?,
+            line_start: row.get(4)?,
+            line_end: row.get(5)?,
+            exported: row.get::<_, i64>(6)? != 0,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+/// Return all map entry paths that are direct children of a directory prefix.
+pub fn entries_in_dir(waypoint_dir: &Path, dir_prefix: &str) -> Result<Vec<String>, AppError> {
+    let conn = open_index(waypoint_dir)?;
+    let paths = if dir_prefix.is_empty() || dir_prefix == "." {
+        // Top-level entries: no '/' in path
+        let mut stmt = conn.prepare("SELECT path FROM map_entries WHERE path NOT LIKE '%/%'")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    } else {
+        // Direct children of dir_prefix: starts with "dir/" but no further '/'
+        let escaped = dir_prefix.replace('%', r"\%").replace('_', r"\_");
+        let prefix_pattern = format!("{escaped}/%");
+        let nested_pattern = format!("{escaped}/%/%");
+        let mut stmt = conn.prepare(
+            "SELECT path FROM map_entries \
+             WHERE path LIKE ?1 ESCAPE '\\' AND path NOT LIKE ?2 ESCAPE '\\'",
+        )?;
+        let rows = stmt.query_map(params![prefix_pattern, nested_pattern], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    Ok(paths)
+}
+
 /// Cached architecture summary for a project.
 #[derive(Debug)]
 pub struct ArchSummary {

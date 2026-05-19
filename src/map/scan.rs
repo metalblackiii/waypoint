@@ -16,7 +16,7 @@ use crate::AppError;
 const DENSITY_MIN_BYTES: usize = 256;
 
 /// Gzip compression ratio (compressed / original). Lower = more repetitive.
-fn gzip_density(content: &[u8]) -> Option<f32> {
+pub(crate) fn gzip_density(content: &[u8]) -> Option<f32> {
     if content.len() < DENSITY_MIN_BYTES {
         return None;
     }
@@ -28,7 +28,7 @@ fn gzip_density(content: &[u8]) -> Option<f32> {
 }
 
 /// `SipHash` of file content for change detection.
-fn content_hash(content: &[u8]) -> i64 {
+pub(crate) fn content_hash(content: &[u8]) -> i64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     content.hash(&mut hasher);
     #[allow(clippy::cast_possible_wrap)]
@@ -46,7 +46,7 @@ fn content_hash(content: &[u8]) -> i64 {
 /// against millis, triggering a one-time rescan. This is intentional — the
 /// rescan writes millis, making the index self-correcting. No version gate
 /// is needed because `map_index.db` is a rebuildable cache.
-fn file_mtime(path: &Path) -> Option<i64> {
+pub(crate) fn file_mtime(path: &Path) -> Option<i64> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime = meta.modified().ok()?;
     let duration = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;

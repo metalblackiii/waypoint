@@ -183,6 +183,31 @@ pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppErr
     Ok(())
 }
 
+/// Update a single entry in map.md (insert or replace by path), then rebuild the index.
+pub fn update_entry(waypoint_dir: &Path, new_entry: MapEntry) -> Result<(), AppError> {
+    let mut entries = read_map(waypoint_dir)?;
+
+    if let Some(existing) = entries.iter_mut().find(|e| e.path == new_entry.path) {
+        *existing = new_entry;
+    } else {
+        entries.push(new_entry);
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+    }
+
+    write_map(waypoint_dir, &entries)
+}
+
+/// Remove an entry from map.md by path and rewrite.
+pub fn remove_entry(waypoint_dir: &Path, relative_path: &str) -> Result<(), AppError> {
+    let mut entries = read_map(waypoint_dir)?;
+    let before = entries.len();
+    entries.retain(|e| e.path != relative_path);
+    if entries.len() < before {
+        write_map(waypoint_dir, &entries)?;
+    }
+    Ok(())
+}
+
 /// Metadata parsed from the map.md header comment.
 /// Both fields are required — `parse_map_header` returns `None` if either fails to parse.
 #[derive(Debug)]

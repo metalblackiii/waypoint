@@ -93,6 +93,8 @@ pub enum Command {
 pub enum HookCommand {
     /// PreToolUse:Read — inject file map context
     PreRead,
+    /// `PostToolUse:Edit|Write` — incremental map/symbol/import update
+    PostWrite,
     /// `SessionStart` — auto-scan and record session start
     SessionStart,
 }

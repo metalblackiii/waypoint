@@ -115,14 +115,106 @@ fn cli_trap_subcommand_is_removed() {
 }
 
 #[test]
-fn hook_post_write_subcommand_is_removed() {
+fn hook_post_write_updates_map_entry() {
     let project = setup_project();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // Write a new file
+    std::fs::write(
+        project.path().join("src/added.rs"),
+        "pub fn added() { todo!() }",
+    )
+    .unwrap();
+
+    let payload = hook_payload(&project, "src/added.rs");
     waypoint()
         .args(["hook", "post-write"])
         .current_dir(project.path())
+        .write_stdin(payload)
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("unrecognized subcommand"));
+        .success()
+        .stdout(predicate::str::contains("map updated"));
+
+    // Verify map.md actually contains the new entry
+    let map_content = std::fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
+    assert!(
+        map_content.contains("added.rs"),
+        "map.md should contain added.rs after post-write hook"
+    );
+}
+
+#[test]
+fn hook_post_write_silent_when_no_waypoint() {
+    let project = TempDir::new().unwrap();
+    std::fs::create_dir(project.path().join(".git")).unwrap();
+    std::fs::write(project.path().join("test.rs"), "fn main() {}").unwrap();
+
+    let payload = hook_payload(&project, "test.rs");
+    waypoint()
+        .args(["hook", "post-write"])
+        .current_dir(project.path())
+        .write_stdin(payload)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PostToolUse"));
+}
+
+#[test]
+fn hook_post_write_removes_deleted_file() {
+    let project = setup_project();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // Verify main.rs is in the map after scan
+    let map_before = std::fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
+    assert!(
+        map_before.contains("main.rs"),
+        "precondition: main.rs in map"
+    );
+
+    // Delete the file, then run hook pointing at the now-missing path
+    std::fs::remove_file(project.path().join("src/main.rs")).unwrap();
+    let payload = hook_payload(&project, "src/main.rs");
+    waypoint()
+        .args(["hook", "post-write"])
+        .current_dir(project.path())
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    // Verify main.rs is no longer in the map
+    let map_after = std::fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
+    assert!(
+        !map_after.contains("main.rs"),
+        "map.md should not contain main.rs after deletion hook"
+    );
+}
+
+#[test]
+fn hook_post_write_emits_posttooluse_event_name() {
+    let project = setup_project();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let payload = hook_payload(&project, "src/main.rs");
+    let assert = waypoint()
+        .args(["hook", "post-write"])
+        .current_dir(project.path())
+        .write_stdin(payload)
+        .assert()
+        .success();
+    let hook = parse_hook_output(&assert);
+    assert_eq!(hook["hookEventName"], "PostToolUse");
 }
 
 #[test]
