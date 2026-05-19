@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::MapEntry;
-use super::extract::{Import, Symbol};
+use super::extract::{Call, Import, Symbol};
 use crate::AppError;
 
 const INDEX_FILENAME: &str = "map_index.db";
@@ -39,7 +39,18 @@ CREATE TABLE IF NOT EXISTS imports (
 );
 CREATE INDEX IF NOT EXISTS idx_imports_source ON imports(source_file);
 CREATE INDEX IF NOT EXISTS idx_imports_target ON imports(target_path);
-CREATE INDEX IF NOT EXISTS idx_imports_name ON imports(imported_name);";
+CREATE INDEX IF NOT EXISTS idx_imports_name ON imports(imported_name);
+CREATE TABLE IF NOT EXISTS calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_file TEXT NOT NULL,
+    source_symbol TEXT NOT NULL,
+    target_file TEXT NOT NULL,
+    target_symbol TEXT NOT NULL,
+    line_number INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_calls_source ON calls(source_file, source_symbol);
+CREATE INDEX IF NOT EXISTS idx_calls_target ON calls(target_file, target_symbol);
+CREATE INDEX IF NOT EXISTS idx_calls_source_file ON calls(source_file);";
 
 const FTS_SCHEMA: &str = "\
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(\
@@ -359,6 +370,136 @@ pub fn remove_file_imports(waypoint_dir: &Path, file_path: &str) -> Result<(), A
         params![file_path],
     )?;
     Ok(())
+}
+
+/// Rebuild the calls table from a full scan.
+pub fn rebuild_calls(waypoint_dir: &Path, calls: &[Call]) -> Result<(), AppError> {
+    let conn = open_index(waypoint_dir)?;
+
+    conn.execute_batch("DELETE FROM calls")?;
+
+    let tx = conn.unchecked_transaction()?;
+    let mut stmt = tx.prepare(
+        "INSERT INTO calls (source_file, source_symbol, target_file, target_symbol, line_number) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+
+    for call in calls {
+        stmt.execute(params![
+            call.source_file,
+            call.source_symbol,
+            call.target_file,
+            call.target_symbol,
+            call.line_number
+        ])?;
+    }
+
+    drop(stmt);
+    tx.commit()?;
+    Ok(())
+}
+
+/// Replace calls for a single file (atomic delete + insert in one transaction).
+pub fn update_file_calls(
+    waypoint_dir: &Path,
+    file_path: &str,
+    calls: &[Call],
+) -> Result<(), AppError> {
+    let conn = open_index(waypoint_dir)?;
+    let tx = conn.unchecked_transaction()?;
+
+    tx.execute(
+        "DELETE FROM calls WHERE source_file = ?1",
+        params![file_path],
+    )?;
+
+    let mut stmt = tx.prepare(
+        "INSERT INTO calls (source_file, source_symbol, target_file, target_symbol, line_number) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+
+    for call in calls {
+        stmt.execute(params![
+            call.source_file,
+            call.source_symbol,
+            call.target_file,
+            call.target_symbol,
+            call.line_number
+        ])?;
+    }
+
+    drop(stmt);
+    tx.commit()?;
+    Ok(())
+}
+
+/// Remove all calls originating from a single file.
+pub fn remove_file_calls(waypoint_dir: &Path, file_path: &str) -> Result<(), AppError> {
+    let conn = open_index(waypoint_dir)?;
+    conn.execute(
+        "DELETE FROM calls WHERE source_file = ?1",
+        params![file_path],
+    )?;
+    Ok(())
+}
+
+/// Find outbound callees of a symbol (functions it calls within the same file).
+pub fn find_callees(
+    waypoint_dir: &Path,
+    symbol_name: &str,
+    file_path: &str,
+) -> Result<Vec<(String, i64)>, AppError> {
+    let conn = open_index(waypoint_dir)?;
+    find_callees_with(&conn, symbol_name, file_path)
+}
+
+/// Connection-reuse variant for `find_callees`.
+pub(crate) fn find_callees_with(
+    conn: &Connection,
+    symbol_name: &str,
+    file_path: &str,
+) -> Result<Vec<(String, i64)>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT target_symbol, line_number FROM calls \
+         WHERE source_symbol = ?1 AND source_file = ?2 \
+         ORDER BY line_number",
+    )?;
+    let rows = stmt.query_map(params![symbol_name, file_path], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+/// Find inbound callers of a symbol (functions that call it).
+/// Returns `(caller_name, caller_file, line_number)` triples.
+pub fn find_callers_of(
+    waypoint_dir: &Path,
+    symbol_name: &str,
+    file_path: &str,
+) -> Result<Vec<(String, String, i64)>, AppError> {
+    let conn = open_index(waypoint_dir)?;
+    find_callers_of_with(&conn, symbol_name, file_path)
+}
+
+/// Connection-reuse variant for `find_callers_of`.
+pub(crate) fn find_callers_of_with(
+    conn: &Connection,
+    symbol_name: &str,
+    file_path: &str,
+) -> Result<Vec<(String, String, i64)>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT source_symbol, source_file, line_number FROM calls \
+         WHERE target_symbol = ?1 AND target_file = ?2 \
+         ORDER BY source_file, line_number",
+    )?;
+    let rows = stmt.query_map(params![symbol_name, file_path], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 /// Return all exported symbols for a file (snapshot before update for signature comparison).

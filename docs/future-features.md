@@ -4,29 +4,28 @@ Parked ideas with full context. Not scheduled — recorded so the reasoning surv
 
 ## Call Graph Tracing (`waypoint trace`)
 
-**What**: Track actual function calls (not just imports). `waypoint trace <symbol> [--direction inbound|outbound|both] [--depth N]` walks the call chain.
+**Status**: ✅ V1 delivered in v0.13.0 (same-file calls). Cross-file trace is v2.
 
-**Why it matters**: Single biggest capability gap vs codebase-memory-mcp. Waypoint knows imports but not call chains. "Who calls `validatePayment`?" requires knowing that `handleOrder()` calls it, not just that `checkout.rs` imports it.
+**V1 scope (delivered)**:
+- `calls` table in SQLite: `(id, source_file, source_symbol, target_file, target_symbol, line_number)`
+- `target_file` column present from day one — v2 cross-file requires no schema migration
+- Extraction-time resolution: only validated same-file call edges are stored
+- Call extraction via tree-sitter AST walking for Rust, JS/TS, Python, Go
+- PostToolUse:Edit|Write hook keeps call data fresh incrementally (staleness blocker resolved)
+- `waypoint trace <symbol> [--direction inbound|outbound|both] [--depth N]` with BFS traversal
+- Builtin skip lists per language (macros, builtins, framework globals)
+- Method resolution: bare name `bar` matches qualified `Type::bar` via suffix matching
 
-**Implementation sketch**:
-- New `calls` table in SQLite: `(id, source_file, source_symbol, target_symbol, target_file, line_number)`
-- Extract call expressions from tree-sitter AST during scan (walk function bodies for call nodes)
-- Resolve call targets against symbol registry (name matching, qualified names for methods)
-- Two-pass scan: extract all symbols first, then resolve calls against complete registry
-- ~800-1,200 LOC in extract.rs + index.rs + new trace module
+**V2: Cross-file trace (not yet implemented)**:
 
-**Why it's parked**:
-- **Staleness**: Call graph data goes stale on every edit. Unlike map descriptions (tolerably stale) or impact (conservatively stale — underreports, never lies), stale call data *actively misleads* — reporting call chains that no longer exist or missing new ones.
-- **No Codex hooks**: Codex doesn't support the hooks needed to trigger rescan after edits. Agents working in Codex would operate on perpetually stale call data.
-- **Resolution accuracy**: Cross-file call resolution is hard. Dynamic dispatch, closures, method chains, and overloaded names all defeat simple name matching. CBM spent ~19K lines of C on their pipeline. False positives degrade trust.
-- **Architectural change**: Current scan is single-pass. Call resolution requires two-pass (symbols first, then calls resolved against registry). Changes the scan pipeline, not just additive code.
+Remaining work to extend trace across file boundaries:
 
-**What would unblock it**:
-- Background watcher or incremental rescan that keeps call data fresh between sessions
-- Codex gaining hook support (specifically PreToolUse or post-edit hooks)
-- Alternatively: accepting "call graph is only accurate at scan time" and making scan fast enough to run frequently (incremental scan would help)
+- Populate `target_file` by resolving callee names against the imports table at extraction time
+- Relax the same-file constraint in `find_callees`/`find_callers_of` queries (parameter becomes `Option<&str>`)
+- Handle ambiguous resolution (multiple files export same symbol name)
+- Dynamic dispatch, trait objects, and aliased imports remain out of scope
 
-**Estimated effort**: High (~1-2 weeks). Roughly 15-20% of current codebase size.
+**Estimated effort for v2**: Medium (~3-5 days). Schema and BFS infrastructure are in place; the work is in the resolver.
 
 ## Dead Code Detection (`waypoint dead`)
 
@@ -37,11 +36,11 @@ Parked ideas with full context. Not scheduled — recorded so the reasoning surv
 - Exclusion mechanism for entry points, test targets, framework magic
 - ~150-250 LOC
 
-**Why it's parked**: Depends entirely on the `calls` table from trace. Without call data, "zero callers" is meaningless — you'd only detect symbols with zero *importers*, which `waypoint callers` already surfaces.
+**Why it's parked**: With v1 same-file calls now available, same-file dead code detection is possible. Cross-file dead code detection still needs v2 cross-file trace for full accuracy.
 
-**What would unblock it**: Trace shipping first. Dead code is trivially a query on the calls table.
+**What would unblock it**: V1 calls table is in place — same-file dead code is implementable now. Full accuracy requires v2 cross-file trace.
 
-**Estimated effort**: Low (after trace), impossible (before trace).
+**Estimated effort**: Low (~1 day for same-file scope).
 
 ## NL Task Routing (`waypoint ask`)
 

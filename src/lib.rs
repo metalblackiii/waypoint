@@ -6,6 +6,7 @@ pub mod ledger;
 pub mod map;
 pub mod project;
 pub mod status;
+pub mod trace;
 
 use thiserror::Error;
 
@@ -62,6 +63,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 let count = output.entries.len();
                 let sym_count = output.symbols.len();
                 let imp_count = output.imports.len();
+                let call_count = output.calls.len();
                 map::write_map(&wp_dir, &output.entries)?;
                 if let Err(e) = map::index::rebuild_symbols(&wp_dir, &output.symbols) {
                     eprintln!("Warning: symbol index failed: {e}");
@@ -69,13 +71,16 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 if let Err(e) = map::index::rebuild_imports(&wp_dir, &output.imports) {
                     eprintln!("Warning: import index failed: {e}");
                 }
+                if let Err(e) = map::index::rebuild_calls(&wp_dir, &output.calls) {
+                    eprintln!("Warning: call index failed: {e}");
+                }
                 if let Err(e) =
                     map::index::rebuild_arch_summary(&wp_dir, &output.entries, &output.imports)
                 {
                     eprintln!("Warning: arch summary failed: {e}");
                 }
                 println!(
-                    "Scanned {count} files, {sym_count} symbols, {imp_count} imports → .waypoint/map.md"
+                    "Scanned {count} files, {sym_count} symbols, {imp_count} imports, {call_count} calls → .waypoint/map.md"
                 );
             }
             Ok(())
@@ -199,6 +204,17 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             Ok(())
         }
 
+        Command::Trace {
+            symbol,
+            direction,
+            depth,
+            context,
+        } => {
+            let project_root = project::resolve_with_context(context.as_deref())?;
+            let wp_dir = project::require_waypoint_dir(&project_root)?;
+            trace::run(&wp_dir, &symbol, &direction, depth.max(1))
+        }
+
         Command::Arch { context } => {
             let project_root = project::resolve_with_context(context.as_deref())?;
             let wp_dir = project::waypoint_dir(&project_root);
@@ -312,6 +328,9 @@ fn scan_one_project(root: &std::path::Path) -> Result<(usize, usize, bool), AppE
     }
     if let Err(e) = map::index::rebuild_imports(&wp_dir, &output.imports) {
         eprintln!("    Warning: import index failed: {e}");
+    }
+    if let Err(e) = map::index::rebuild_calls(&wp_dir, &output.calls) {
+        eprintln!("    Warning: call index failed: {e}");
     }
     if let Err(e) = map::index::rebuild_arch_summary(&wp_dir, &output.entries, &output.imports) {
         eprintln!("    Warning: arch summary failed: {e}");

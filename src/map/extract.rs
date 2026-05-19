@@ -1464,6 +1464,26 @@ fn collect_go_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<S
 }
 
 // ---------------------------------------------------------------------------
+// Call extraction
+// ---------------------------------------------------------------------------
+
+/// A function call relationship extracted from source code via tree-sitter.
+/// V1: same-file calls only (`target_file == source_file`).
+#[derive(Debug, Clone)]
+pub struct Call {
+    /// Relative file path of the file containing the call (set by caller).
+    pub source_file: String,
+    /// Qualified name of the enclosing function/method (e.g. `Foo::process`).
+    pub source_symbol: String,
+    /// Relative file path of the callee (same as `source_file` in v1; set by caller).
+    pub target_file: String,
+    /// Name of the called function/method.
+    pub target_symbol: String,
+    /// 1-based line number of the call expression.
+    pub line_number: i64,
+}
+
+// ---------------------------------------------------------------------------
 // Import extraction
 // ---------------------------------------------------------------------------
 
@@ -1896,6 +1916,275 @@ fn normalize_path(path: &Path) -> std::path::PathBuf {
         }
     }
     components.iter().collect()
+}
+
+// ---------------------------------------------------------------------------
+// Call extraction (same-file, resolved at extraction time)
+// ---------------------------------------------------------------------------
+
+/// Extract same-file function call relationships using tree-sitter.
+///
+/// Calls are resolved at extraction time: only calls to symbols present in the
+/// same file (from `symbols`) are emitted. Unresolved calls (external functions,
+/// dynamic dispatch, macros) are silently dropped.
+#[must_use]
+pub fn extract_calls(path: &Path, content: &str, symbols: &[Symbol]) -> Vec<Call> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    let language = match ext {
+        "rs" => tree_sitter_rust::LANGUAGE,
+        "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+        "tsx" => tree_sitter_typescript::LANGUAGE_TSX,
+        "js" | "jsx" | "mjs" | "cjs" => tree_sitter_javascript::LANGUAGE,
+        "py" => tree_sitter_python::LANGUAGE,
+        "go" => tree_sitter_go::LANGUAGE,
+        _ => return Vec::new(),
+    };
+
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&language.into()).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return Vec::new();
+    };
+
+    // Only fn/method symbols can be callers or callees
+    let callable: Vec<&Symbol> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind.as_str(), "fn" | "method"))
+        .collect();
+
+    // Collect raw call sites from AST: (callee_name, line_number)
+    let mut raw_calls: Vec<(String, i64)> = Vec::new();
+    collect_calls_recursive(tree.root_node(), ext, content, &mut raw_calls);
+
+    // Resolve each call: attribute to enclosing symbol, filter to same-file callees
+    let mut calls = Vec::new();
+    for (callee_name, line) in raw_calls {
+        let Some(caller) = find_enclosing_callable(&callable, line) else {
+            continue; // call not inside any known function — skip
+        };
+        let Some(resolved) = resolve_same_file_callee(&callable, &callee_name) else {
+            continue; // callee not a local symbol — skip
+        };
+
+        calls.push(Call {
+            source_file: String::new(), // set by caller
+            source_symbol: caller.to_string(),
+            target_file: String::new(), // set by caller (== source_file for v1)
+            target_symbol: resolved.to_string(),
+            line_number: line,
+        });
+    }
+    calls
+}
+
+/// Find the innermost enclosing fn/method symbol for a given line.
+fn find_enclosing_callable<'a>(callable: &[&'a Symbol], line: i64) -> Option<&'a str> {
+    callable
+        .iter()
+        .filter(|s| s.line_start <= line && line <= s.line_end)
+        .min_by_key(|s| s.line_end - s.line_start) // innermost = smallest span
+        .map(|s| s.name.as_str())
+}
+
+/// Resolve a callee name against same-file callable symbols.
+///
+/// Tries exact match first (`foo` → `foo`), then qualified suffix
+/// (`bar` → `Type::bar`) for method calls where the AST only gives
+/// the bare method name.
+fn resolve_same_file_callee<'a>(callable: &[&'a Symbol], callee: &str) -> Option<&'a str> {
+    // Exact match (free functions, qualified calls like Type::method)
+    if let Some(sym) = callable.iter().find(|s| s.name == callee) {
+        return Some(&sym.name);
+    }
+    // Bare name → qualified "Type::method" suffix match.
+    // Ambiguous when multiple types define the same method — return None
+    // rather than guess wrong (e.g. Foo::validate vs Bar::validate).
+    let suffix = format!("::{callee}");
+    let mut matches = callable.iter().filter(|s| s.name.ends_with(&suffix));
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None; // ambiguous — skip this edge
+    }
+    Some(first.name.as_str())
+}
+
+/// Recursively walk the AST collecting call expressions as `(callee_name, line)`.
+#[allow(clippy::cast_possible_wrap)]
+fn collect_calls_recursive(
+    node: tree_sitter::Node,
+    ext: &str,
+    source: &str,
+    calls: &mut Vec<(String, i64)>,
+) {
+    let callee = match ext {
+        "rs" => extract_rust_callee(node, source),
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => extract_js_callee(node, source),
+        "py" => extract_python_callee(node, source),
+        "go" => extract_go_callee(node, source),
+        _ => None,
+    };
+
+    if let Some(name) = callee {
+        let line = node.start_position().row as i64 + 1;
+        calls.push((name, line));
+    }
+
+    // Recurse into children
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_calls_recursive(child, ext, source, calls);
+    }
+}
+
+/// Rust: extract callee name from a `call_expression` node.
+fn extract_rust_callee(node: tree_sitter::Node, source: &str) -> Option<String> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    let func = node.child_by_field_name("function")?;
+    match func.kind() {
+        "identifier" => Some(node_text(func, source).to_string()),
+        "scoped_identifier" => {
+            // Foo::bar() — full text matches qualified symbol names
+            Some(node_text(func, source).to_string())
+        }
+        "field_expression" => {
+            // self.bar() or obj.bar() — extract the field (method name)
+            func.child_by_field_name("field")
+                .map(|f| node_text(f, source).to_string())
+        }
+        _ => None,
+    }
+}
+
+/// JS/TS: extract callee name from a `call_expression` node.
+fn extract_js_callee(node: tree_sitter::Node, source: &str) -> Option<String> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    let func = node.child_by_field_name("function")?;
+    match func.kind() {
+        "identifier" => {
+            let name = node_text(func, source);
+            // Skip builtins and framework globals that never resolve locally
+            if matches!(
+                name,
+                "require"
+                    | "super"
+                    | "setTimeout"
+                    | "setInterval"
+                    | "clearTimeout"
+                    | "clearInterval"
+                    | "Promise"
+                    | "Array"
+                    | "Object"
+                    | "JSON"
+            ) {
+                return None;
+            }
+            Some(name.to_string())
+        }
+        "member_expression" => {
+            // obj.method() — extract the property name
+            let prop = func.child_by_field_name("property")?;
+            // Skip console.*, Math.*, etc. by only extracting the method name;
+            // resolution against same-file symbols filters out non-local targets
+            Some(node_text(prop, source).to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Python: extract callee name from a `call` node.
+fn extract_python_callee(node: tree_sitter::Node, source: &str) -> Option<String> {
+    if node.kind() != "call" {
+        return None;
+    }
+    let func = node.child_by_field_name("function")?;
+    match func.kind() {
+        "identifier" => {
+            let name = node_text(func, source);
+            if matches!(
+                name,
+                "print"
+                    | "len"
+                    | "range"
+                    | "enumerate"
+                    | "zip"
+                    | "sorted"
+                    | "reversed"
+                    | "list"
+                    | "dict"
+                    | "set"
+                    | "tuple"
+                    | "str"
+                    | "int"
+                    | "float"
+                    | "bool"
+                    | "isinstance"
+                    | "issubclass"
+                    | "type"
+                    | "super"
+                    | "property"
+                    | "staticmethod"
+                    | "classmethod"
+                    | "getattr"
+                    | "setattr"
+                    | "hasattr"
+                    | "open"
+                    | "input"
+            ) {
+                return None;
+            }
+            Some(name.to_string())
+        }
+        "attribute" => {
+            // self.method() — extract the attribute name
+            func.child_by_field_name("attribute")
+                .map(|a| node_text(a, source).to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Go: extract callee name from a `call_expression` node.
+fn extract_go_callee(node: tree_sitter::Node, source: &str) -> Option<String> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    let func = node.child_by_field_name("function")?;
+    match func.kind() {
+        "identifier" => {
+            let name = node_text(func, source);
+            if matches!(
+                name,
+                "make"
+                    | "new"
+                    | "len"
+                    | "cap"
+                    | "append"
+                    | "copy"
+                    | "delete"
+                    | "close"
+                    | "panic"
+                    | "recover"
+                    | "print"
+                    | "println"
+            ) {
+                return None;
+            }
+            Some(name.to_string())
+        }
+        "selector_expression" => {
+            // obj.Method() — extract the method name
+            func.child_by_field_name("field")
+                .map(|f| node_text(f, source).to_string())
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -2684,5 +2973,291 @@ function doWork() {}
         );
         let tenant = syms.iter().find(|s| s.name == "Tenant").unwrap();
         assert!(tenant.exported, "Tenant should be marked exported");
+    }
+
+    // -----------------------------------------------------------------------
+    // Call extraction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_calls_rust_simple() {
+        let src = r#"
+fn helper() {}
+fn process() {
+    helper();
+}
+"#;
+        let path = Path::new("test.rs");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].source_symbol, "process");
+        assert_eq!(calls[0].target_symbol, "helper");
+    }
+
+    #[test]
+    fn extract_calls_rust_impl_method() {
+        let src = r#"
+struct Foo;
+impl Foo {
+    fn validate(&self) {}
+    fn process(&self) {
+        self.validate();
+    }
+}
+"#;
+        let path = Path::new("test.rs");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].source_symbol, "Foo::process");
+        assert_eq!(calls[0].target_symbol, "Foo::validate");
+    }
+
+    #[test]
+    fn extract_calls_rust_qualified_call() {
+        let src = r#"
+struct Foo;
+impl Foo {
+    fn bar() {}
+}
+fn main() {
+    Foo::bar();
+}
+"#;
+        let path = Path::new("test.rs");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].source_symbol, "main");
+        assert_eq!(calls[0].target_symbol, "Foo::bar");
+    }
+
+    #[test]
+    fn extract_calls_rust_no_match_skips() {
+        let src = r#"
+fn process() {
+    external_function();
+    println!("hello");
+}
+"#;
+        let path = Path::new("test.rs");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        // external_function doesn't exist locally, println is a macro
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn extract_calls_rust_self_recursion() {
+        let src = r#"
+fn factorial(n: u64) -> u64 {
+    if n <= 1 { 1 } else { n * factorial(n - 1) }
+}
+"#;
+        let path = Path::new("test.rs");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].source_symbol, "factorial");
+        assert_eq!(calls[0].target_symbol, "factorial");
+    }
+
+    #[test]
+    fn extract_calls_rust_multiple_callees() {
+        let src = r#"
+fn a() {}
+fn b() {}
+fn c() {}
+fn main() {
+    a();
+    b();
+    c();
+}
+"#;
+        let path = Path::new("test.rs");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert_eq!(calls.len(), 3);
+        let callees: Vec<&str> = calls.iter().map(|c| c.target_symbol.as_str()).collect();
+        assert!(callees.contains(&"a"));
+        assert!(callees.contains(&"b"));
+        assert!(callees.contains(&"c"));
+    }
+
+    #[test]
+    fn extract_calls_js_simple() {
+        let src = r#"
+function helper() {}
+function process() {
+    helper();
+}
+"#;
+        let path = Path::new("test.js");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].source_symbol, "process");
+        assert_eq!(calls[0].target_symbol, "helper");
+    }
+
+    #[test]
+    fn extract_calls_js_class_method() {
+        let src = r#"
+class Service {
+    validate() {}
+    process() {
+        this.validate();
+    }
+}
+"#;
+        let path = Path::new("test.js");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].source_symbol, "Service::process");
+        assert_eq!(calls[0].target_symbol, "Service::validate");
+    }
+
+    #[test]
+    fn extract_calls_js_skips_require() {
+        let src = r#"
+function init() {
+    require('./module');
+    setTimeout(() => {}, 100);
+}
+"#;
+        let path = Path::new("test.js");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn extract_calls_python_simple() {
+        let src = r#"
+def helper():
+    pass
+
+def main():
+    helper()
+"#;
+        let path = Path::new("test.py");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].source_symbol, "main");
+        assert_eq!(calls[0].target_symbol, "helper");
+    }
+
+    #[test]
+    fn extract_calls_python_skips_builtins() {
+        let src = r#"
+def process():
+    print("hello")
+    x = len([1, 2, 3])
+    isinstance(x, int)
+"#;
+        let path = Path::new("test.py");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn extract_calls_go_simple() {
+        let src = r#"
+package main
+
+func helper() {}
+
+func process() {
+    helper()
+}
+"#;
+        let path = Path::new("test.go");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].source_symbol, "process");
+        assert_eq!(calls[0].target_symbol, "helper");
+    }
+
+    #[test]
+    fn extract_calls_empty_function() {
+        let src = r#"
+fn empty() {}
+fn also_empty() {
+    let x = 42;
+}
+"#;
+        let path = Path::new("test.rs");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn extract_calls_mutual_recursion() {
+        let src = r#"
+fn is_even(n: u64) -> bool {
+    if n == 0 { true } else { is_odd(n - 1) }
+}
+fn is_odd(n: u64) -> bool {
+    if n == 0 { false } else { is_even(n - 1) }
+}
+"#;
+        let path = Path::new("test.rs");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert_eq!(calls.len(), 2);
+        let edges: Vec<(&str, &str)> = calls
+            .iter()
+            .map(|c| (c.source_symbol.as_str(), c.target_symbol.as_str()))
+            .collect();
+        assert!(edges.contains(&("is_even", "is_odd")));
+        assert!(edges.contains(&("is_odd", "is_even")));
+    }
+
+    #[test]
+    fn extract_calls_typescript() {
+        let src = r#"
+function validate(input: string): boolean { return true; }
+function process(data: string): void {
+    validate(data);
+}
+"#;
+        let path = Path::new("test.ts");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].source_symbol, "process");
+        assert_eq!(calls[0].target_symbol, "validate");
+    }
+
+    #[test]
+    fn extract_calls_rust_ambiguous_method_skips() {
+        // Two impl blocks with same method name — bare call is ambiguous
+        let src = r#"
+struct Foo;
+impl Foo {
+    fn validate(&self) {}
+}
+struct Bar;
+impl Bar {
+    fn validate(&self) {}
+}
+fn caller() {
+    validate();
+}
+"#;
+        let path = Path::new("test.rs");
+        let syms = extract_symbols(path, src);
+        let calls = extract_calls(path, src, &syms);
+        // Ambiguous: both Foo::validate and Bar::validate match — edge should be dropped
+        assert!(
+            calls.is_empty(),
+            "ambiguous method should produce no call edges, got: {calls:?}"
+        );
     }
 }

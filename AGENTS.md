@@ -38,6 +38,8 @@ After running, restart Claude Code / Codex to activate the `SessionStart` and `P
 - `map_index.db` also contains a `symbols` table (structured symbol data from tree-sitter), a `symbols_fts` FTS5 table for full-text search, and an `imports` table tracking cross-file import relationships. All rebuild on `waypoint scan`.
 - `waypoint sketch <name>` queries symbols by exact name; `waypoint find "<query>"` uses FTS5 with LIKE fallback, re-ranked by structural importance (import fan-in, export status, symbol kind); `waypoint callers <name>` queries the imports table joined against symbols to find all files importing a given symbol.
 - `waypoint impact` maps git diffs to affected symbols and their importers, classifying blast radius risk. Run `waypoint impact` before committing to assess change impact.
+- `map_index.db` also contains a `calls` table tracking same-file call edges (caller→callee), extracted via tree-sitter AST walking. Rebuilt on `waypoint scan`, updated incrementally by the `PostToolUse:Edit|Write` hook.
+- `waypoint trace <symbol> [--direction inbound|outbound|both] [--depth N]` walks call chains from a symbol. V1 is same-file only; `target_file` column exists for future cross-file expansion.
 - `waypoint scan --all [PATH]` discovers immediate child git repos and scans each. Initializes `.waypoint/` if missing. Smart default: from inside a project, walks up to parent and scans siblings.
 - `atomic_write_with(path, |writer| ...)` in `project.rs` — use this for all file writes that need crash safety. The closure receives `&mut BufWriter<File>`.
 - SQLite integers must be `i64`, not `usize` — rusqlite 0.39 dropped `FromSql` for `usize`.

@@ -32,8 +32,8 @@ pub fn run() -> Result<(), AppError> {
         None
     };
 
-    // Emit arch context if project is large enough
-    emit_arch_context(&wp_dir, &ctx.project_root, fresh_arch);
+    // Emit session context: arch (if large enough) + command reminder (always)
+    emit_session_context(&wp_dir, &ctx.project_root, fresh_arch);
 
     // Record session start (silent failure)
     let _ = ledger::record_event(
@@ -48,36 +48,46 @@ pub fn run() -> Result<(), AppError> {
     Ok(())
 }
 
-/// Emit architecture context via hook output if the project has enough files.
+/// Compact command digest emitted every session so agents know what's available.
+const COMMAND_DIGEST: &str = "[waypoint] commands: sketch <name> (before reading), \
+    find \"<query>\" (symbol search), callers <name> (signature changes), \
+    trace <symbol> (call chains), impact (before commit)";
+
+/// Emit session context: arch summary (for large projects) + command digest (always).
 ///
 /// `precomputed` is the `ArchSummary` returned by a rescan that happened this
 /// session. When `Some`, it is used directly to avoid a write-then-read
 /// `SQLite` round-trip. When `None`, the summary is read from the DB instead.
-fn emit_arch_context(
+fn emit_session_context(
     wp_dir: &std::path::Path,
     project_root: &std::path::Path,
     precomputed: Option<map::index::ArchSummary>,
 ) {
     let project_str = project_root.to_string_lossy();
-    let Some(arch) = precomputed.or_else(|| map::index::get_arch_summary(wp_dir).ok().flatten())
-    else {
-        let _ = ledger::record_event(ledger::EventKind::ArchMiss, &project_str, 0);
-        return;
+
+    let arch_context =
+        match precomputed.or_else(|| map::index::get_arch_summary(wp_dir).ok().flatten()) {
+            Some(arch) if arch.file_count >= ARCH_FILE_THRESHOLD => {
+                let _ = ledger::record_event(ledger::EventKind::ArchHit, &project_str, 0);
+                let mut ctx = arch.lang_dist;
+                if !arch.hotspots.is_empty() {
+                    ctx.push('\n');
+                    ctx.push_str(&arch.hotspots);
+                }
+                Some(ctx)
+            }
+            _ => {
+                let _ = ledger::record_event(ledger::EventKind::ArchMiss, &project_str, 0);
+                None
+            }
+        };
+
+    let context = match arch_context {
+        Some(arch) => format!("{arch}\n{COMMAND_DIGEST}"),
+        None => COMMAND_DIGEST.to_string(),
     };
 
-    if arch.file_count < ARCH_FILE_THRESHOLD {
-        let _ = ledger::record_event(ledger::EventKind::ArchMiss, &project_str, 0);
-        return;
-    }
-
-    let mut context = arch.lang_dist;
-    if !arch.hotspots.is_empty() {
-        context.push('\n');
-        context.push_str(&arch.hotspots);
-    }
-
     super::emit_hook_output(super::HookEvent::SessionStart, None, &context);
-    let _ = ledger::record_event(ledger::EventKind::ArchHit, &project_str, 0);
 }
 
 /// Decide whether to rescan based on map existence and file mtimes.

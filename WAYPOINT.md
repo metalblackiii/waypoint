@@ -4,9 +4,18 @@ Prefer `waypoint` for symbols/signatures and `rg` for text/shell search.
 
 ## Waypoint
 
+### Hook Context
+
 - On file reads, check `[waypoint] map:` context first. If it answers the question, skip full file read.
-- When switching repos, run `waypoint arch` (or `waypoint arch -C /path/to/repo`) first for languages and hotspots.
-- `waypoint find "<query>"` — don't know the exact symbol name; searches broadly. `waypoint sketch <name>` — know the exact name, about to Read; returns line range to scope the read. Symbol names only — filenames and kebab paths always miss; `find` first if unsure.
 - Map context shows >~200 tok → sketch before reading.
-- When changing exported signatures, run `waypoint callers <name>`.
-- Before commit, run `waypoint impact` (or `waypoint impact --base <ref>`).
+
+### When to Use Each Command
+
+| Situation | Command |
+|-----------|---------|
+| Switching repos or first session | `waypoint arch` — languages and hotspots |
+| About to read a file, know the symbol name | `waypoint sketch <name>` — returns line range to scope the read |
+| Don't know the exact symbol name | `waypoint find "<query>"` — broad FTS search. Symbol names only — filenames and kebab paths miss; `find` first if unsure |
+| Changing an exported signature | `waypoint callers <name>` — all files importing that symbol |
+| Understanding control flow before refactoring | `waypoint trace <symbol>` — walk same-file call chains. `--direction inbound` (who calls this?), `outbound` (what does this call?), or `both` (default). `--depth N` limits hops |
+| Before committing | `waypoint impact` (or `waypoint impact --base <ref>`) — blast radius of changes |

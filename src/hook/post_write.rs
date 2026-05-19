@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::map::extract::{
-    extract_description, extract_imports, extract_symbols, resolve_import_path,
+    extract_calls, extract_description, extract_imports, extract_symbols, resolve_import_path,
 };
 use crate::map::scan::{content_hash, file_mtime, gzip_density, should_map_file};
 use crate::map::{self, MapEntry, estimate_tokens, index};
@@ -174,6 +174,14 @@ fn update_existing_file(
         }
         let _ = index::update_file_imports(wp_dir, relative, &file_imports);
 
+        // Extract and update calls (same-file resolution against file_symbols)
+        let mut file_calls = extract_calls(abs_path, &content, &file_symbols);
+        for call in &mut file_calls {
+            call.source_file = relative.to_string();
+            call.target_file = relative.to_string(); // same-file for v1
+        }
+        let _ = index::update_file_calls(wp_dir, relative, &file_calls);
+
         // Detect signature changes on exported symbols
         let sig_warnings = detect_signature_changes(wp_dir, relative, &old_exported, &file_symbols);
         if !sig_warnings.is_empty() {
@@ -197,6 +205,7 @@ fn update_existing_file(
 fn remove_deleted_file(wp_dir: &Path, relative: &str) -> Result<(), AppError> {
     let _ = index::remove_file_symbols(wp_dir, relative);
     let _ = index::remove_file_imports(wp_dir, relative);
+    let _ = index::remove_file_calls(wp_dir, relative);
     // remove from map_entries index
     let _ = index::remove(wp_dir, relative);
     // remove from map.md
@@ -290,6 +299,7 @@ fn remove_stale_entries(wp_dir: &Path, stale_paths: &[String]) -> Vec<String> {
         let _ = index::remove(wp_dir, path);
         let _ = index::remove_file_symbols(wp_dir, path);
         let _ = index::remove_file_imports(wp_dir, path);
+        let _ = index::remove_file_calls(wp_dir, path);
         cleaned.push(path.clone());
     }
 

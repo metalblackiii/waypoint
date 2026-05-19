@@ -7,7 +7,8 @@ use flate2::write::GzEncoder;
 use ignore::WalkBuilder;
 
 use super::extract::{
-    Import, Symbol, extract_description, extract_imports, extract_symbols, resolve_import_path,
+    Call, Import, Symbol, extract_calls, extract_description, extract_imports, extract_symbols,
+    resolve_import_path,
 };
 use super::{MapEntry, estimate_tokens};
 use crate::AppError;
@@ -60,6 +61,7 @@ pub struct ScanOutput {
     pub entries: Vec<MapEntry>,
     pub symbols: Vec<Symbol>,
     pub imports: Vec<Import>,
+    pub calls: Vec<Call>,
 }
 
 /// Configured walker shared by `count_scannable_files`, `scan_project`, and mtime staleness.
@@ -96,6 +98,7 @@ pub fn scan_project(project_root: &Path) -> Result<ScanOutput, AppError> {
     let mut entries = Vec::new();
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
+    let mut calls = Vec::new();
 
     let walker = project_walker(project_root);
 
@@ -142,6 +145,15 @@ pub fn scan_project(project_root: &Path) -> Result<ScanOutput, AppError> {
             for sym in &mut file_symbols {
                 sym.file_path.clone_from(&relative);
             }
+
+            // Extract calls before consuming file_symbols — needs &[Symbol] for resolution
+            let mut file_calls = extract_calls(path, &content, &file_symbols);
+            for call in &mut file_calls {
+                call.source_file.clone_from(&relative);
+                call.target_file.clone_from(&relative); // same-file for v1
+            }
+            calls.extend(file_calls);
+
             symbols.extend(file_symbols);
 
             let ext_str = ext.unwrap_or("");
@@ -172,6 +184,7 @@ pub fn scan_project(project_root: &Path) -> Result<ScanOutput, AppError> {
         entries,
         symbols,
         imports,
+        calls,
     })
 }
 
