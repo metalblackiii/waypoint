@@ -46,50 +46,45 @@ Remaining work to extend trace across file boundaries:
 
 ## NL Task Routing (`waypoint ask`)
 
-**Status**: Recommended next feature — best ROI of remaining candidates.
+**Status**: ✅ V1 delivered in v0.14.0. Graph boost is v2.
 
-**What**: Rank files by relevance to a natural-language task description. `waypoint ask "<task>"` returns a scored list of the most relevant files — e.g., `waypoint ask "implement OAuth middleware"` → ranked file paths with match reasons.
+**V1 scope (delivered)**:
+- `src/ask.rs` (285 LOC, 28 unit tests) — IDF-weighted token coverage scoring over map descriptions
+- Tokenizer with camelCase/snake_case splitting for both queries and descriptions
+- FTS5 symbol matching as secondary signal (reuses existing `symbols_fts` table)
+- Query-shape detection: `::`, `_`, camelCase triggers code-heavy weight profile (0.35 desc / 0.65 symbol vs default 0.6 / 0.4)
+- Word-boundary matching via `desc_has_word()` to prevent substring false positives
+- `--explain` flag for per-signal breakdown, `--limit N` (default 10), `--context / -C` for cross-project
+- `AskHit`/`AskMiss` ledger events for usage tracking
+- 5 integration tests (ranked results, miss, explain, limit, cross-project)
 
-**Why it matters**: Waypoint is currently symbol-name-based. If you don't know what symbol to look for, you're stuck. NL task routing removes the bootstrap problem: start from intent, not from symbol names. This is the only candidate that changes the agent's workflow at the start of *every* task, not just niche scenarios. A better starting file set compounds — fewer wasted reads downstream.
+**Design decisions (v1)**:
+- In-memory IDF scoring over descriptions, not FTS5 on descriptions — max repo is ~2,800 files, instant at this scale
+- FTS5 reused only for symbol matching (secondary signal)
+- No graph boost in v1 — deferred to v2 pending real-world ranking quality assessment
+- Quality gate concern resolved: 78-repo audit showed 100% map description coverage, 99.4% rich prose
 
-**ROI assessment** (2026-05-19): Compared against `dead` (linters already cover private symbols; unique value needs v2 cross-file), `routes` (high value but neb-specific, highest effort), and `ask` (universal use case, leverages existing index). `ask` wins on frequency × uniqueness — agents hit the bootstrap problem ("I have a task but don't know which symbol to search for") on nearly every task.
+**V2: Graph boost (not yet implemented)**:
 
-**Quality risk**: Map description coverage determines ranking quality. Mitigation: ship it, gate on hit@5 against real tasks, and let the agent learn to skip it if rankings are poor. Thin descriptions → poor rankings is a data problem, not an architecture problem.
+Remaining work to improve ranking via import/call graph signals:
 
-Evaluated `sigmap` (manojmallick/sigmap) as a candidate drop-in — its `sigmap ask` command does exactly this. Rejected it (NO-GO: 20 days old, sole contributor, MCP-dependent value). The capability is real; the right home is here.
+- **Import adjacency boost** (proposed weight: 0.3): 1-hop neighbors of high-scoring files get a score bump. Batched as a single aggregate SQL query against `imports` table to avoid N+1
+- **Call graph boost** (proposed weight: 0.15): files connected via `calls` table edges get a smaller bump
+- **God-file cap**: log-scaled or P95 clamp on fan-in to prevent `mod.rs`/`lib.rs`/`index.ts` from dominating rankings via sheer import count
+- Weight tuning: empirical, gated on eval harness results
 
-**Implementation sketch**:
-- Scoring pipeline per file: keyword match against map descriptions + symbol names (TF-IDF or simple token overlap), boosted by import-graph adjacency
-- Graph boost: files imported by high-scoring files get a +weight on 1-hop neighbors (sigmap uses +0.4; tune empirically)
-- Waypoint already has all inputs: map descriptions (per-file natural language), symbol names, import graph (used by `callers` and `impact`)
-- New `ask` subcommand: tokenize query, score all indexed files, apply graph boost, return top-N with file path + score + matched terms
-- Optional `--top N` flag (default 5–10)
+**V2: Eval harness**:
 
-**Implementable carry-over from sigmap evaluation**:
-- Build only the NL retrieval capability (`ask`) as a native waypoint command.
-- Keep it local-only and index-backed (reuse `map.md` + SQLite symbols/imports); no MCP dependency required.
-- Return ranked files with compact "why matched" signals (matched terms + graph boost contribution).
-- Add an evaluation harness before shipping: small task→expected-files benchmark, track hit@5 and hit@10.
+- Formalize smoke tests into task→expected-files pairs across waypoint + neb-www repos
+- Track hit@5 and hit@10 metrics
+- Gate future scoring changes (graph boost weights, new signals) on non-regression
+- Prerequisite for confidently tuning graph boost weights
 
-**Explicit non-goals for v1**:
-- No generated context artifact files (for example, `.github/copilot-instructions.md`).
-- No quality-loop subcommands (`judge`, `validate`, `learn`).
-- No adoption of third-party sigmap runtime or release cadence risk.
+**Revisit when**: Real-world usage reveals ranking quality gaps that description + symbol matching alone can't resolve. The ledger's `AskHit`/`AskMiss` events provide the signal.
 
-**Why it's parked**:
-- Map description quality determines result quality — gaps in map coverage produce poor rankings
-- No evaluation harness yet to measure hit@5 against real tasks in a target codebase
-- Low urgency: `waypoint find` + `waypoint sketch` cover the common case when you know the symbol name
+**Estimated effort**: V2 graph boost ~2-3 days, eval harness ~1 day.
 
-**What would unblock it**:
-- Map coverage reaching ~80%+ of meaningful files (descriptions present and non-trivial)
-- A small benchmark set of task → relevant files pairs for a target codebase to validate ranking quality before shipping
-
-**Estimated effort**: Medium (~3–5 days). Scoring logic is new but the graph traversal and index are already built.
-
----
-
-*NL task routing recorded 2026-04-20 after evaluating sigmap as a candidate (NO-GO for adoption, GO as a native waypoint feature direction).*
+**Origin**: sigmap evaluation (2026-04-20) identified the capability as NO-GO for adoption but GO as a native waypoint feature direction.
 
 ---
 
@@ -105,7 +100,7 @@ Evaluated `sigmap` (manojmallick/sigmap) as a candidate drop-in — its `sigmap 
 
 **Why it matters**: Highest-value capability gap vs codebase-memory-mcp for microservice ecosystems. "Which service calls this endpoint?" currently requires `neb-explorer` subagent reading full files across repos.
 
-**ROI assessment** (2026-05-19): High value per use but narrow audience (neb microservice work only). Highest effort of the three candidates (~1-2 weeks). Best as a dedicated investment during a block of cross-service neb work, not as the next general-purpose command.
+**ROI assessment** (2026-05-19, updated): High value per use but narrow audience (neb microservice work only). Highest effort of the remaining undelivered features (~1-2 weeks). Best as a dedicated investment during a block of cross-service neb work.
 
 **Implementation sketch**:
 - New `http_routes` table: `(id, file_path, method, path_pattern, handler_symbol, line_number)`
@@ -156,10 +151,11 @@ Evaluated `sigmap` (manojmallick/sigmap) as a candidate drop-in — its `sigmap 
 
 ---
 
-## Delivered Baseline (2026-04-23)
+## Delivered Baseline
 
-Implemented and now considered baseline behavior:
+Implemented and now considered baseline behavior. Use this when evaluating future features to avoid reopening settled decisions without new evidence.
 
+**v0.10.2** (2026-04-23):
 - Ranked `waypoint find` is default behavior (no `--ranked` flag).
 - Session-start arch context is file-count gated (`<20` files suppresses arch lines).
 - `waypoint impact` is manual-only (no hook auto-trigger), text output only in v1.
@@ -168,5 +164,10 @@ Implemented and now considered baseline behavior:
 - Impact uses `std::process::Command` git calls (no `git2` dependency).
 - Stale map in impact is warning-only; command still exits successfully on normal operation.
 - Ledger kept existing data; `ArchHit`/`ArchMiss` were additive (no reset).
+- `FindHit`/`FindMiss` ledger events for find hit rate tracking.
 
-Use this baseline when evaluating future features to avoid reopening settled v1 decisions without new evidence.
+**v0.12.0**: PostToolUse:Edit|Write hook for incremental call index updates — resolved staleness blocker for trace.
+
+**v0.13.0**: `waypoint trace` v1 — same-file call graph tracing with DFS traversal, direction/depth controls, and per-language skip lists.
+
+**v0.14.0**: `waypoint ask` v1 — NL task routing with IDF-weighted token coverage, FTS5 symbol matching, query-shape detection, and `--explain` output.
