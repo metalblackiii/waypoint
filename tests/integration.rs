@@ -1217,12 +1217,122 @@ fn cli_impact_with_base_flag() {
 // ── Version Test ───────────────────────────────────────────────
 
 #[test]
-fn cli_version_reports_0_13_0() {
+fn cli_version_reports_0_14_0() {
     waypoint()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("0.13.0"));
+        .stdout(predicate::str::contains("0.14.0"));
+}
+
+// ── Ask Tests ─────────────────────────────────────────────────
+
+#[test]
+fn cli_ask_returns_ranked_files() {
+    let project = setup_project();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["ask", "main function entry point"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/main.rs"));
+}
+
+#[test]
+fn cli_ask_no_results_for_nonsense() {
+    let project = setup_project();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["ask", "xyzzy zyxwv qwerty"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No relevant files found"));
+}
+
+#[test]
+fn cli_ask_explain_shows_signal_breakdown() {
+    let project = setup_project();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["ask", "main function", "--explain"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("desc="))
+        .stdout(predicate::str::contains("sym="));
+}
+
+#[test]
+fn cli_ask_limit_flag() {
+    let project = setup_project();
+    // Add extra files so there's more than 1 potential result
+    fs::write(project.path().join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+    fs::write(project.path().join("src/util.rs"), "pub fn helper() {}\n").unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let output = waypoint()
+        .args(["ask", "function", "--limit", "1"])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("  ")).collect();
+    assert!(
+        result_lines.len() <= 1,
+        "limit=1 should return at most 1 result; got: {stdout}"
+    );
+}
+
+#[test]
+fn cli_ask_with_context_flag() {
+    let project_a = setup_scanned_project();
+
+    // Give project B a unique file that project A does not have
+    let project_b = setup_project();
+    fs::write(
+        project_b.path().join("src/billing.rs"),
+        "pub fn charge_invoice() {}\n",
+    )
+    .unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(project_b.path())
+        .assert()
+        .success();
+
+    // Query for "billing" from project A targeting project B — only B has billing.rs
+    waypoint()
+        .args([
+            "ask",
+            "-C",
+            project_b.path().to_str().unwrap(),
+            "billing invoice",
+        ])
+        .current_dir(project_a.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/billing.rs"));
 }
 
 // ── Trace Tests ────────────────────────────────────────────────

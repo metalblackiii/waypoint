@@ -1,4 +1,5 @@
 pub mod arch;
+pub mod ask;
 pub mod cli;
 pub mod hook;
 pub mod impact;
@@ -171,6 +172,47 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                         "  {:6}  {:<30}  {}:{}",
                         row.kind, row.name, row.file_path, row.line_start
                     );
+                }
+            }
+            Ok(())
+        }
+
+        Command::Ask {
+            query,
+            limit,
+            explain,
+            context,
+        } => {
+            // Clamp to 1 rather than reject — returning nothing for --limit 0
+            // is less useful than returning the single best match.
+            let limit = limit.max(1);
+            let project_root = project::resolve_with_context(context.as_deref())?;
+            let wp_dir = project::require_waypoint_dir(&project_root)?;
+            let results = ask::ask(&wp_dir, &query, limit)?;
+            if results.is_empty() {
+                let _ = ledger::record_event(
+                    ledger::EventKind::AskMiss,
+                    project_root.to_string_lossy().as_ref(),
+                    0,
+                );
+                println!("No relevant files found for: {query}");
+            } else {
+                let _ = ledger::record_event(
+                    ledger::EventKind::AskHit,
+                    project_root.to_string_lossy().as_ref(),
+                    0,
+                );
+                // Find max path length for alignment
+                let max_path = results.iter().map(|r| r.path.len()).max().unwrap_or(0);
+                for r in &results {
+                    if explain {
+                        println!(
+                            "  {:<max_path$}  {:.2}  desc={:.2} sym={:.2}  {}",
+                            r.path, r.score, r.desc_score, r.symbol_score, r.reason,
+                        );
+                    } else {
+                        println!("  {:<max_path$}  {:.2}  {}", r.path, r.score, r.reason);
+                    }
                 }
             }
             Ok(())

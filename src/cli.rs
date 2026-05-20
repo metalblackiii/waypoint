@@ -90,6 +90,20 @@ pub enum Command {
         #[arg(short = 'C', long = "context")]
         context: Option<String>,
     },
+    /// Rank files by relevance to a task description
+    Ask {
+        /// Task description (natural language)
+        query: String,
+        /// Maximum results to return
+        #[arg(long, default_value = "10")]
+        limit: usize,
+        /// Show per-signal score breakdown
+        #[arg(long)]
+        explain: bool,
+        /// Resolve project from this path instead of cwd
+        #[arg(short = 'C', long = "context")]
+        context: Option<String>,
+    },
     /// Show architecture summary for a project
     Arch {
         /// Resolve project from this path instead of cwd

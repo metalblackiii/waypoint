@@ -20,6 +20,8 @@ pub enum EventKind {
     FindMiss,
     FirstEdit,
     FirstEditTurns,
+    AskHit,
+    AskMiss,
     ArchHit,
     ArchMiss,
 }
@@ -36,6 +38,8 @@ impl EventKind {
             Self::FindMiss => "find_miss",
             Self::FirstEdit => "first_edit",
             Self::FirstEditTurns => "first_edit_turns",
+            Self::AskHit => "ask_hit",
+            Self::AskMiss => "ask_miss",
             Self::ArchHit => "arch_hit",
             Self::ArchMiss => "arch_miss",
         }
@@ -58,6 +62,9 @@ pub struct GainStats {
     pub avg_first_edit_secs: f64,
     pub first_edit_turns_count: i64,
     pub avg_first_edit_turns: f64,
+    pub ask_hits: i64,
+    pub ask_misses: i64,
+    pub ask_hit_rate: f64,
     pub arch_hits: i64,
     pub arch_misses: i64,
     pub arch_hit_rate: f64,
@@ -226,6 +233,21 @@ impl fmt::Display for GainStats {
                 padded_label.bold(),
                 find_meter.color(find_color),
                 format!("{:.1}%", self.find_hit_rate).bold(),
+            )?;
+        }
+
+        // Ask hit rate meter
+        if self.ask_hits + self.ask_misses > 0 {
+            let ask_ratio = self.ask_hit_rate / 100.0;
+            let ask_meter = bar(ask_ratio, METER_WIDTH);
+            let ask_color = rate_color(self.ask_hit_rate);
+            let padded_label = format!("{:<LABEL_PAD$}", "Ask rate:");
+            writeln!(
+                f,
+                "{} {} {}",
+                padded_label.bold(),
+                ask_meter.color(ask_color),
+                format!("{:.1}%", self.ask_hit_rate).bold(),
             )?;
         }
 
@@ -467,6 +489,8 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
     let sketch_misses = query_count_kind(conn, "sketch_miss", param_ref)?;
     let find_hits = query_count_kind(conn, "find_hit", param_ref)?;
     let find_misses = query_count_kind(conn, "find_miss", param_ref)?;
+    let ask_hits = query_count_kind(conn, "ask_hit", param_ref)?;
+    let ask_misses = query_count_kind(conn, "ask_miss", param_ref)?;
     let arch_hits = query_count_kind(conn, "arch_hit", param_ref)?;
     let arch_misses = query_count_kind(conn, "arch_miss", param_ref)?;
 
@@ -492,6 +516,13 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
     };
 
     #[allow(clippy::cast_precision_loss)]
+    let ask_hit_rate = if ask_hits + ask_misses > 0 {
+        ask_hits as f64 / (ask_hits + ask_misses) as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    #[allow(clippy::cast_precision_loss)]
     let arch_hit_rate = if arch_hits + arch_misses > 0 {
         arch_hits as f64 / (arch_hits + arch_misses) as f64 * 100.0
     } else {
@@ -499,7 +530,8 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
     };
 
     let estimated_tokens_saved = {
-        let exclude = "('first_edit', 'first_edit_turns', 'arch_hit', 'arch_miss')";
+        let exclude =
+            "('first_edit', 'first_edit_turns', 'ask_hit', 'ask_miss', 'arch_hit', 'arch_miss')";
         let sql = if filter.is_empty() {
             format!(
                 "SELECT COALESCE(SUM(token_impact), 0) FROM events WHERE event_kind NOT IN {exclude}"
@@ -572,6 +604,9 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         avg_first_edit_secs,
         first_edit_turns_count,
         avg_first_edit_turns,
+        ask_hits,
+        ask_misses,
+        ask_hit_rate,
         arch_hits,
         arch_misses,
         arch_hit_rate,
@@ -614,7 +649,7 @@ fn query_daily(conn: &Connection, param: Option<&str>) -> Result<Vec<DayStats>, 
         Some(p) => (
             "SELECT d, events, saved FROM (\
              SELECT DATE(timestamp) as d, COUNT(*) as events, \
-             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns', 'arch_hit', 'arch_miss') THEN 0 ELSE token_impact END), 0) as saved \
+             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns', 'ask_hit', 'ask_miss', 'arch_hit', 'arch_miss') THEN 0 ELSE token_impact END), 0) as saved \
              FROM events WHERE project_path = ?1 \
              GROUP BY d ORDER BY d DESC LIMIT 30\
              ) ORDER BY d ASC"
@@ -624,7 +659,7 @@ fn query_daily(conn: &Connection, param: Option<&str>) -> Result<Vec<DayStats>, 
         None => (
             "SELECT d, events, saved FROM (\
              SELECT DATE(timestamp) as d, COUNT(*) as events, \
-             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns', 'arch_hit', 'arch_miss') THEN 0 ELSE token_impact END), 0) as saved \
+             COALESCE(SUM(CASE WHEN event_kind IN ('first_edit', 'first_edit_turns', 'ask_hit', 'ask_miss', 'arch_hit', 'arch_miss') THEN 0 ELSE token_impact END), 0) as saved \
              FROM events GROUP BY d ORDER BY d DESC LIMIT 30\
              ) ORDER BY d ASC"
                 .into(),
@@ -888,6 +923,23 @@ mod tests {
     }
 
     #[test]
+    fn ask_hit_miss_tracking() {
+        let conn = test_db();
+
+        record_event_with(&conn, EventKind::AskHit, "/tmp/p", 0).unwrap();
+        record_event_with(&conn, EventKind::AskHit, "/tmp/p", 0).unwrap();
+        record_event_with(&conn, EventKind::AskMiss, "/tmp/p", 0).unwrap();
+
+        let stats = gain_stats_with(&conn, Some("/tmp/p")).unwrap();
+
+        assert_eq!(stats.ask_hits, 2);
+        assert_eq!(stats.ask_misses, 1);
+        assert!((stats.ask_hit_rate - 66.666_666_666_666_66).abs() < 0.01);
+        // Ask events must not pollute token savings
+        assert_eq!(stats.estimated_tokens_saved, 0);
+    }
+
+    #[test]
     fn format_tokens_millions() {
         assert_eq!(format_tokens(1_500_000), "1.5M");
         assert_eq!(format_tokens(1_000_000), "1.0M");
@@ -947,6 +999,9 @@ mod tests {
             avg_first_edit_secs: 0.0,
             first_edit_turns_count: 0,
             avg_first_edit_turns: 0.0,
+            ask_hits: 0,
+            ask_misses: 0,
+            ask_hit_rate: 0.0,
             arch_hits: 0,
             arch_misses: 0,
             arch_hit_rate: 0.0,
@@ -976,6 +1031,9 @@ mod tests {
             avg_first_edit_secs: 0.0,
             first_edit_turns_count: 0,
             avg_first_edit_turns: 0.0,
+            ask_hits: 0,
+            ask_misses: 0,
+            ask_hit_rate: 0.0,
             arch_hits: 0,
             arch_misses: 0,
             arch_hit_rate: 0.0,
@@ -1017,6 +1075,9 @@ mod tests {
             avg_first_edit_secs: 0.0,
             first_edit_turns_count: 0,
             avg_first_edit_turns: 0.0,
+            ask_hits: 0,
+            ask_misses: 0,
+            ask_hit_rate: 0.0,
             arch_hits: 0,
             arch_misses: 0,
             arch_hit_rate: 0.0,
@@ -1046,6 +1107,9 @@ mod tests {
             avg_first_edit_secs: 42.0,
             first_edit_turns_count: 3,
             avg_first_edit_turns: 2.5,
+            ask_hits: 0,
+            ask_misses: 0,
+            ask_hit_rate: 0.0,
             arch_hits: 0,
             arch_misses: 0,
             arch_hit_rate: 0.0,

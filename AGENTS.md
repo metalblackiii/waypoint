@@ -17,30 +17,12 @@ Project intelligence for Claude Code — hooks, file map, symbol index, ledger.
 
 ## Plugin Setup
 
-Waypoint ships a Claude Code / Codex plugin that auto-injects session context and read advisories via hooks. Run once after `cargo install`:
-
-Prerequisites: `jq` (`brew install jq`) — only required if Codex is installed.
-
-```bash
-./setup-plugins.sh          # register + install
-./setup-plugins.sh --uninstall  # remove
-```
-
-What it does:
-- **Claude Code** — registers the `waypoint-plugins` marketplace and installs the `waypoint` plugin
-- **Codex** — writes `~/.agents/plugins/waypoint.json` and ensures `plugin_hooks = true` in `~/.codex/config.toml`
-
-After running, restart Claude Code / Codex to activate the `SessionStart` and `PreToolUse:Read` hooks.
+See `SETUP.md` for installation and plugin registration (`./setup-plugins.sh`).
 
 ## Architecture
 
 - `map.md` is the human-readable source of truth. `map_index.db` is a SQLite cache for O(1) lookups — it can be deleted and will rebuild on next `waypoint scan`.
-- `map_index.db` also contains a `symbols` table (structured symbol data from tree-sitter), a `symbols_fts` FTS5 table for full-text search, and an `imports` table tracking cross-file import relationships. All rebuild on `waypoint scan`.
-- `waypoint sketch <name>` queries symbols by exact name; `waypoint find "<query>"` uses FTS5 with LIKE fallback, re-ranked by structural importance (import fan-in, export status, symbol kind); `waypoint callers <name>` queries the imports table joined against symbols to find all files importing a given symbol.
-- `waypoint impact` maps git diffs to affected symbols and their importers, classifying blast radius risk. Run `waypoint impact` before committing to assess change impact.
-- `map_index.db` also contains a `calls` table tracking same-file call edges (caller→callee), extracted via tree-sitter AST walking. Rebuilt on `waypoint scan`, updated incrementally by the `PostToolUse:Edit|Write` hook.
-- `waypoint trace <symbol> [--direction inbound|outbound|both] [--depth N]` walks call chains from a symbol. V1 is same-file only; `target_file` column exists for future cross-file expansion.
-- `waypoint scan --all [PATH]` discovers immediate child git repos and scans each. Initializes `.waypoint/` if missing. Smart default: from inside a project, walks up to parent and scans siblings.
+- `map_index.db` tables: `map_entries` (file descriptions), `symbols` (tree-sitter), `symbols_fts` (FTS5), `imports` (cross-file relationships), `calls` (same-file call edges). All rebuild on `waypoint scan`; `calls` also updates incrementally via the `PostToolUse:Edit|Write` hook.
 - `atomic_write_with(path, |writer| ...)` in `project.rs` — use this for all file writes that need crash safety. The closure receives `&mut BufWriter<File>`.
 - SQLite integers must be `i64`, not `usize` — rusqlite 0.39 dropped `FromSql` for `usize`.
 
@@ -58,3 +40,22 @@ After running, restart Claude Code / Codex to activate the `SessionStart` and `P
 - Unit tests: `#[cfg(test)] mod tests` at the bottom of each source file
 - Integration tests: `tests/` directory, using `assert_cmd` + `predicates`
 - Benchmarks: `divan` with `args = [1000, 3000, 5000, 9000]` for scale testing
+
+## Checklists
+
+### New Command
+
+1. Add CLI variant in `src/cli.rs` and dispatch in `src/lib.rs`
+2. Update `COMMAND_DIGEST` in `src/hook/session_start.rs`
+3. Add integration tests in `tests/integration.rs`
+4. Update `WAYPOINT.md` (command table)
+5. Update `SETUP.md` if the command is useful for setup verification
+6. Document in Architecture above only if it introduces new data model concepts
+
+### New Hook
+
+1. Add hook implementation in `src/hook/`
+2. Add hook script in `plugins/waypoint/hooks/`
+3. Register in `plugins/waypoint/hooks/hooks.json`
+4. Update `SETUP.md` (manual hook section + hook list)
+5. Bump version — a new hook type is a minor feature

@@ -50,8 +50,8 @@ pub fn run() -> Result<(), AppError> {
 
 /// Compact command digest emitted every session so agents know what's available.
 const COMMAND_DIGEST: &str = "[waypoint] commands: sketch <name> (before reading), \
-    find \"<query>\" (symbol search), callers <name> (signature changes), \
-    trace <symbol> (call chains), impact (before commit)";
+    find \"<query>\" (symbol search), ask \"<task>\" (rank files by task relevance), \
+    callers <name> (signature changes), trace <symbol> (call chains), impact (before commit)";
 
 /// Emit session context: arch summary (for large projects) + command digest (always).
 ///
