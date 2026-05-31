@@ -1,12 +1,12 @@
 {
   "name": "waypoint-plugins",
   "owner": { "name": "Martin Burch" },
-  "metadata": { "version": "0.1.0", "description": "Waypoint project intelligence" },
+  "metadata": { "version": "0.3.0", "description": "Waypoint project intelligence" },
   "plugins": [
     {
       "name": "waypoint",
-      "version": "0.1.0",
-      "description": "Project intelligence hooks — session context injection and read advisory",
+      "version": "0.3.0",
+      "description": "Project intelligence hooks — session context, read advisory, post-write index updates, and callers/impact nudge",
       "source": "./plugins/waypoint"
     }
   ]

@@ -263,8 +263,8 @@ fn detect_signature_changes(
         };
 
         warnings.push(format!(
-            "[waypoint] signature changed: {} — {total} caller(s): {shown}{suffix}\n  → run: waypoint callers {}",
-            sym.name, sym.name
+            "[waypoint] signature changed: {} — {total} caller(s): {shown}{suffix}\n  → run: waypoint callers {} for the import-precise set — but it is import-graph-only (blind to string-keyed, dynamic, namespace, and same-file refs), so ALSO run a broad `rg {}` to catch those.",
+            sym.name, sym.name, sym.name
         ));
     }
 

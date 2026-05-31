@@ -1,6 +1,7 @@
 pub mod post_write;
 pub mod pre_read;
 pub mod session_start;
+pub mod user_prompt_submit;
 
 use std::path::{Path, PathBuf};
 
@@ -56,6 +57,7 @@ pub(crate) enum HookEvent {
     PreToolUse,
     PostToolUse,
     SessionStart,
+    UserPromptSubmit,
 }
 
 impl HookEvent {
@@ -65,6 +67,7 @@ impl HookEvent {
             Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
             Self::SessionStart => "SessionStart",
+            Self::UserPromptSubmit => "UserPromptSubmit",
         }
     }
 }

@@ -67,6 +67,15 @@ INPUT=$(cat)
 printf '%s\n' "$INPUT" | "$WAYPOINT" hook pre-read
 ```
 
+**waypoint-user-prompt-submit.sh**
+```sh
+#!/usr/bin/env bash
+WAYPOINT="${HOME}/.cargo/bin/waypoint"
+[[ -x "$WAYPOINT" ]] || exit 0
+INPUT=$(cat)
+printf '%s\n' "$INPUT" | "$WAYPOINT" hook user-prompt-submit
+```
+
 Make them executable:
 
 ```sh
@@ -88,6 +97,12 @@ Then add to **`~/.claude/settings.json`** (hooks should come **before** other ho
       {
         "matcher": "Read",
         "hooks": [{ "type": "command", "command": "~/.claude/hooks/waypoint-pre-read.sh" }]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "~/.claude/hooks/waypoint-user-prompt-submit.sh" }]
       }
     ]
   }

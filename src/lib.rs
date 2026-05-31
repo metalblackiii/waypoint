@@ -289,6 +289,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             HookCommand::PreRead => hook::pre_read::run(),
             HookCommand::PostWrite => hook::post_write::run(),
             HookCommand::SessionStart => hook::session_start::run(),
+            HookCommand::UserPromptSubmit => hook::user_prompt_submit::run(),
         },
     }
 }

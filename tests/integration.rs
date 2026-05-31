@@ -218,6 +218,34 @@ fn hook_post_write_emits_posttooluse_event_name() {
 }
 
 #[test]
+fn hook_user_prompt_submit_injects_context_on_change_prompt() {
+    let payload = serde_json::json!({ "prompt": "rename getTenant signature" }).to_string();
+    let assert = waypoint()
+        .args(["hook", "user-prompt-submit"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+    let hook = parse_hook_output(&assert);
+    assert_eq!(hook["hookEventName"], "UserPromptSubmit");
+    let context = hook["additionalContext"].as_str().unwrap_or_default();
+    assert!(context.contains("waypoint callers"));
+    assert!(context.contains("waypoint impact"));
+}
+
+#[test]
+fn hook_user_prompt_submit_silent_on_neutral_prompt() {
+    let payload = serde_json::json!({ "prompt": "write me a haiku" }).to_string();
+    let assert = waypoint()
+        .args(["hook", "user-prompt-submit"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+    let hook = parse_hook_output(&assert);
+    assert_eq!(hook["hookEventName"], "UserPromptSubmit");
+    assert!(hook["additionalContext"].is_null());
+}
+
+#[test]
 fn hook_pre_write_subcommand_is_removed() {
     let project = setup_project();
     waypoint()
@@ -1217,12 +1245,12 @@ fn cli_impact_with_base_flag() {
 // ── Version Test ───────────────────────────────────────────────
 
 #[test]
-fn cli_version_reports_0_14_0() {
+fn cli_version_reports_0_15_0() {
     waypoint()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("0.14.0"));
+        .stdout(predicate::str::contains("0.15.0"));
 }
 
 // ── Ask Tests ─────────────────────────────────────────────────

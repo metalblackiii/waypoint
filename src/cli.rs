@@ -125,4 +125,6 @@ pub enum HookCommand {
     PostWrite,
     /// `SessionStart` — auto-scan and record session start
     SessionStart,
+    /// `UserPromptSubmit` — nudge toward callers/impact on change tasks
+    UserPromptSubmit,
 }
