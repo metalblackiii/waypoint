@@ -4,15 +4,43 @@ use regex::Regex;
 
 use crate::AppError;
 
-/// Keyword gate: prompts that change, rename, or assess the reach of code.
-/// Stems (not whole words) so `change`/`changing`, `caller`/`calls`,
-/// `depend`/`dependents` all match. Case-insensitive. Intentionally broad —
-/// the nudge only advises (never forces a command), so a false fire costs one
-/// line of context; a miss costs the whole win.
-static GATE: LazyLock<Regex> = LazyLock::new(|| {
+/// Strong signals: terms that are unambiguously about code reach or structure.
+/// These fire the nudge on their own — they essentially never appear in
+/// non-code prose. Case-insensitive, stem-friendly.
+static STRONG: LazyLock<Regex> = LazyLock::new(|| {
     #[allow(clippy::unwrap_used)] // literal pattern, validated by unit tests
     Regex::new(
-        r"(?i)\b(chang|renam|refactor|remov|delet|signature|break|impact|blast radius|affect|depend|call(s|er|ers)?\b)",
+        r"(?i)\b(refactor|signature|blast radius|breaking change|caller|callers|who calls|what calls|call graph|call site|dependents)",
+    )
+    .unwrap()
+});
+
+/// Change verbs. These also saturate ordinary prose ("change the title",
+/// "climate change", "delete this paragraph"), so alone they over-fire. They
+/// only nudge when paired with a code-context signal (`CODE_NOUN` or
+/// `CODE_IDENT`). `break` is right-bounded so "breakfast" can't trip it.
+static CHANGE_VERB: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::unwrap_used)] // literal pattern, validated by unit tests
+    Regex::new(r"(?i)\b(chang|renam|remov|delet|modif|deprecat|impact|affect|depend|break\b)").unwrap()
+});
+
+/// Code-context nouns — one alongside a `CHANGE_VERB` means the change is about
+/// code, not prose.
+static CODE_NOUN: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::unwrap_used)] // literal pattern, validated by unit tests
+    Regex::new(
+        r"(?i)\b(fn|def|function|method|signature|symbol|import|export|class|interface|endpoint|api|param|parameter|field|variable|module|const|struct|enum|trait|component|hook|route|schema|column|table|dependenc|caller|selector|reducer|middleware|controller|service|model)\b",
+    )
+    .unwrap()
+});
+
+/// Code-shaped identifiers: backticked tokens, `camelCase`, `PascalCase`,
+/// `snake_case`, or a `call(` form. Case-SENSITIVE — the capitalisation IS the
+/// signal, so no `(?i)`.
+static CODE_IDENT: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::unwrap_used)] // literal pattern, validated by unit tests
+    Regex::new(
+        r"`[^`]+`|\b[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*\b|\b[A-Z][a-z0-9]+[A-Z][a-zA-Z0-9]*\b|\b\w+_\w+\b|\b[a-zA-Z_]\w*\(",
     )
     .unwrap()
 });
@@ -28,7 +56,9 @@ const NUDGE: &str = "[waypoint] This task changes or assesses code reach. Run `w
 /// `callers`/`impact`. Pure (no I/O) so the gate is unit-testable.
 #[must_use]
 pub fn should_nudge(prompt: &str) -> bool {
-    GATE.is_match(prompt)
+    STRONG.is_match(prompt)
+        || (CHANGE_VERB.is_match(prompt)
+            && (CODE_NOUN.is_match(prompt) || CODE_IDENT.is_match(prompt)))
 }
 
 /// `UserPromptSubmit` — steer toward `waypoint callers`/`impact` on change tasks.
@@ -64,10 +94,32 @@ mod tests {
     }
 
     #[test]
-    fn fires_on_refactor_and_delete() {
+    fn fires_on_strong_signals_alone() {
+        // Strong terms fire with no code-context token required.
         assert!(should_nudge("refactor the parser"));
-        assert!(should_nudge("delete the legacy adapter"));
         assert!(should_nudge("what depends on this module"));
+    }
+
+    #[test]
+    fn fires_on_change_verb_plus_code_context() {
+        // verb + camelCase identifier
+        assert!(should_nudge("rename getTenant to resolveTenant"));
+        // verb + code noun + camelCase
+        assert!(should_nudge("remove the validateUser function"));
+        // verb + code noun
+        assert!(should_nudge("modify the user schema"));
+        // verb + backticked identifier + noun
+        assert!(should_nudge("change the `MAX_RETRIES` const"));
+    }
+
+    #[test]
+    fn silent_on_change_verbs_in_prose() {
+        // The over-trigger class this gate exists to kill: change verbs with
+        // no code-context signal nearby.
+        assert!(!should_nudge("change the button color to blue"));
+        assert!(!should_nudge("delete this paragraph from the doc"));
+        assert!(!should_nudge("summarize this article about climate change"));
+        assert!(!should_nudge("break this into smaller sentences"));
     }
 
     #[test]
@@ -79,11 +131,12 @@ mod tests {
 
     #[test]
     fn silent_on_near_miss_wording() {
-        // `call` is bounded so compound words don't trip the gate.
+        // `caller(s)` is bounded so compound words don't trip the strong gate.
         assert!(!should_nudge("wire up a callback handler"));
         assert!(!should_nudge("explain the calling convention"));
-        // `\b` keeps stems from matching mid-word.
+        // stems are bounded so they don't match mid-word.
         assert!(!should_nudge("what are the current exchange rates"));
+        assert!(!should_nudge("make breakfast for the team"));
         // ...but genuine call-graph phrasing still fires.
         assert!(should_nudge("who calls this"));
         assert!(should_nudge("list the callers of parse"));
