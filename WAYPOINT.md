@@ -4,19 +4,14 @@ Prefer `waypoint` for symbols/signatures and `rg` for text/shell search.
 
 ## Waypoint
 
-### Hook Context
+Run before the corresponding action — not after discovering you needed it:
 
-- On file reads, check `[waypoint] map:` context first. If it answers the question, skip full file read.
-- Map context shows >~200 tok → sketch before reading.
+- **Before opening files for a new task**: `waypoint ask "<task>"` — ranks files by relevance (`--explain` to debug signal)
+- **Before reading a file (symbol name known)**: `waypoint sketch <name>` — returns line range; pass it to Read as `offset`/`limit`
+- **Before reading (symbol name unknown)**: `waypoint find "<query>"` — symbol names only; kebab paths miss
+- **Before changing an exported signature**: `waypoint callers <name>` — all import sites
+- **Before refactoring a call chain**: `waypoint trace <symbol>` — `--direction inbound|outbound|both`, `--depth N`
+- **Before committing**: `waypoint impact` (or `--base <ref>` for non-default base)
+- **On new repo or session**: `waypoint arch`
 
-### When to Use Each Command
-
-| Situation | Command |
-|-----------|---------|
-| Switching repos or first session | `waypoint arch` — languages and hotspots |
-| About to read a file, know the symbol name | `waypoint sketch <name>` — returns line range to scope the read |
-| Don't know the exact symbol name | `waypoint find "<query>"` — broad FTS search. Symbol names only — filenames and kebab paths miss; `find` first if unsure |
-| Starting a task, need to know which files to touch | `waypoint ask "<task description>"` — ranks files by relevance to a natural-language task. `--explain` for signal breakdown |
-| Changing an exported signature | `waypoint callers <name>` — all files importing that symbol |
-| Understanding control flow before refactoring | `waypoint trace <symbol>` — walk same-file call chains. `--direction inbound` (who calls this?), `outbound` (what does this call?), or `both` (default). `--depth N` limits hops |
-| Before committing | `waypoint impact` (or `waypoint impact --base <ref>`) — blast radius of changes |
+`[waypoint] map:` is injected on file reads. If it answers the question, skip the full read. If >~200 tok, run `waypoint sketch <name>` to scope the Read first.

@@ -151,6 +151,34 @@ Remaining work to improve ranking via import/call graph signals:
 
 ---
 
+## Agent Compliance — Improving Tool Use Adoption
+
+**Problem**: Agents default to rg/grep even when waypoint commands are listed in AGENTS.md. Instruction-file rules are read as reference material, not as enforced preconditions. Observed in sessions: `[waypoint] map:` hook context injected at >200 tok, agent calls full Read anyway.
+
+**Root cause**: By the time the agent selects a tool, it's in "execute" mode. Text instructions don't interrupt that frame reliably.
+
+### Hook-Based Interrupts
+
+**`PreToolUse:Read` nudge** — when the hook injects `[waypoint] map:` and the token count is >~200, append a harder signal: "waypoint sketch not called for this file — run it first to scope the read." Currently the map context is injected but doesn't block; a more assertive message may raise compliance without requiring a full deny.
+
+**`PreToolUse:Bash` rg intercept** — intercept bash calls matching `rg <pattern> <path>` where the pattern looks like a symbol (no spaces, PascalCase or camelCase). Inject: "Try `waypoint find \"<pattern>\"` first — fall back to rg only if it returns no results." Avoids blocking legitimate text searches while nudging symbol lookups.
+
+### Instruction Strengthening
+
+**Explicit fallback gate** — add to the search hierarchy: "Only use rg when `waypoint find`/`waypoint ask` returns no results." Turns a preference ordering into a decision rule with a concrete unlock condition.
+
+### Instrumentation Ideas
+
+**`waypoint audit`** — post-session command that parses the Claude Code conversation log (JSONL), finds Read tool calls not preceded by a waypoint command on the same file within N turns, and reports a compliance rate. Data-driven way to measure whether instruction changes actually move behavior.
+
+**Compliance counter in `waypoint gain`** — alongside token savings, show "waypoint-first rate: X% of file reads were preceded by sketch/find." Makes the failure mode visible in the same report the agent already checks.
+
+---
+
+*Compliance ideas recorded 2026-05-26 from session exploring why AGENTS.md waypoint instructions weren't being followed.*
+
+---
+
 ## Delivered Baseline
 
 Implemented and now considered baseline behavior. Use this when evaluating future features to avoid reopening settled decisions without new evidence.
