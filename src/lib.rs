@@ -6,6 +6,7 @@ pub mod impact;
 pub mod ledger;
 pub mod map;
 pub mod project;
+pub mod render;
 pub mod status;
 pub mod trace;
 
@@ -135,12 +136,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                     project_root.to_string_lossy().as_ref(),
                     0,
                 );
-                for row in &results {
-                    println!(
-                        "  {}:{}-{}  {}",
-                        row.file_path, row.line_start, row.line_end, row.signature
-                    );
-                }
+                println!("{}", render::sketch_rows(&results));
             }
             Ok(())
         }
@@ -167,12 +163,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                     project_root.to_string_lossy().as_ref(),
                     0,
                 );
-                for row in &results {
-                    println!(
-                        "  {:6}  {:<30}  {}:{}",
-                        row.kind, row.name, row.file_path, row.line_start
-                    );
-                }
+                println!("{}", render::find_rows(&results));
             }
             Ok(())
         }
@@ -202,18 +193,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                     project_root.to_string_lossy().as_ref(),
                     0,
                 );
-                // Find max path length for alignment
-                let max_path = results.iter().map(|r| r.path.len()).max().unwrap_or(0);
-                for r in &results {
-                    if explain {
-                        println!(
-                            "  {:<max_path$}  {:.2}  desc={:.2} sym={:.2}  {}",
-                            r.path, r.score, r.desc_score, r.symbol_score, r.reason,
-                        );
-                    } else {
-                        println!("  {:<max_path$}  {:.2}  {}", r.path, r.score, r.reason);
-                    }
-                }
+                println!("{}", render::ask_rows(&results, explain));
             }
             Ok(())
         }

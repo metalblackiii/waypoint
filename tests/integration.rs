@@ -36,6 +36,15 @@ fn hook_payload(project: &TempDir, file_path: &str) -> String {
     .to_string()
 }
 
+/// Build a `UserPromptSubmit` stdin payload with `cwd` and `prompt`.
+fn up_payload(project: &TempDir, prompt: &str) -> String {
+    serde_json::json!({
+        "cwd": project.path().to_string_lossy(),
+        "prompt": prompt,
+    })
+    .to_string()
+}
+
 /// Parse hook JSON output from stdout, returning the hookSpecificOutput object.
 fn parse_hook_output(assert: &assert_cmd::assert::Assert) -> serde_json::Value {
     let stdout = std::str::from_utf8(&assert.get_output().stdout).unwrap();
@@ -243,6 +252,70 @@ fn hook_user_prompt_submit_silent_on_neutral_prompt() {
     let hook = parse_hook_output(&assert);
     assert_eq!(hook["hookEventName"], "UserPromptSubmit");
     assert!(hook["additionalContext"].is_null());
+}
+
+#[test]
+fn hook_user_prompt_submit_injects_find_results_from_index() {
+    let project = setup_project();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // Bare `find <lowercase symbol>` — the prompt shape peer review flagged as
+    // missed. Should run `find` and inject the real index result, not advice.
+    let assert = waypoint()
+        .args(["hook", "user-prompt-submit"])
+        .current_dir(project.path())
+        .write_stdin(up_payload(&project, "find main"))
+        .assert()
+        .success();
+    let hook = parse_hook_output(&assert);
+    let context = hook["additionalContext"].as_str().unwrap_or_default();
+    assert!(
+        context.contains("waypoint find"),
+        "expected find injection, got: {context}"
+    );
+    assert!(
+        context.contains("main.rs"),
+        "expected main.rs in find output, got: {context}"
+    );
+}
+
+#[test]
+fn hook_user_prompt_submit_injects_sketch_for_large_symbol() {
+    let project = setup_project();
+    // A function large enough to clear the sketch size gate (>60 lines).
+    let filler = "    total += 1;\n".repeat(70);
+    let body =
+        format!("pub fn big_function() -> u32 {{\n    let mut total = 0;\n{filler}    total\n}}\n");
+    fs::write(project.path().join("src/big.rs"), body).unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let assert = waypoint()
+        .args(["hook", "user-prompt-submit"])
+        .current_dir(project.path())
+        .write_stdin(up_payload(
+            &project,
+            "show me the structure of big_function",
+        ))
+        .assert()
+        .success();
+    let hook = parse_hook_output(&assert);
+    let context = hook["additionalContext"].as_str().unwrap_or_default();
+    assert!(
+        context.contains("waypoint sketch"),
+        "expected sketch injection, got: {context}"
+    );
+    assert!(
+        context.contains("big.rs"),
+        "expected big.rs in sketch output, got: {context}"
+    );
 }
 
 #[test]
