@@ -1216,18 +1216,50 @@ fn collect_js_class_methods(
     };
     let mut body_cursor = body.walk();
     for member in body.children(&mut body_cursor) {
-        if member.kind() != "method_definition" {
-            continue;
+        match member.kind() {
+            "method_definition" => {
+                let method_name = child_text(member, "property_identifier", source)
+                    .or_else(|| child_text(member, "private_property_identifier", source));
+                if let Some(method_name) = method_name {
+                    let qualified = qualify_member(class_name, &method_name);
+                    symbols.push(build_symbol(qualified, "method", member, source, exported));
+                }
+            }
+            // Class fields: `static scope = 'practice'` (config) and
+            // `handler = () => {}` (behavior). JS uses `field_definition`,
+            // TS uses `public_field_definition`. Index static-or-function-valued
+            // fields only — plain instance data fields would flood the index.
+            "field_definition" | "public_field_definition" => {
+                let field_name = child_text(member, "property_identifier", source)
+                    .or_else(|| child_text(member, "private_property_identifier", source));
+                let Some(field_name) = field_name else {
+                    continue;
+                };
+                let is_static = has_child_kind(member, "static");
+                let is_function = member
+                    .child_by_field_name("value")
+                    .is_some_and(|v| matches!(v.kind(), "arrow_function" | "function_expression"));
+                let kind = if is_function {
+                    "method"
+                } else if is_static {
+                    "static"
+                } else {
+                    continue;
+                };
+                let qualified = qualify_member(class_name, &field_name);
+                symbols.push(build_symbol(qualified, kind, member, source, exported));
+            }
+            _ => {}
         }
-        let method_name = child_text(member, "property_identifier", source)
-            .or_else(|| child_text(member, "private_property_identifier", source));
-        if let Some(method_name) = method_name {
-            let qualified = match class_name {
-                Some(cls) => format!("{cls}::{method_name}"),
-                None => method_name,
-            };
-            symbols.push(build_symbol(qualified, "method", member, source, exported));
-        }
+    }
+}
+
+/// Qualify a class/object member name with its owner: `Owner::member`.
+/// Bare member name when the owner is anonymous (e.g. a default-exported class).
+fn qualify_member(owner: Option<&str>, member: &str) -> String {
+    match owner {
+        Some(owner) => format!("{owner}::{member}"),
+        None => member.to_string(),
     }
 }
 
@@ -1239,7 +1271,9 @@ fn collect_js_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<S
             }
         }
         "class_declaration" => {
-            let class_name = child_text(node, "identifier", source);
+            // TS names classes with `type_identifier`; JS uses `identifier`.
+            let class_name = child_text(node, "identifier", source)
+                .or_else(|| child_text(node, "type_identifier", source));
             if let Some(ref name) = class_name {
                 symbols.push(build_symbol(name.clone(), "class", node, source, false));
             }
@@ -1278,7 +1312,9 @@ fn collect_js_export_symbols(node: tree_sitter::Node, source: &str, symbols: &mu
                 return;
             }
             "class_declaration" => {
-                let class_name = child_text(child, "identifier", source);
+                // TS names classes with `type_identifier`; JS uses `identifier`.
+                let class_name = child_text(child, "identifier", source)
+                    .or_else(|| child_text(child, "type_identifier", source));
                 if let Some(ref name) = class_name {
                     symbols.push(build_symbol(name.clone(), "class", child, source, true));
                 }
@@ -1395,16 +1431,91 @@ fn collect_js_var_symbols(
             if is_require_call(value, source) {
                 continue;
             }
+            let is_object = value.kind() == "object";
             let kind = if matches!(value.kind(), "arrow_function" | "function_expression") {
                 "fn"
             } else {
                 "const"
             };
-            symbols.push(build_symbol(name, kind, node, source, exported));
+            symbols.push(build_symbol(name.clone(), kind, node, source, exported));
+            // `const obj = { foo: () => {}, bar() {} }` — index the behavioral
+            // members as `obj::foo`. The object itself stays a `const` above.
+            if is_object {
+                collect_js_object_methods(value, &name, source, symbols, exported);
+            }
         } else {
             symbols.push(build_symbol(name, "const", node, source, exported));
         }
     }
+}
+
+/// Index behavioral members of an object literal (`const obj = { … }`) as
+/// `owner::member`. One level only — nested objects, computed keys (`[expr]:`),
+/// and spreads are skipped, as are data-valued pairs (index behavior, not config).
+fn collect_js_object_methods(
+    obj_node: tree_sitter::Node,
+    owner_name: &str,
+    source: &str,
+    symbols: &mut Vec<Symbol>,
+    exported: bool,
+) {
+    let mut cursor = obj_node.walk();
+    for member in obj_node.children(&mut cursor) {
+        match member.kind() {
+            // Shorthand method: `bar() {}`.
+            "method_definition" => {
+                if let Some(name) = child_text(member, "property_identifier", source) {
+                    symbols.push(build_symbol(
+                        format!("{owner_name}::{name}"),
+                        "method",
+                        member,
+                        source,
+                        exported,
+                    ));
+                }
+            }
+            // Function-valued pair: `foo: async () => {}` / `foo: function () {}`.
+            "pair" => {
+                let Some(value) = member.child_by_field_name("value") else {
+                    continue;
+                };
+                if !matches!(value.kind(), "arrow_function" | "function_expression") {
+                    continue;
+                }
+                let Some(key) = member.child_by_field_name("key") else {
+                    continue;
+                };
+                let key_name = match key.kind() {
+                    "property_identifier" => Some(node_text(key, source).to_string()),
+                    "string" => Some(strip_string_quotes(node_text(key, source))),
+                    _ => None,
+                };
+                if let Some(key_name) = key_name {
+                    symbols.push(build_symbol(
+                        format!("{owner_name}::{key_name}"),
+                        "method",
+                        member,
+                        source,
+                        exported,
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Strip a single matching pair of surrounding quotes from a tree-sitter
+/// `string` node's text (`"foo"` / `'foo'` / `` `foo` `` → `foo`).
+fn strip_string_quotes(text: &str) -> String {
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        if matches!(first, b'"' | b'\'' | b'`') && bytes[bytes.len() - 1] == first {
+            return text[1..text.len() - 1].to_string();
+        }
+    }
+    text.to_string()
 }
 
 fn collect_python_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<Symbol>) {
@@ -2663,6 +2774,83 @@ export class Service {
             symbols
                 .iter()
                 .any(|s| s.name == "Service::doWork" && s.kind == "method" && s.exported)
+        );
+    }
+
+    #[test]
+    fn extract_symbols_js_object_methods() {
+        let src = "const handlers = {\n  foo: async () => {},\n  bar() {},\n  data: 5,\n};\n";
+        for ext in ["js", "ts"] {
+            let symbols = extract_symbols(Path::new(&format!("test.{ext}")), src);
+            assert!(
+                symbols
+                    .iter()
+                    .any(|s| s.name == "handlers" && s.kind == "const"),
+                "{ext}: object const itself should be indexed, got: {symbols:?}"
+            );
+            assert!(
+                symbols
+                    .iter()
+                    .any(|s| s.name == "handlers::foo" && s.kind == "method"),
+                "{ext}: arrow-valued pair should be a method, got: {symbols:?}"
+            );
+            assert!(
+                symbols
+                    .iter()
+                    .any(|s| s.name == "handlers::bar" && s.kind == "method"),
+                "{ext}: shorthand method should be indexed, got: {symbols:?}"
+            );
+            assert!(
+                !symbols.iter().any(|s| s.name == "handlers::data"),
+                "{ext}: data-valued pair should be skipped, got: {symbols:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_symbols_js_class_fields() {
+        let cases = [
+            (
+                "test.js",
+                "class Route {\n  static scope = 'practice';\n  handler = () => {};\n  #secret = () => {};\n}\n",
+            ),
+            (
+                "test.ts",
+                "class Route {\n  static scope: string = 'practice';\n  handler = () => {};\n  #secret = () => {};\n}\n",
+            ),
+        ];
+        for (file, src) in cases {
+            let symbols = extract_symbols(Path::new(file), src);
+            assert!(
+                symbols
+                    .iter()
+                    .any(|s| s.name == "Route::scope" && s.kind == "static"),
+                "{file}: static field should be indexed as static, got: {symbols:?}"
+            );
+            assert!(
+                symbols
+                    .iter()
+                    .any(|s| s.name == "Route::handler" && s.kind == "method"),
+                "{file}: function-valued field should be indexed as method, got: {symbols:?}"
+            );
+            assert!(
+                symbols
+                    .iter()
+                    .any(|s| s.name == "Route::#secret" && s.kind == "method"),
+                "{file}: private function field should be indexed as method, got: {symbols:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_symbols_object_literal_arrow_regression() {
+        let src = "const x = {\n  getSortedPracticeUsers: async () => {},\n};\n";
+        let symbols = extract_symbols(Path::new("service.ts"), src);
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "x::getSortedPracticeUsers" && s.kind == "method"),
+            "reported neb miss: object arrow method should be found, got: {symbols:?}"
         );
     }
 

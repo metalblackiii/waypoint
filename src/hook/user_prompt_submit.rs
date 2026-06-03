@@ -21,7 +21,8 @@ static STRONG: LazyLock<Regex> = LazyLock::new(|| {
 /// `CODE_IDENT`). `break` is right-bounded so "breakfast" can't trip it.
 static CHANGE_VERB: LazyLock<Regex> = LazyLock::new(|| {
     #[allow(clippy::unwrap_used)] // literal pattern, validated by unit tests
-    Regex::new(r"(?i)\b(chang|renam|remov|delet|modif|deprecat|impact|affect|depend|break\b)").unwrap()
+    Regex::new(r"(?i)\b(chang|renam|remov|delet|modif|deprecat|impact|affect|depend|break\b)")
+        .unwrap()
 });
 
 /// Code-context nouns — one alongside a `CHANGE_VERB` means the change is about

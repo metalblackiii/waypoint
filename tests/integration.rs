@@ -1245,12 +1245,12 @@ fn cli_impact_with_base_flag() {
 // ── Version Test ───────────────────────────────────────────────
 
 #[test]
-fn cli_version_reports_0_15_0() {
+fn cli_version_reports_0_15_1() {
     waypoint()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("0.15.0"));
+        .stdout(predicate::str::contains("0.15.1"));
 }
 
 // ── Ask Tests ─────────────────────────────────────────────────
