@@ -40,14 +40,6 @@ pub enum Command {
         #[arg(long)]
         all: bool,
     },
-    /// Show structural overview of a symbol
-    Sketch {
-        /// Symbol name to look up
-        symbol: String,
-        /// Resolve project from this path instead of cwd
-        #[arg(short = 'C', long = "context")]
-        context: Option<String>,
-    },
     /// Search symbols by name or intent
     Find {
         /// Search query
@@ -72,20 +64,6 @@ pub enum Command {
     Callers {
         /// Symbol name to look up
         symbol: String,
-        /// Resolve project from this path instead of cwd
-        #[arg(short = 'C', long = "context")]
-        context: Option<String>,
-    },
-    /// Trace function call chains (same-file, v1)
-    Trace {
-        /// Symbol name to trace
-        symbol: String,
-        /// Traversal direction
-        #[arg(long, value_enum, default_value = "both")]
-        direction: crate::trace::TraceDirection,
-        /// Maximum call chain depth
-        #[arg(long, default_value = "3")]
-        depth: usize,
         /// Resolve project from this path instead of cwd
         #[arg(short = 'C', long = "context")]
         context: Option<String>,

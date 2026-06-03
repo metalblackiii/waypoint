@@ -5,7 +5,7 @@ Project intelligence for Claude Code or Codex. Gives your AI assistant a file ma
 ## Why Waypoint
 
 - Reduces blind full-file reads with map-first context.
-- Speeds up code navigation with symbol search (`waypoint find`, `waypoint sketch`).
+- Speeds up code navigation with symbol search (`waypoint find`).
 - Makes change risk visible before commit (`waypoint impact`).
 - Works across multiple local repos, not just the current one.
 
@@ -68,14 +68,6 @@ waypoint scan --all        # Scan all immediate child git repos (smart default: 
 waypoint scan --all /path/to/repos  # Explicit parent directory
 ```
 
-### `waypoint sketch`
-
-Look up a symbol's signature and location without reading the full file.
-
-```sh
-waypoint sketch <symbol-name-from-find-results>  # shows file, line range, and signature
-```
-
 ### `waypoint find`
 
 Full-text search across all indexed symbols (function names, structs, classes, types).
@@ -135,7 +127,6 @@ waypoint arch -C /path/to/other-repo
 
 # 3) Locate symbols before opening files
 waypoint find "scan" --limit 5
-waypoint sketch <symbol-name-from-find-results>
 
 # 4) Make changes, then check blast radius
 waypoint impact
@@ -147,7 +138,7 @@ For installation, hooks, and global agent configuration (`WAYPOINT.md` copy/impo
 
 ## Known limitations
 
-- Symbol checks are repo-dependent: `waypoint find`/`sketch` may return no matches in non-code or low-symbol repos.
+- Symbol checks are repo-dependent: `waypoint find` may return no matches in non-code or low-symbol repos.
 - `waypoint gain` is an estimated upper bound ("max savings"), not a counterfactual measurement of exact tokens that would have been spent without waypoint.
 - `waypoint impact` depends on a fresh map/index; if you see a staleness warning, run `waypoint scan` first.
 - Hook-powered context injection requires hook setup; without it, context lines are not auto-injected. Run `./setup-plugins.sh` once after `cargo install` to wire this up.

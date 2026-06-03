@@ -166,8 +166,6 @@ Optional symbol check (for code repos with indexed symbols):
 
 ```sh
 waypoint find "scan" --limit 5
-# if find returns symbols, sketch one of them:
-waypoint sketch <symbol-name-from-find-results>
 ```
 
 Expected signals:
@@ -176,7 +174,6 @@ Expected signals:
 - `waypoint scan --check` exits successfully when the map is present and fresh.
 - `waypoint status` reports map health for the current project.
 - In code repos, `waypoint find "scan" --limit 5` usually returns symbols; in non-code repos it may return "No symbols found".
-- If `find` returns symbols, `waypoint sketch <symbol-name-from-find-results>` returns file, line range, and signature.
 - `waypoint arch` prints architecture context (`Languages`, and `Hotspots` when imports are present).
 
 If a hook is misconfigured, open a new Claude/Codex session and confirm read operations include `[waypoint] map:` annotations.

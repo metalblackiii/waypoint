@@ -85,7 +85,7 @@ pub(crate) fn open_index(waypoint_dir: &Path) -> Result<Connection, AppError> {
     Ok(conn)
 }
 
-/// Row returned by sketch/find queries.
+/// Row returned by find queries.
 #[derive(Debug)]
 pub struct SymbolRow {
     pub file_path: String,
@@ -951,34 +951,6 @@ pub(crate) fn find_importers_with(
     Ok(results)
 }
 
-/// Look up symbols by exact name. Used by `waypoint sketch`.
-pub fn sketch(waypoint_dir: &Path, name: &str) -> Result<Vec<SymbolRow>, AppError> {
-    let conn = open_index(waypoint_dir)?;
-    // Match exact name OR qualified name (e.g., "Type::method")
-    // Escape LIKE wildcards in user input to prevent unintended pattern matching
-    let escaped = name.replace('%', r"\%").replace('_', r"\_");
-    let pattern = format!("%::{escaped}");
-    let mut stmt = conn.prepare(
-        "SELECT file_path, name, kind, signature, line_start, line_end, exported \
-         FROM symbols WHERE name = ?1 OR name LIKE ?2 ESCAPE '\\' \
-         ORDER BY exported DESC, file_path, line_start",
-    )?;
-
-    let rows = stmt.query_map(params![name, pattern], |row| {
-        Ok(SymbolRow {
-            file_path: row.get(0)?,
-            name: row.get(1)?,
-            kind: row.get(2)?,
-            signature: row.get(3)?,
-            line_start: row.get(4)?,
-            line_end: row.get(5)?,
-            exported: row.get::<_, i64>(6)? != 0,
-        })
-    })?;
-
-    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
-}
-
 /// Structural weight for symbol kind (tertiary ranking signal).
 fn kind_weight(kind: &str) -> u8 {
     match kind {
@@ -1251,41 +1223,6 @@ mod tests {
             line_end: 5,
             exported: true,
         }
-    }
-
-    #[test]
-    fn rebuild_symbols_then_sketch() {
-        let tmp = TempDir::new().unwrap();
-        let syms = vec![
-            sample_symbol("src/lib.rs", "AppError", "enum"),
-            sample_symbol("src/lib.rs", "run", "fn"),
-        ];
-        rebuild_symbols(tmp.path(), &syms).unwrap();
-
-        let results = sketch(tmp.path(), "AppError").unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].name, "AppError");
-        assert_eq!(results[0].kind, "enum");
-    }
-
-    #[test]
-    fn sketch_finds_qualified_methods() {
-        let tmp = TempDir::new().unwrap();
-        let syms = vec![
-            sample_symbol("src/foo.rs", "Foo", "struct"),
-            Symbol {
-                name: "Foo::new".into(),
-                kind: "method".into(),
-                signature: "pub fn new() -> Self".into(),
-                ..sample_symbol("src/foo.rs", "", "")
-            },
-        ];
-        rebuild_symbols(tmp.path(), &syms).unwrap();
-
-        // Searching "new" should find Foo::new
-        let results = sketch(tmp.path(), "new").unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].name, "Foo::new");
     }
 
     #[test]

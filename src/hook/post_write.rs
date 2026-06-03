@@ -419,10 +419,10 @@ mod tests {
         let new_syms = vec![sample_symbol("src/a.rs", "new_fn", "fn new_fn()", true)];
         index::update_file_symbols(&wp_dir, "src/a.rs", &new_syms).unwrap();
 
-        let results = index::sketch(&wp_dir, "old_fn").unwrap();
+        let results = index::find_symbols(&wp_dir, "old_fn", 10).unwrap();
         assert!(results.is_empty(), "old symbol should be gone");
 
-        let results = index::sketch(&wp_dir, "new_fn").unwrap();
+        let results = index::find_symbols(&wp_dir, "new_fn", 10).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -440,7 +440,7 @@ mod tests {
         let new_a = vec![sample_symbol("src/a.rs", "func_a2", "fn func_a2()", true)];
         index::update_file_symbols(&wp_dir, "src/a.rs", &new_a).unwrap();
 
-        let results = index::sketch(&wp_dir, "func_b").unwrap();
+        let results = index::find_symbols(&wp_dir, "func_b", 10).unwrap();
         assert_eq!(results.len(), 1, "other file's symbols should survive");
     }
 
@@ -453,7 +453,7 @@ mod tests {
         index::update_file_symbols(&wp_dir, "src/a.rs", &syms).unwrap();
         index::remove_file_symbols(&wp_dir, "src/a.rs").unwrap();
 
-        let results = index::sketch(&wp_dir, "target").unwrap();
+        let results = index::find_symbols(&wp_dir, "target", 10).unwrap();
         assert!(results.is_empty());
     }
 
@@ -798,7 +798,7 @@ mod tests {
         assert_eq!(remaining[0].path, "src/keep.rs");
 
         // Symbols for stale file should be gone
-        let results = index::sketch(&wp_dir, "old_fn").unwrap();
+        let results = index::find_symbols(&wp_dir, "old_fn", 10).unwrap();
         assert!(results.is_empty());
     }
 }

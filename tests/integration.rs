@@ -631,22 +631,6 @@ fn cross_project_payload(project_a: &TempDir, project_b: &TempDir, file_path: &s
     .to_string()
 }
 
-// ── AC-3: sketch -C targets foreign project ─────────────────────
-
-#[test]
-fn cli_sketch_with_context_flag() {
-    let project_a = setup_scanned_project();
-    let project_b = setup_scanned_project();
-
-    // Sketch from project A targeting project B
-    waypoint()
-        .args(["sketch", "-C", project_b.path().to_str().unwrap(), "main"])
-        .current_dir(project_a.path())
-        .assert()
-        .success();
-    // Just verifying it doesn't error — symbol may or may not match
-}
-
 // ── AC-4: find -C targets foreign project ───────────────────────
 
 #[test]
@@ -669,7 +653,7 @@ fn cli_context_flag_nonexistent_path_errors() {
     let project = setup_scanned_project();
 
     waypoint()
-        .args(["sketch", "-C", "/nonexistent/deeply/nested/path", "main"])
+        .args(["find", "-C", "/nonexistent/deeply/nested/path", "main"])
         .current_dir(project.path())
         .assert()
         .failure();
@@ -713,7 +697,7 @@ fn cli_context_flag_no_auto_init() {
 
     // -C to project B should fail, not auto-create .waypoint/
     waypoint()
-        .args(["sketch", "-C", project_b.path().to_str().unwrap(), "main"])
+        .args(["find", "-C", project_b.path().to_str().unwrap(), "main"])
         .current_dir(project_a.path())
         .assert()
         .failure();
@@ -1245,12 +1229,12 @@ fn cli_impact_with_base_flag() {
 // ── Version Test ───────────────────────────────────────────────
 
 #[test]
-fn cli_version_reports_0_15_1() {
+fn cli_version_reports_0_16_0() {
     waypoint()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("0.15.1"));
+        .stdout(predicate::str::contains("0.16.0"));
 }
 
 // ── Ask Tests ─────────────────────────────────────────────────
@@ -1366,7 +1350,7 @@ fn cli_ask_with_context_flag() {
 // ── Trace Tests ────────────────────────────────────────────────
 
 /// Set up a project with call relationships for trace tests.
-fn setup_trace_project() -> TempDir {
+fn setup_call_graph_project() -> TempDir {
     let tmp = TempDir::new().unwrap();
     fs::create_dir(tmp.path().join(".git")).unwrap();
     fs::create_dir_all(tmp.path().join("src")).unwrap();
@@ -1393,135 +1377,8 @@ fn main() {
 }
 
 #[test]
-fn cli_trace_outbound_finds_callees() {
-    let project = setup_trace_project();
-    waypoint()
-        .args(["scan"])
-        .current_dir(project.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("calls"));
-
-    waypoint()
-        .args(["trace", "process", "--direction", "outbound"])
-        .current_dir(project.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("→ validate"))
-        .stdout(predicate::str::contains("→ transform"));
-}
-
-#[test]
-fn cli_trace_inbound_finds_callers() {
-    let project = setup_trace_project();
-    waypoint()
-        .args(["scan"])
-        .current_dir(project.path())
-        .assert()
-        .success();
-
-    waypoint()
-        .args(["trace", "validate", "--direction", "inbound"])
-        .current_dir(project.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("← process"))
-        .stdout(predicate::str::contains("← transform"));
-}
-
-#[test]
-fn cli_trace_both_directions() {
-    let project = setup_trace_project();
-    waypoint()
-        .args(["scan"])
-        .current_dir(project.path())
-        .assert()
-        .success();
-
-    waypoint()
-        .args(["trace", "transform"])
-        .current_dir(project.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("outbound:"))
-        .stdout(predicate::str::contains("inbound:"))
-        .stdout(predicate::str::contains("→ validate"))
-        .stdout(predicate::str::contains("← process"));
-}
-
-#[test]
-fn cli_trace_depth_limits_output() {
-    let project = setup_trace_project();
-    waypoint()
-        .args(["scan"])
-        .current_dir(project.path())
-        .assert()
-        .success();
-
-    // main → process → validate/transform at depth 2
-    // With --depth 1, should see process but NOT validate/transform under process
-    let assert = waypoint()
-        .args(["trace", "main", "--direction", "outbound", "--depth", "1"])
-        .current_dir(project.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("→ process"));
-
-    // At depth 1, validate should not appear as a child of process
-    let stdout = std::str::from_utf8(&assert.get_output().stdout).unwrap();
-    let lines: Vec<&str> = stdout.lines().collect();
-    // Should have: header, "outbound:", "  → process"
-    // Should NOT have depth-2 entries (4-space indent)
-    assert!(
-        !lines.iter().any(|l| l.starts_with("    →")),
-        "depth=1 should not show depth-2 callees, got: {stdout}"
-    );
-}
-
-#[test]
-fn cli_trace_unknown_symbol() {
-    let project = setup_trace_project();
-    waypoint()
-        .args(["scan"])
-        .current_dir(project.path())
-        .assert()
-        .success();
-
-    waypoint()
-        .args(["trace", "nonexistent"])
-        .current_dir(project.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("No symbol found"));
-}
-
-#[test]
-fn cli_trace_no_calls() {
-    let project = setup_trace_project();
-    waypoint()
-        .args(["scan"])
-        .current_dir(project.path())
-        .assert()
-        .success();
-
-    // validate has no outbound calls
-    let assert = waypoint()
-        .args(["trace", "validate", "--direction", "outbound"])
-        .current_dir(project.path())
-        .assert()
-        .success();
-
-    let stdout = std::str::from_utf8(&assert.get_output().stdout).unwrap();
-    // Should have the header and "outbound:" but no → lines
-    assert!(
-        !stdout.contains('→'),
-        "validate should have no outbound calls, got: {stdout}"
-    );
-}
-
-#[test]
 fn cli_scan_counts_calls() {
-    let project = setup_trace_project();
+    let project = setup_call_graph_project();
     waypoint()
         .args(["scan"])
         .current_dir(project.path())
@@ -1532,7 +1389,7 @@ fn cli_scan_counts_calls() {
 
 #[test]
 fn hook_post_write_updates_call_index() {
-    let project = setup_trace_project();
+    let project = setup_call_graph_project();
     // Initial scan
     waypoint()
         .args(["scan"])
@@ -1575,44 +1432,5 @@ fn main() {
         .assert()
         .success();
 
-    // Now trace should see new_function calling validate
-    waypoint()
-        .args(["trace", "validate", "--direction", "inbound"])
-        .current_dir(project.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("← new_function"));
 }
 
-#[test]
-fn cli_trace_ambiguous_symbol_warns() {
-    // Two files with a symbol named "validate" — trace should warn about ambiguity
-    let tmp = TempDir::new().unwrap();
-    fs::create_dir(tmp.path().join(".git")).unwrap();
-    fs::create_dir_all(tmp.path().join("src")).unwrap();
-    fs::write(
-        tmp.path().join("src/a.rs"),
-        "pub fn validate() {}\npub fn caller_a() { validate(); }\n",
-    )
-    .unwrap();
-    fs::write(
-        tmp.path().join("src/b.rs"),
-        "pub fn validate() {}\npub fn caller_b() { validate(); }\n",
-    )
-    .unwrap();
-
-    waypoint()
-        .args(["scan"])
-        .current_dir(tmp.path())
-        .assert()
-        .success();
-
-    // "validate" exists in both files — should emit disambiguation note on stderr
-    waypoint()
-        .args(["trace", "validate"])
-        .current_dir(tmp.path())
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("symbols match"))
-        .stderr(predicate::str::contains("disambiguate"));
-}

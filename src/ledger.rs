@@ -14,8 +14,6 @@ pub enum EventKind {
     SessionStart,
     MapHit,
     MapMiss,
-    SketchHit,
-    SketchMiss,
     FindHit,
     FindMiss,
     FirstEdit,
@@ -32,8 +30,6 @@ impl EventKind {
             Self::SessionStart => "session_start",
             Self::MapHit => "map_hit",
             Self::MapMiss => "map_miss",
-            Self::SketchHit => "sketch_hit",
-            Self::SketchMiss => "sketch_miss",
             Self::FindHit => "find_hit",
             Self::FindMiss => "find_miss",
             Self::FirstEdit => "first_edit",
@@ -52,9 +48,6 @@ pub struct GainStats {
     pub total_events: i64,
     pub map_hits: i64,
     pub map_misses: i64,
-    pub sketch_hits: i64,
-    pub sketch_misses: i64,
-    pub sketch_hit_rate: f64,
     pub find_hits: i64,
     pub find_misses: i64,
     pub find_hit_rate: f64,
@@ -160,16 +153,6 @@ impl fmt::Display for GainStats {
                 self.map_misses.to_string(),
                 Some(Color::Yellow),
             ),
-            (
-                "Sketch hits:",
-                self.sketch_hits.to_string(),
-                Some(Color::Magenta),
-            ),
-            (
-                "Sketch misses:",
-                self.sketch_misses.to_string(),
-                Some(Color::Yellow),
-            ),
             ("Find hits:", self.find_hits.to_string(), Some(Color::Blue)),
             (
                 "Find misses:",
@@ -205,21 +188,6 @@ impl fmt::Display for GainStats {
             meter.color(color),
             format!("{:.1}%", self.map_hit_rate).bold(),
         )?;
-
-        // Sketch hit rate meter
-        if self.sketch_hits + self.sketch_misses > 0 {
-            let sketch_ratio = self.sketch_hit_rate / 100.0;
-            let sketch_meter = bar(sketch_ratio, METER_WIDTH);
-            let sketch_color = rate_color(self.sketch_hit_rate);
-            let padded_label = format!("{:<LABEL_PAD$}", "Sketch rate:");
-            writeln!(
-                f,
-                "{} {} {}",
-                padded_label.bold(),
-                sketch_meter.color(sketch_color),
-                format!("{:.1}%", self.sketch_hit_rate).bold(),
-            )?;
-        }
 
         // Find hit rate meter
         if self.find_hits + self.find_misses > 0 {
@@ -485,8 +453,6 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
 
     let map_hits = query_count_kind(conn, "map_hit", param_ref)?;
     let map_misses = query_count_kind(conn, "map_miss", param_ref)?;
-    let sketch_hits = query_count_kind(conn, "sketch_hit", param_ref)?;
-    let sketch_misses = query_count_kind(conn, "sketch_miss", param_ref)?;
     let find_hits = query_count_kind(conn, "find_hit", param_ref)?;
     let find_misses = query_count_kind(conn, "find_miss", param_ref)?;
     let ask_hits = query_count_kind(conn, "ask_hit", param_ref)?;
@@ -497,13 +463,6 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
     #[allow(clippy::cast_precision_loss)] // ratio of small counters — precision loss irrelevant
     let map_hit_rate = if map_hits + map_misses > 0 {
         map_hits as f64 / (map_hits + map_misses) as f64 * 100.0
-    } else {
-        0.0
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let sketch_hit_rate = if sketch_hits + sketch_misses > 0 {
-        sketch_hits as f64 / (sketch_hits + sketch_misses) as f64 * 100.0
     } else {
         0.0
     };
@@ -594,9 +553,6 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         total_events,
         map_hits,
         map_misses,
-        sketch_hits,
-        sketch_misses,
-        sketch_hit_rate,
         find_hits,
         find_misses,
         find_hit_rate,
@@ -697,22 +653,17 @@ mod tests {
 
         record_event_with(&conn, EventKind::MapHit, "/tmp/project", 150).unwrap();
         record_event_with(&conn, EventKind::MapMiss, "/tmp/project", 0).unwrap();
-        record_event_with(&conn, EventKind::SketchHit, "/tmp/project", 0).unwrap();
-        record_event_with(&conn, EventKind::SketchMiss, "/tmp/project", 0).unwrap();
         record_event_with(&conn, EventKind::FindHit, "/tmp/project", 0).unwrap();
         record_event_with(&conn, EventKind::FindMiss, "/tmp/project", 0).unwrap();
 
         let stats = gain_stats_with(&conn, Some("/tmp/project")).unwrap();
 
-        assert_eq!(stats.total_events, 6);
+        assert_eq!(stats.total_events, 4);
         assert_eq!(stats.map_hits, 1);
         assert_eq!(stats.map_misses, 1);
-        assert_eq!(stats.sketch_hits, 1);
-        assert_eq!(stats.sketch_misses, 1);
         assert_eq!(stats.find_hits, 1);
         assert_eq!(stats.find_misses, 1);
         assert!((stats.map_hit_rate - 50.0).abs() < f64::EPSILON);
-        assert!((stats.sketch_hit_rate - 50.0).abs() < f64::EPSILON);
         assert!((stats.find_hit_rate - 50.0).abs() < f64::EPSILON);
         assert_eq!(stats.estimated_tokens_saved, 150);
     }
@@ -783,8 +734,6 @@ mod tests {
         assert_eq!(EventKind::SessionStart.as_str(), "session_start");
         assert_eq!(EventKind::MapHit.as_str(), "map_hit");
         assert_eq!(EventKind::MapMiss.as_str(), "map_miss");
-        assert_eq!(EventKind::SketchHit.as_str(), "sketch_hit");
-        assert_eq!(EventKind::SketchMiss.as_str(), "sketch_miss");
         assert_eq!(EventKind::FindHit.as_str(), "find_hit");
         assert_eq!(EventKind::FindMiss.as_str(), "find_miss");
         assert_eq!(EventKind::FirstEdit.as_str(), "first_edit");
@@ -873,7 +822,7 @@ mod tests {
         record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
         // Simulate 3 hook invocations before first edit
         record_event_with(&conn, EventKind::MapHit, "/tmp/p", 100).unwrap();
-        record_event_with(&conn, EventKind::SketchHit, "/tmp/p", 50).unwrap();
+        record_event_with(&conn, EventKind::FindHit, "/tmp/p", 50).unwrap();
 
         record_first_edit_if_needed_with(&conn, "/tmp/p").unwrap();
 
@@ -895,7 +844,7 @@ mod tests {
         // Session 2: 4 turns before first edit
         record_event_with(&conn, EventKind::SessionStart, "/tmp/p", 0).unwrap();
         record_event_with(&conn, EventKind::MapHit, "/tmp/p", 100).unwrap();
-        record_event_with(&conn, EventKind::SketchHit, "/tmp/p", 50).unwrap();
+        record_event_with(&conn, EventKind::FindHit, "/tmp/p", 50).unwrap();
         record_event_with(&conn, EventKind::MapHit, "/tmp/p", 100).unwrap();
         record_first_edit_if_needed_with(&conn, "/tmp/p").unwrap();
 
@@ -989,9 +938,6 @@ mod tests {
             total_events: 100,
             map_hits: 75,
             map_misses: 25,
-            sketch_hits: 0,
-            sketch_misses: 0,
-            sketch_hit_rate: 0.0,
             find_hits: 0,
             find_misses: 0,
             find_hit_rate: 0.0,
@@ -1021,9 +967,6 @@ mod tests {
             total_events: 452,
             map_hits: 325,
             map_misses: 101,
-            sketch_hits: 0,
-            sketch_misses: 0,
-            sketch_hit_rate: 0.0,
             find_hits: 0,
             find_misses: 0,
             find_hit_rate: 0.0,
@@ -1065,9 +1008,6 @@ mod tests {
             total_events: 10,
             map_hits: 8,
             map_misses: 2,
-            sketch_hits: 0,
-            sketch_misses: 0,
-            sketch_hit_rate: 0.0,
             find_hits: 0,
             find_misses: 0,
             find_hit_rate: 0.0,
@@ -1097,9 +1037,6 @@ mod tests {
             total_events: 12,
             map_hits: 8,
             map_misses: 2,
-            sketch_hits: 0,
-            sketch_misses: 0,
-            sketch_hit_rate: 0.0,
             find_hits: 0,
             find_misses: 0,
             find_hit_rate: 0.0,

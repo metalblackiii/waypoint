@@ -7,7 +7,6 @@ pub mod ledger;
 pub mod map;
 pub mod project;
 pub mod status;
-pub mod trace;
 
 use thiserror::Error;
 
@@ -118,33 +117,6 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             }
         }
 
-        Command::Sketch { symbol, context } => {
-            let project_root = project::resolve_with_context(context.as_deref())?;
-            let wp_dir = project::require_waypoint_dir(&project_root)?;
-            let results = map::index::sketch(&wp_dir, &symbol)?;
-            if results.is_empty() {
-                let _ = ledger::record_event(
-                    ledger::EventKind::SketchMiss,
-                    project_root.to_string_lossy().as_ref(),
-                    0,
-                );
-                println!("No symbols found: {symbol}");
-            } else {
-                let _ = ledger::record_event(
-                    ledger::EventKind::SketchHit,
-                    project_root.to_string_lossy().as_ref(),
-                    0,
-                );
-                for row in &results {
-                    println!(
-                        "  {}:{}-{}  {}",
-                        row.file_path, row.line_start, row.line_end, row.signature
-                    );
-                }
-            }
-            Ok(())
-        }
-
         Command::Find {
             query,
             limit,
@@ -244,17 +216,6 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 }
             }
             Ok(())
-        }
-
-        Command::Trace {
-            symbol,
-            direction,
-            depth,
-            context,
-        } => {
-            let project_root = project::resolve_with_context(context.as_deref())?;
-            let wp_dir = project::require_waypoint_dir(&project_root)?;
-            trace::run(&wp_dir, &symbol, &direction, depth.max(1))
         }
 
         Command::Arch { context } => {
