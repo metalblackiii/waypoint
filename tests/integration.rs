@@ -858,13 +858,15 @@ fn cli_find_miss_records_ledger_event() {
         .assert()
         .success();
 
-    // A miss should print the message AND record a ledger event
+    // A miss should print the message AND record a ledger event, with no
+    // sibling footer (FR-6: zero-result passthrough is unchanged).
     waypoint()
         .args(["find", "xyzzy_nonexistent_symbol_42"])
         .current_dir(project.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("No symbols found"));
+        .stdout(predicate::str::contains("No symbols found"))
+        .stdout(predicate::str::contains("see also").not());
 
     // "Find rate:" only renders when find_hits + find_misses > 0,
     // so its presence proves a FindMiss event was actually recorded.
@@ -899,6 +901,39 @@ fn cli_find_limit_zero_clamps_to_one() {
     // Clamped to 1: exactly one result line (lines starting with whitespace + kind)
     let result_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("  ")).collect();
     assert_eq!(result_lines.len(), 1, "limit 0 should clamp to 1 result");
+}
+
+#[test]
+fn cli_find_shows_sibling_footer_excluding_matched_symbol() {
+    let project = setup_project();
+    fs::write(
+        project.path().join("src/payments.rs"),
+        "pub fn process_payment() {}\npub fn validate_payment() {}\npub fn refund_payment() {}\n",
+    )
+    .unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let output = waypoint()
+        .args(["find", "process_payment"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&output);
+
+    // Exact footer line: source order (line 2, then line 3), matched
+    // symbol (process_payment, line 1) excluded.
+    assert!(
+        stdout
+            .contains("see also (src/payments.rs):\n  fn validate_payment:2, fn refund_payment:3"),
+        "expected an exact sibling footer excluding process_payment, got:\n{stdout}"
+    );
 }
 
 // ── Architecture Context Injection Tests ───────────────────────
@@ -1229,12 +1264,12 @@ fn cli_impact_with_base_flag() {
 // ── Version Test ───────────────────────────────────────────────
 
 #[test]
-fn cli_version_reports_0_16_0() {
+fn cli_version_reports_0_17_0() {
     waypoint()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("0.16.0"));
+        .stdout(predicate::str::contains("0.17.0"));
 }
 
 // ── Ask Tests ─────────────────────────────────────────────────
@@ -1431,6 +1466,4 @@ fn main() {
         .current_dir(project.path())
         .assert()
         .success();
-
 }
-

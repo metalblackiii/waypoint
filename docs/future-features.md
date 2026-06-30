@@ -199,3 +199,5 @@ Implemented and now considered baseline behavior. Use this when evaluating futur
 **v0.13.0**: `waypoint trace` v1 — same-file call graph tracing with DFS traversal, direction/depth controls, and per-language skip lists.
 
 **v0.14.0**: `waypoint ask` v1 — NL task routing with IDF-weighted token coverage, FTS5 symbol matching, query-shape detection, and `--explain` output.
+
+**v0.17.0**: `waypoint find` "see also:" sibling-symbol footer — up to 5 other exported symbols per file, suppressed for barrel files (50+ exports), <2 remaining siblings after exclusion, or results spanning 4+ files.

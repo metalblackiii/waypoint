@@ -86,7 +86,7 @@ pub(crate) fn open_index(waypoint_dir: &Path) -> Result<Connection, AppError> {
 }
 
 /// Row returned by find queries.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SymbolRow {
     pub file_path: String,
     pub name: String,
@@ -1109,6 +1109,101 @@ pub fn find_symbols(
     Ok(rank_candidates(&candidates, &conn, limit))
 }
 
+/// Sibling display cap per file in the `find` "see also:" footer (FR-1).
+const SIBLING_DISPLAY_LIMIT: usize = 5;
+/// Files with this many exported symbols or more are barrel files — listing
+/// siblings would be noise, so the footer is suppressed entirely (FR-3).
+const SIBLING_BARREL_THRESHOLD: usize = 50;
+/// `find` results spanning this many unique files or more skip sibling
+/// footers altogether — too much output for progressive disclosure (FR-5).
+const SIBLING_MAX_FILES: usize = 3;
+
+/// Sibling exported symbols for each file represented in `find` results.
+/// Powers the "see also:" progressive-disclosure footer: an agent reading
+/// `find` output sees neighboring exported symbols in the same file without
+/// burning a follow-up `find`/`rg` call.
+///
+/// Returns one `(file_path, siblings)` entry per file that should show a
+/// footer, in source order within each file, excluding symbols already
+/// present in `results` (FR-2). Suppressed per-file for barrel files
+/// (FR-3) or when fewer than 2 siblings remain after exclusion (FR-4), and
+/// suppressed entirely when `results` span 4+ unique files (FR-5). Callers
+/// should not invoke this for empty `results` (FR-6) — there's nothing to
+/// attach a footer to.
+pub fn find_siblings(
+    waypoint_dir: &Path,
+    results: &[SymbolRow],
+) -> Result<Vec<(String, Vec<SymbolRow>)>, AppError> {
+    let mut files: Vec<&str> = Vec::new();
+    for row in results {
+        if !files.contains(&row.file_path.as_str()) {
+            files.push(&row.file_path);
+        }
+    }
+    if files.len() > SIBLING_MAX_FILES {
+        return Ok(Vec::new());
+    }
+
+    // Single query covering every candidate file (bounded by SIBLING_MAX_FILES)
+    // rather than one query per file — files.len() is at most 3, so this was
+    // never a real N+1, but one round trip is still simpler than N.
+    let conn = open_index(waypoint_dir)?;
+    let placeholders = files.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT file_path, name, kind, line_start, line_end FROM symbols \
+         WHERE file_path IN ({placeholders}) AND exported = 1 ORDER BY file_path, line_start"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(files.iter()), |row| {
+        Ok(SymbolRow {
+            file_path: row.get(0)?,
+            name: row.get(1)?,
+            kind: row.get(2)?,
+            signature: String::new(),
+            line_start: row.get(3)?,
+            line_end: row.get(4)?,
+            exported: true,
+        })
+    })?;
+    let all_exported: Vec<SymbolRow> = rows.collect::<Result<Vec<_>, _>>()?;
+
+    let mut footers = Vec::new();
+    for file in files {
+        // Keyed on (kind, name), not name alone — two distinct exported
+        // symbols in the same file can share a name (e.g. a function and
+        // a const), and excluding one shouldn't exclude the other.
+        let matched: std::collections::HashSet<(&str, &str)> = results
+            .iter()
+            .filter(|r| r.file_path == file)
+            .map(|r| (r.kind.as_str(), r.name.as_str()))
+            .collect();
+
+        let exported: Vec<&SymbolRow> = all_exported
+            .iter()
+            .filter(|s| s.file_path == file)
+            .collect();
+
+        if exported.len() >= SIBLING_BARREL_THRESHOLD {
+            continue; // FR-3
+        }
+
+        let remaining: Vec<SymbolRow> = exported
+            .into_iter()
+            .filter(|s| !matched.contains(&(s.kind.as_str(), s.name.as_str())))
+            .cloned()
+            .collect();
+
+        if remaining.len() <= 1 {
+            continue; // FR-4
+        }
+
+        let siblings = remaining.into_iter().take(SIBLING_DISPLAY_LIMIT).collect();
+        footers.push((file.to_string(), siblings));
+    }
+
+    Ok(footers)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -1222,6 +1317,14 @@ mod tests {
             line_start: 1,
             line_end: 5,
             exported: true,
+        }
+    }
+
+    fn sample_symbol_at(file: &str, name: &str, kind: &str, line: i64) -> Symbol {
+        Symbol {
+            line_start: line,
+            line_end: line + 1,
+            ..sample_symbol(file, name, kind)
         }
     }
 
@@ -1456,5 +1559,139 @@ mod tests {
         let results = find_importers(tmp.path(), "bar", None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "src/a.js");
+    }
+
+    fn matched_row(file: &str, name: &str, line: i64) -> SymbolRow {
+        SymbolRow {
+            file_path: file.into(),
+            name: name.into(),
+            kind: "fn".into(),
+            signature: format!("pub fn {name}"),
+            line_start: line,
+            line_end: line + 1,
+            exported: true,
+        }
+    }
+
+    #[test]
+    fn find_siblings_returns_other_exports_in_same_file() {
+        let tmp = TempDir::new().unwrap();
+        let syms = vec![
+            sample_symbol_at("src/billing/payments.rs", "processPayment", "fn", 45),
+            sample_symbol_at("src/billing/payments.rs", "validatePayment", "fn", 52),
+            sample_symbol_at("src/billing/payments.rs", "refundPayment", "fn", 78),
+            sample_symbol_at("src/billing/payments.rs", "MAX_RETRY", "const", 8),
+        ];
+        rebuild_symbols(tmp.path(), &syms).unwrap();
+
+        let matched = vec![matched_row("src/billing/payments.rs", "processPayment", 45)];
+        let siblings = find_siblings(tmp.path(), &matched).unwrap();
+
+        assert_eq!(siblings.len(), 1);
+        let (file, rows) = &siblings[0];
+        assert_eq!(file, "src/billing/payments.rs");
+        // Source order by line_start, matched symbol excluded.
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["MAX_RETRY", "validatePayment", "refundPayment"]);
+    }
+
+    #[test]
+    fn find_siblings_caps_at_display_limit() {
+        let tmp = TempDir::new().unwrap();
+        // 7 eligible siblings, well under the barrel threshold (50) but
+        // above SIBLING_DISPLAY_LIMIT (5) — footer should truncate to the
+        // first 5 in source order, not all 7 (FR-1).
+        let mut syms = vec![sample_symbol_at("src/wide.rs", "matched", "fn", 1)];
+        for i in 0..7 {
+            syms.push(sample_symbol_at(
+                "src/wide.rs",
+                &format!("sibling{i}"),
+                "fn",
+                10 + i,
+            ));
+        }
+        rebuild_symbols(tmp.path(), &syms).unwrap();
+
+        let matched = vec![matched_row("src/wide.rs", "matched", 1)];
+        let siblings = find_siblings(tmp.path(), &matched).unwrap();
+
+        assert_eq!(siblings.len(), 1);
+        let (_, rows) = &siblings[0];
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["sibling0", "sibling1", "sibling2", "sibling3", "sibling4"],
+            "expected exactly 5 siblings in source order, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn find_siblings_excludes_already_matched_symbols() {
+        let tmp = TempDir::new().unwrap();
+        let syms = vec![
+            sample_symbol_at("src/utils.js", "foo", "fn", 1),
+            sample_symbol_at("src/utils.js", "bar", "fn", 2),
+        ];
+        rebuild_symbols(tmp.path(), &syms).unwrap();
+
+        // Both exports already matched — nothing left to show (FR-2 + FR-4).
+        let matched = vec![
+            matched_row("src/utils.js", "foo", 1),
+            matched_row("src/utils.js", "bar", 2),
+        ];
+        let siblings = find_siblings(tmp.path(), &matched).unwrap();
+        assert!(siblings.is_empty());
+    }
+
+    #[test]
+    fn find_siblings_suppresses_barrel_files() {
+        let tmp = TempDir::new().unwrap();
+        let mut syms: Vec<Symbol> = (0..50)
+            .map(|i| sample_symbol_at("src/index.js", &format!("export{i}"), "const", i + 1))
+            .collect();
+        syms.push(sample_symbol_at("src/index.js", "matched", "const", 100));
+        rebuild_symbols(tmp.path(), &syms).unwrap();
+
+        let matched = vec![matched_row("src/index.js", "matched", 100)];
+        let siblings = find_siblings(tmp.path(), &matched).unwrap();
+        assert!(
+            siblings.is_empty(),
+            "barrel file (50+ exports) should be suppressed"
+        );
+    }
+
+    #[test]
+    fn find_siblings_suppresses_when_results_span_too_many_files() {
+        let tmp = TempDir::new().unwrap();
+        let syms = vec![
+            sample_symbol_at("a.js", "one", "fn", 1),
+            sample_symbol_at("a.js", "two", "fn", 2),
+            sample_symbol_at("b.js", "one", "fn", 1),
+            sample_symbol_at("b.js", "two", "fn", 2),
+            sample_symbol_at("c.js", "one", "fn", 1),
+            sample_symbol_at("c.js", "two", "fn", 2),
+            sample_symbol_at("d.js", "one", "fn", 1),
+            sample_symbol_at("d.js", "two", "fn", 2),
+        ];
+        rebuild_symbols(tmp.path(), &syms).unwrap();
+
+        let matched = vec![
+            matched_row("a.js", "one", 1),
+            matched_row("b.js", "one", 1),
+            matched_row("c.js", "one", 1),
+            matched_row("d.js", "one", 1),
+        ];
+        let siblings = find_siblings(tmp.path(), &matched).unwrap();
+        assert!(
+            siblings.is_empty(),
+            "4+ unique files should suppress all footers"
+        );
+    }
+
+    #[test]
+    fn find_siblings_on_empty_results_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        let siblings = find_siblings(tmp.path(), &[]).unwrap();
+        assert!(siblings.is_empty());
     }
 }

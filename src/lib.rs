@@ -145,6 +145,14 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                         row.kind, row.name, row.file_path, row.line_start
                     );
                 }
+                for (file_path, siblings) in map::index::find_siblings(&wp_dir, &results)? {
+                    let listing = siblings
+                        .iter()
+                        .map(|s| format!("{} {}:{}", s.kind, s.name, s.line_start))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    println!("\nsee also ({file_path}):\n  {listing}");
+                }
             }
             Ok(())
         }
