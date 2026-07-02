@@ -90,10 +90,12 @@ pub fn run() -> Result<(), AppError> {
 fn resolve_target(
     ctx: &super::HookContext,
 ) -> Option<(std::path::PathBuf, String, std::path::PathBuf)> {
-    // Try foreign project resolution first (handles cross-project edits)
+    // Try foreign project resolution first (handles cross-project edits).
+    // WARNING: never write through a worktree's main-checkout index fallback —
+    // the main index must reflect the main checkout, not worktree state.
     if let Some(resolved) = project::resolve_foreign(&ctx.file_path) {
         let map_path = resolved.wp_dir.join("map.md");
-        if map_path.exists() {
+        if !resolved.index_via_main && map_path.exists() {
             return Some((resolved.wp_dir, resolved.relative_path, resolved.root));
         }
     }

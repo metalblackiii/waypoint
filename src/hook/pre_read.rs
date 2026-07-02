@@ -7,7 +7,7 @@ pub fn run() -> Result<(), AppError> {
 
     // Resolve the file's own project first (handles nested and sibling repos),
     // then fall back to the cwd project
-    let (wp_dir, relative, project_label, is_foreign) =
+    let (wp_dir, relative, project_label, is_foreign, index_via_main) =
         if let Some(resolved) = project::resolve_foreign(&ctx.file_path) {
             let is_foreign = resolved.root != ctx.project_root;
             (
@@ -15,6 +15,7 @@ pub fn run() -> Result<(), AppError> {
                 resolved.relative_path,
                 resolved.root.to_string_lossy().into_owned(),
                 is_foreign,
+                resolved.index_via_main,
             )
         } else if let Some(rel) = ctx.relative_path() {
             if ctx.wp_dir.exists() {
@@ -22,6 +23,7 @@ pub fn run() -> Result<(), AppError> {
                     ctx.wp_dir.clone(),
                     rel,
                     ctx.project_root.to_string_lossy().into_owned(),
+                    false,
                     false,
                 )
             } else {
@@ -60,9 +62,15 @@ pub fn run() -> Result<(), AppError> {
                 .and_then(map::density_label)
                 .map(|l| format!(", {l}"))
                 .unwrap_or_default();
+            // WARNING: main-checkout index may lag the worktree's own state
+            let via_suffix = if index_via_main {
+                ", via main index"
+            } else {
+                ""
+            };
             format!(
-                "[waypoint] map: {} — {} (~{} tok{})",
-                entry.path, entry.description, entry.token_estimate, density_suffix
+                "[waypoint] map: {} — {} (~{} tok{}{})",
+                entry.path, entry.description, entry.token_estimate, density_suffix, via_suffix
             )
         }
     } else {

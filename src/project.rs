@@ -9,26 +9,85 @@ pub struct ResolvedProject {
     pub root: PathBuf,
     pub wp_dir: PathBuf,
     pub relative_path: String,
+    /// True when `wp_dir` belongs to the main checkout of a linked git worktree.
+    /// Read-only consumers may use such an index; writers must never update it
+    /// (the main index must reflect the main checkout, not worktree state).
+    pub index_via_main: bool,
 }
 
 /// Resolve a file's project from its absolute path.
 ///
 /// Walks up from the file path to find a project root with a `.waypoint/` directory.
+/// Linked git worktrees without their own `.waypoint/` resolve to the main
+/// checkout's index (relative paths are identical across worktrees).
 /// Returns `None` if no waypoint-managed project is found.
 #[must_use]
 pub fn resolve_foreign(file_path: &str) -> Option<ResolvedProject> {
     let path = Path::new(file_path);
     let root = find_root(path)?;
-    let wp_dir = waypoint_dir(&root);
-    if !wp_dir.exists() {
-        return None;
-    }
+    let own_wp_dir = waypoint_dir(&root);
+    let (wp_dir, index_via_main) = if own_wp_dir.exists() {
+        (own_wp_dir, false)
+    } else {
+        (worktree_main_waypoint_dir(&root)?, true)
+    };
     let relative = path.strip_prefix(&root).ok()?;
     Some(ResolvedProject {
         root,
         wp_dir,
         relative_path: relative.to_string_lossy().into_owned(),
+        index_via_main,
     })
+}
+
+/// Resolve a linked git worktree's main checkout root.
+///
+/// A linked worktree has a `.git` *file* containing `gitdir: <main>/.git/worktrees/<name>`.
+/// Returns `None` for regular repos (`.git` directory), bare dirs, and submodules
+/// (whose gitdir points under `.git/modules/`).
+#[must_use]
+pub fn worktree_main_root(root: &Path) -> Option<PathBuf> {
+    let git_file = root.join(".git");
+    if !git_file.is_file() {
+        return None;
+    }
+    let contents = std::fs::read_to_string(&git_file).ok()?;
+    let gitdir = contents.strip_prefix("gitdir:")?.trim();
+    let gitdir = if Path::new(gitdir).is_absolute() {
+        PathBuf::from(gitdir)
+    } else {
+        normalize_lexically(&root.join(gitdir))
+    };
+    let worktrees_dir = gitdir.parent()?;
+    if worktrees_dir.file_name()? != "worktrees" {
+        return None;
+    }
+    let main_git_dir = worktrees_dir.parent()?;
+    if main_git_dir.file_name()? != ".git" {
+        return None;
+    }
+    main_git_dir.parent().map(Path::to_path_buf)
+}
+
+/// Resolve `.`/`..` components without touching the filesystem (no symlink resolution).
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => normalized.push(other),
+        }
+    }
+    normalized
+}
+
+/// Return the main checkout's `.waypoint` dir for a linked worktree root, if it exists.
+fn worktree_main_waypoint_dir(root: &Path) -> Option<PathBuf> {
+    let wp_dir = waypoint_dir(&worktree_main_root(root)?);
+    wp_dir.exists().then_some(wp_dir)
 }
 
 /// Resolve a project from an optional `-C` path override, falling back to cwd.
@@ -109,19 +168,28 @@ fn child_git_repos(dir: &Path) -> Result<Vec<PathBuf>, AppError> {
 
 /// Ensure the project has a `.waypoint/` directory, returning an error if not.
 /// Use for read-only commands (`sketch`, `find`) that can't create it.
+/// Linked git worktrees without their own `.waypoint/` read through the main
+/// checkout's index (relative paths are identical across worktrees).
 pub fn require_waypoint_dir(project_root: &Path) -> Result<PathBuf, AppError> {
     let wp_dir = waypoint_dir(project_root);
-    if !wp_dir.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!(
-                "no .waypoint/ directory in project: {}",
-                project_root.display()
-            ),
-        )
-        .into());
+    if wp_dir.exists() {
+        return Ok(wp_dir);
     }
-    Ok(wp_dir)
+    if let Some(main_wp_dir) = worktree_main_waypoint_dir(project_root) {
+        // WARNING: main-checkout index may lag this worktree's state
+        eprintln!(
+            "[waypoint] linked worktree — reading the main checkout's index, which may lag this worktree's changes"
+        );
+        return Ok(main_wp_dir);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!(
+            "no .waypoint/ directory in project: {}",
+            project_root.display()
+        ),
+    )
+    .into())
 }
 
 /// Find the project root by walking up from `start` looking for .git (primary) or .waypoint/ (secondary).
@@ -267,6 +335,129 @@ mod tests {
         assert_eq!(resolved.root, tmp.path());
         assert_eq!(resolved.wp_dir, tmp.path().join(".waypoint"));
         assert_eq!(resolved.relative_path, "src/main.rs");
+        assert!(!resolved.index_via_main);
+    }
+
+    /// Fabricate a linked-worktree layout: `main/.git/worktrees/wt` plus a
+    /// worktree root whose `.git` file points at it.
+    fn make_linked_worktree(main_root: &Path, wt_root: &Path) {
+        std::fs::create_dir_all(main_root.join(".git/worktrees/wt")).unwrap();
+        std::fs::create_dir_all(wt_root).unwrap();
+        std::fs::write(
+            wt_root.join(".git"),
+            format!(
+                "gitdir: {}\n",
+                main_root.join(".git/worktrees/wt").display()
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resolve_foreign_worktree_reads_main_index() {
+        let tmp = TempDir::new().unwrap();
+        let main_root = tmp.path().join("main");
+        let wt_root = tmp.path().join("wt");
+        make_linked_worktree(&main_root, &wt_root);
+        std::fs::create_dir(main_root.join(".waypoint")).unwrap();
+        std::fs::create_dir_all(wt_root.join("src")).unwrap();
+        let file = wt_root.join("src/main.rs");
+        std::fs::write(&file, "fn main() {}").unwrap();
+
+        let resolved = resolve_foreign(file.to_str().unwrap()).unwrap();
+        assert_eq!(resolved.root, wt_root);
+        assert_eq!(resolved.wp_dir, main_root.join(".waypoint"));
+        assert_eq!(resolved.relative_path, "src/main.rs");
+        assert!(resolved.index_via_main);
+    }
+
+    #[test]
+    fn resolve_foreign_worktree_prefers_own_index() {
+        let tmp = TempDir::new().unwrap();
+        let main_root = tmp.path().join("main");
+        let wt_root = tmp.path().join("wt");
+        make_linked_worktree(&main_root, &wt_root);
+        std::fs::create_dir(main_root.join(".waypoint")).unwrap();
+        std::fs::create_dir(wt_root.join(".waypoint")).unwrap();
+        let file = wt_root.join("lib.rs");
+        std::fs::write(&file, "").unwrap();
+
+        let resolved = resolve_foreign(file.to_str().unwrap()).unwrap();
+        assert_eq!(resolved.wp_dir, wt_root.join(".waypoint"));
+        assert!(!resolved.index_via_main);
+    }
+
+    #[test]
+    fn resolve_foreign_worktree_without_main_index_is_none() {
+        let tmp = TempDir::new().unwrap();
+        let main_root = tmp.path().join("main");
+        let wt_root = tmp.path().join("wt");
+        make_linked_worktree(&main_root, &wt_root);
+        let file = wt_root.join("lib.rs");
+        std::fs::write(&file, "").unwrap();
+
+        assert!(resolve_foreign(file.to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn worktree_main_root_resolves_relative_gitdir() {
+        let tmp = TempDir::new().unwrap();
+        let main_root = tmp.path().join("main");
+        let wt_root = tmp.path().join("wt");
+        std::fs::create_dir_all(main_root.join(".git/worktrees/wt")).unwrap();
+        std::fs::create_dir_all(&wt_root).unwrap();
+        std::fs::write(wt_root.join(".git"), "gitdir: ../main/.git/worktrees/wt\n").unwrap();
+
+        assert_eq!(worktree_main_root(&wt_root), Some(main_root));
+    }
+
+    #[test]
+    fn worktree_main_root_rejects_submodule_gitdir() {
+        let tmp = TempDir::new().unwrap();
+        let super_root = tmp.path().join("super");
+        let sub_root = super_root.join("sub");
+        std::fs::create_dir_all(super_root.join(".git/modules/sub")).unwrap();
+        std::fs::create_dir_all(&sub_root).unwrap();
+        std::fs::write(
+            sub_root.join(".git"),
+            format!(
+                "gitdir: {}\n",
+                super_root.join(".git/modules/sub").display()
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(worktree_main_root(&sub_root), None);
+    }
+
+    #[test]
+    fn worktree_main_root_rejects_regular_repo() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+
+        assert_eq!(worktree_main_root(tmp.path()), None);
+    }
+
+    #[test]
+    fn require_waypoint_dir_worktree_falls_back_to_main() {
+        let tmp = TempDir::new().unwrap();
+        let main_root = tmp.path().join("main");
+        let wt_root = tmp.path().join("wt");
+        make_linked_worktree(&main_root, &wt_root);
+        std::fs::create_dir(main_root.join(".waypoint")).unwrap();
+
+        let wp_dir = require_waypoint_dir(&wt_root).unwrap();
+        assert_eq!(wp_dir, main_root.join(".waypoint"));
+    }
+
+    #[test]
+    fn require_waypoint_dir_worktree_without_main_index_errors() {
+        let tmp = TempDir::new().unwrap();
+        let main_root = tmp.path().join("main");
+        let wt_root = tmp.path().join("wt");
+        make_linked_worktree(&main_root, &wt_root);
+
+        assert!(require_waypoint_dir(&wt_root).is_err());
     }
 
     #[test]
