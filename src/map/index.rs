@@ -591,7 +591,10 @@ fn rebuild_arch_summary_with(
     }
     let total = entries.len().max(1);
     let mut lang_vec: Vec<_> = lang_counts.into_iter().collect();
-    lang_vec.sort_by_key(|b| std::cmp::Reverse(b.1));
+    // Secondary alphabetical key breaks ties deterministically — HashMap iteration
+    // order is per-process-random, so count-only sorting made same-count entries
+    // (e.g. two langs tied at 5%) swap places across runs on identical repo state.
+    lang_vec.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
 
     #[allow(
         clippy::cast_precision_loss,
@@ -620,7 +623,8 @@ fn rebuild_arch_summary_with(
         *dir_fan_in.entry(dir).or_default() += 1;
     }
     let mut dir_vec: Vec<_> = dir_fan_in.into_iter().collect();
-    dir_vec.sort_by_key(|b| std::cmp::Reverse(b.1));
+    // Secondary alphabetical key breaks ties deterministically — see lang_vec above.
+    dir_vec.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     let hotspot_parts: Vec<String> = dir_vec
         .iter()
@@ -1507,6 +1511,49 @@ mod tests {
                 summary.lang_dist
             );
         }
+    }
+
+    #[test]
+    fn rebuild_arch_summary_breaks_lang_count_ties_alphabetically() {
+        let tmp = TempDir::new().unwrap();
+        // Rust and Python tie at one file each — count-only sorting left this
+        // ordering to HashMap iteration order, which is per-process-random.
+        let entries = vec![sample_entry("src/main.rs"), sample_entry("src/app.py")];
+        crate::map::write_map(tmp.path(), &entries).unwrap();
+
+        let summary = rebuild_arch_summary(tmp.path(), &entries, &[]).unwrap();
+
+        let python_pos = summary.lang_dist.find("Python").unwrap();
+        let rust_pos = summary.lang_dist.find("Rust").unwrap();
+        assert!(
+            python_pos < rust_pos,
+            "tied counts must break alphabetically (Python before Rust): {0}",
+            summary.lang_dist
+        );
+    }
+
+    #[test]
+    fn rebuild_arch_summary_breaks_hotspot_count_ties_alphabetically() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![sample_entry("src/main.rs")];
+        crate::map::write_map(tmp.path(), &entries).unwrap();
+
+        // "src/aaa" and "src/bbb" tie at one inbound import each — same
+        // HashMap-iteration-order hazard as the language case above, but for
+        // dir_fan_in/dir_vec instead of lang_counts/lang_vec.
+        let imports = vec![
+            sample_import("src/main.rs", "helper", "src/bbb/file.rs"),
+            sample_import("src/main.rs", "other", "src/aaa/file.rs"),
+        ];
+        let summary = rebuild_arch_summary(tmp.path(), &entries, &imports).unwrap();
+
+        let aaa_pos = summary.hotspots.find("src/aaa").unwrap();
+        let bbb_pos = summary.hotspots.find("src/bbb").unwrap();
+        assert!(
+            aaa_pos < bbb_pos,
+            "tied hotspot counts must break alphabetically (src/aaa before src/bbb): {0}",
+            summary.hotspots
+        );
     }
 
     #[test]
