@@ -48,10 +48,14 @@ pub fn run() -> Result<(), AppError> {
     Ok(())
 }
 
-/// Compact command digest emitted every session so agents know what's available.
-const COMMAND_DIGEST: &str = "[waypoint] commands: find \"<query>\" (symbol search), \
-    ask \"<task>\" (rank files by task relevance), \
-    callers <name> (signature changes), impact (before commit)";
+/// Compact command digest emitted every session. This is the SOLE steering
+/// surface for waypoint usage (hooks-only consolidation, 2026-07-12) — no
+/// AGENTS.md/CLAUDE.md guidance backs it up. `ask` is deliberately omitted
+/// (~0% organic use, per waypoint-guidance-2026-06-01 assessment).
+const COMMAND_DIGEST: &str = "[waypoint] find \"<query>\" — symbol lookup, run before rg/reading; \
+    callers <name> — before signature changes; \
+    impact --base <ref> — before multi-file commits. \
+    [waypoint] map: lines are injected on file reads — if the map answers the question, skip the read";
 
 /// Emit session context: arch summary (for large projects) + command digest (always).
 ///

@@ -1,6 +1,6 @@
 {
   "name": "waypoint",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Project intelligence hooks — session context, read advisory, incremental index updates, and callers/impact nudge",
   "author": { "name": "Martin Burch" }
 }

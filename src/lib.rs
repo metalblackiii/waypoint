@@ -201,7 +201,13 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
         Command::Impact { base, context } => {
             let project_root = project::resolve_with_context(context.as_deref())?;
             let wp_dir = project::require_waypoint_dir(&project_root)?;
-            impact::run(&project_root, &wp_dir, base.as_deref())
+            impact::run(&project_root, &wp_dir, base.as_deref())?;
+            let _ = ledger::record_event(
+                ledger::EventKind::ImpactRun,
+                project_root.to_string_lossy().as_ref(),
+                0,
+            );
+            Ok(())
         }
 
         Command::Callers { symbol, context } => {
@@ -209,8 +215,18 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             let wp_dir = project::require_waypoint_dir(&project_root)?;
             let results = map::index::find_importers(&wp_dir, &symbol, None)?;
             if results.is_empty() {
+                let _ = ledger::record_event(
+                    ledger::EventKind::CallersMiss,
+                    project_root.to_string_lossy().as_ref(),
+                    0,
+                );
                 println!("No importers found for: {symbol}");
             } else {
+                let _ = ledger::record_event(
+                    ledger::EventKind::CallersHit,
+                    project_root.to_string_lossy().as_ref(),
+                    0,
+                );
                 // Group by file, show lines per file, count unique files
                 let mut by_file: std::collections::BTreeMap<&str, Vec<i64>> =
                     std::collections::BTreeMap::new();

@@ -111,22 +111,12 @@ Then add to **`~/.claude/settings.json`** (hooks should come **before** other ho
 
 For **Codex**, the manual path uses a raw `~/.codex/hooks.json` (different from the plugin-based mechanism `setup-plugins.sh` uses). Copy the same hook scripts to `~/.codex/hooks/`, make them executable, and add the equivalent JSON to `~/.codex/hooks.json` pointing at those paths. Also ensure `plugin_hooks = true` under `[features]` in `~/.codex/config.toml`.
 
-## 5. Add the minimal protocol to your global agent instructions
+## 5. Agent instructions — none needed
 
-`WAYPOINT.md` is the single source of truth for the copy/paste template.
-Copy the content of `WAYPOINT.md` into your global `AGENTS.md` (recommended for cross-agent portability).
-
-If you prefer import-based sync, keep the template in `WAYPOINT.md` and add an `@` import to `~/.claude/CLAUDE.md`.
-
-**Claude Code only (optional):** If you want auto-sync instead of copy/paste, add an `@` import in `~/.claude/CLAUDE.md`:
-
-NOTE: Recommend installing rg (ripgrep) as it is more efficient than grep.  If not, update rules accordingly
-
-```markdown
-@/absolute/path/to/waypoint/WAYPOINT.md
-```
-
-Use your local absolute path to this repo.
+Hooks are the sole steering surface: the SessionStart hook injects a command
+digest every session, and the UserPromptSubmit hook nudges `callers`/`impact`
+on change tasks. Do not add waypoint guidance to `AGENTS.md`/`CLAUDE.md` —
+duplicating it there muddies install/uninstall as an on/off boundary.
 
 ## 6. First run
 

@@ -22,6 +22,9 @@ pub enum EventKind {
     AskMiss,
     ArchHit,
     ArchMiss,
+    CallersHit,
+    CallersMiss,
+    ImpactRun,
 }
 
 impl EventKind {
@@ -38,6 +41,9 @@ impl EventKind {
             Self::AskMiss => "ask_miss",
             Self::ArchHit => "arch_hit",
             Self::ArchMiss => "arch_miss",
+            Self::CallersHit => "callers_hit",
+            Self::CallersMiss => "callers_miss",
+            Self::ImpactRun => "impact_run",
         }
     }
 }
@@ -740,6 +746,9 @@ mod tests {
         assert_eq!(EventKind::FirstEditTurns.as_str(), "first_edit_turns");
         assert_eq!(EventKind::ArchHit.as_str(), "arch_hit");
         assert_eq!(EventKind::ArchMiss.as_str(), "arch_miss");
+        assert_eq!(EventKind::CallersHit.as_str(), "callers_hit");
+        assert_eq!(EventKind::CallersMiss.as_str(), "callers_miss");
+        assert_eq!(EventKind::ImpactRun.as_str(), "impact_run");
     }
 
     #[test]

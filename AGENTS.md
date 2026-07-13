@@ -47,11 +47,10 @@ See `SETUP.md` for installation and plugin registration (`./setup-plugins.sh`).
 ### New Command
 
 1. Add CLI variant in `src/cli.rs` and dispatch in `src/lib.rs`
-2. Update `COMMAND_DIGEST` in `src/hook/session_start.rs`
+2. Update `COMMAND_DIGEST` in `src/hook/session_start.rs` — hooks are the sole steering surface; there is no AGENTS.md/WAYPOINT.md template to sync
 3. Add integration tests in `tests/integration.rs`
-4. Update `WAYPOINT.md` (command table)
-5. Update `SETUP.md` if the command is useful for setup verification
-6. Document in Architecture above only if it introduces new data model concepts
+4. Update `SETUP.md` if the command is useful for setup verification
+5. Document in Architecture above only if it introduces new data model concepts
 
 ### New Hook
 

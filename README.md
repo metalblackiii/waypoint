@@ -134,7 +134,7 @@ waypoint impact
 
 ## Setup
 
-For installation, hooks, and global agent configuration (`WAYPOINT.md` copy/import flow), see [SETUP.md](SETUP.md).
+For installation and hooks, see [SETUP.md](SETUP.md). Hooks are the sole steering surface — no agent-instruction snippets to copy.
 
 ## Known limitations
 
