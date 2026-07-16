@@ -12,6 +12,7 @@ const RETENTION_DAYS: i64 = 90;
 #[derive(Debug, Clone, Copy)]
 pub enum EventKind {
     SessionStart,
+    SubagentStart,
     MapHit,
     MapMiss,
     FindHit,
@@ -31,6 +32,7 @@ impl EventKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::SessionStart => "session_start",
+            Self::SubagentStart => "subagent_start",
             Self::MapHit => "map_hit",
             Self::MapMiss => "map_miss",
             Self::FindHit => "find_hit",
@@ -738,6 +740,7 @@ mod tests {
     #[test]
     fn event_kind_as_str() {
         assert_eq!(EventKind::SessionStart.as_str(), "session_start");
+        assert_eq!(EventKind::SubagentStart.as_str(), "subagent_start");
         assert_eq!(EventKind::MapHit.as_str(), "map_hit");
         assert_eq!(EventKind::MapMiss.as_str(), "map_miss");
         assert_eq!(EventKind::FindHit.as_str(), "find_hit");

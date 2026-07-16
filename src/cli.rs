@@ -103,6 +103,8 @@ pub enum HookCommand {
     PostWrite,
     /// `SessionStart` — auto-scan and record session start
     SessionStart,
+    /// `SubagentStart` — deliver the command digest to Task-tool subagents
+    SubagentStart,
     /// `UserPromptSubmit` — nudge toward callers/impact on change tasks
     UserPromptSubmit,
 }

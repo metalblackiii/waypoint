@@ -12,6 +12,18 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/waypoint-subagent-start.sh",
+            "args": []
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Read",

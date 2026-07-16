@@ -48,14 +48,20 @@ pub fn run() -> Result<(), AppError> {
     Ok(())
 }
 
-/// Compact command digest emitted every session. This is the SOLE steering
-/// surface for waypoint usage (hooks-only consolidation, 2026-07-12) — no
-/// AGENTS.md/CLAUDE.md guidance backs it up. `ask` is deliberately omitted
-/// (~0% organic use, per waypoint-guidance-2026-06-01 assessment).
-const COMMAND_DIGEST: &str = "[waypoint] find \"<query>\" — symbol lookup, run before rg/reading; \
-    callers <name> — before signature changes; \
-    impact --base <ref> — before multi-file commits. \
-    [waypoint] map: lines are injected on file reads — if the map answers the question, skip the read";
+/// Compact command digest emitted every session. Backed by a global
+/// `AGENTS.md`/`CLAUDE.md` directive as of 2026-07-15 (dotfiles
+/// `codex/AGENTS.md`, "Search: waypoint > rg > Grep tool > grep") — this hook
+/// text is the fallback for contexts that directive doesn't reach (e.g.
+/// Task-tool subagents needing their own delivery via `SubagentStart`, below).
+/// `ask` is deliberately omitted (~0% organic use, per
+/// waypoint-guidance-2026-06-01 assessment).
+///
+/// `pub(crate)` so `subagent_start` can reuse the same digest — `SessionStart`
+/// context never reaches Task-tool subagents (separate hook, separate fresh
+/// context per Claude Code's subagent-isolation model), so they need their
+/// own delivery of this text via `SubagentStart`.
+pub(crate) const COMMAND_DIGEST: &str =
+    "waypoint CLI on PATH — run `waypoint find`/`callers`/`impact` (see `waypoint --help`) before grep/rg/reading.";
 
 /// Emit session context: arch summary (for large projects) + command digest (always).
 ///

@@ -1,6 +1,7 @@
 pub mod post_write;
 pub mod pre_read;
 pub mod session_start;
+pub mod subagent_start;
 pub mod user_prompt_submit;
 
 use std::path::{Path, PathBuf};
@@ -57,6 +58,7 @@ pub(crate) enum HookEvent {
     PreToolUse,
     PostToolUse,
     SessionStart,
+    SubagentStart,
     UserPromptSubmit,
 }
 
@@ -67,6 +69,7 @@ impl HookEvent {
             Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
             Self::SessionStart => "SessionStart",
+            Self::SubagentStart => "SubagentStart",
             Self::UserPromptSubmit => "UserPromptSubmit",
         }
     }
