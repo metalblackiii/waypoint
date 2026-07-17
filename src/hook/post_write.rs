@@ -65,22 +65,17 @@ pub fn run() -> Result<(), AppError> {
     }
 
     let abs_path = project_root.join(&relative);
-    let mut output_parts: Vec<String> = Vec::new();
+    // Routine map/symbol/import bookkeeping is silent housekeeping — it never
+    // reaches the AI. Only a genuine exported-signature change surfaces here.
+    let mut warnings: Vec<String> = Vec::new();
 
     if abs_path.exists() {
-        update_existing_file(
-            &wp_dir,
-            &project_root,
-            &abs_path,
-            &relative,
-            &mut output_parts,
-        )?;
+        update_existing_file(&wp_dir, &project_root, &abs_path, &relative, &mut warnings)?;
     } else {
         remove_deleted_file(&wp_dir, &relative)?;
-        output_parts.push(format!("[waypoint] map removed: {relative}"));
     }
 
-    let context = output_parts.join("\n");
+    let context = warnings.join("\n");
     super::emit_hook_output(super::HookEvent::PostToolUse, None, &context);
     Ok(())
 }
@@ -116,7 +111,7 @@ fn update_existing_file(
     project_root: &Path,
     abs_path: &Path,
     relative: &str,
-    output: &mut Vec<String>,
+    warnings: &mut Vec<String>,
 ) -> Result<(), AppError> {
     let Ok(content) = std::fs::read_to_string(abs_path) else {
         // Unreadable file (binary, permissions) — skip silently
@@ -126,7 +121,6 @@ fn update_existing_file(
     if content.trim().is_empty() {
         // Empty/whitespace-only — treat as deleted from map
         remove_deleted_file(wp_dir, relative)?;
-        output.push(format!("[waypoint] map removed: {relative}"));
         return Ok(());
     }
 
@@ -146,7 +140,6 @@ fn update_existing_file(
         mtime_ms: mtime,
     };
     map::update_entry(wp_dir, entry)?;
-    output.push(format!("[waypoint] map updated: {relative}"));
 
     // Snapshot exported symbols BEFORE replacing them (for signature comparison)
     let old_exported = index::exported_symbols_for_file(wp_dir, relative).unwrap_or_default();
@@ -184,20 +177,18 @@ fn update_existing_file(
         }
         let _ = index::update_file_calls(wp_dir, relative, &file_calls);
 
-        // Detect signature changes on exported symbols
+        // Detect signature changes on exported symbols — the one warning that
+        // still reaches the AI; it's rare and names concrete importer files.
         let sig_warnings = detect_signature_changes(wp_dir, relative, &old_exported, &file_symbols);
         if !sig_warnings.is_empty() {
-            output.push(sig_warnings);
+            warnings.push(sig_warnings);
         }
     }
 
-    // Clean stale sibling entries (rename detection)
+    // Clean stale sibling entries (rename detection) — silent housekeeping.
     let stale = collect_stale_siblings(wp_dir, project_root, relative);
     if !stale.is_empty() {
-        let cleaned = remove_stale_entries(wp_dir, &stale);
-        for path in &cleaned {
-            output.push(format!("[waypoint] stale removed: {path}"));
-        }
+        remove_stale_entries(wp_dir, &stale);
     }
 
     Ok(())

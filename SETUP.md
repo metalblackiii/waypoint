@@ -58,22 +58,22 @@ INPUT=$(cat)
 printf '%s\n' "$INPUT" | "$WAYPOINT" hook session-start
 ```
 
-**waypoint-pre-read.sh**
+**waypoint-post-write.sh**
 ```sh
 #!/usr/bin/env bash
 WAYPOINT="${HOME}/.cargo/bin/waypoint"
 [[ -x "$WAYPOINT" ]] || exit 0
 INPUT=$(cat)
-printf '%s\n' "$INPUT" | "$WAYPOINT" hook pre-read
+printf '%s\n' "$INPUT" | "$WAYPOINT" hook post-write
 ```
 
-**waypoint-user-prompt-submit.sh**
+**waypoint-subagent-start.sh**
 ```sh
 #!/usr/bin/env bash
 WAYPOINT="${HOME}/.cargo/bin/waypoint"
 [[ -x "$WAYPOINT" ]] || exit 0
 INPUT=$(cat)
-printf '%s\n' "$INPUT" | "$WAYPOINT" hook user-prompt-submit
+printf '%s\n' "$INPUT" | "$WAYPOINT" hook subagent-start
 ```
 
 Make them executable:
@@ -93,16 +93,16 @@ Then add to **`~/.claude/settings.json`** (hooks should come **before** other ho
         "hooks": [{ "type": "command", "command": "~/.claude/hooks/waypoint-session-start.sh" }]
       }
     ],
-    "PreToolUse": [
+    "PostToolUse": [
       {
-        "matcher": "Read",
-        "hooks": [{ "type": "command", "command": "~/.claude/hooks/waypoint-pre-read.sh" }]
+        "matcher": "Edit|Write",
+        "hooks": [{ "type": "command", "command": "~/.claude/hooks/waypoint-post-write.sh" }]
       }
     ],
-    "UserPromptSubmit": [
+    "SubagentStart": [
       {
         "matcher": "",
-        "hooks": [{ "type": "command", "command": "~/.claude/hooks/waypoint-user-prompt-submit.sh" }]
+        "hooks": [{ "type": "command", "command": "~/.claude/hooks/waypoint-subagent-start.sh" }]
       }
     ]
   }
@@ -113,10 +113,12 @@ For **Codex**, the manual path uses a raw `~/.codex/hooks.json` (different from 
 
 ## 5. Agent instructions — none needed
 
-Hooks are the sole steering surface: the SessionStart hook injects a command
-digest every session, and the UserPromptSubmit hook nudges `callers`/`impact`
-on change tasks. Do not add waypoint guidance to `AGENTS.md`/`CLAUDE.md` —
-duplicating it there muddies install/uninstall as an on/off boundary.
+Hooks are the sole steering surface: SessionStart injects a command digest
+every session, SubagentStart delivers it to built-in subagents (Explore/Plan)
+that never load `CLAUDE.md`/`AGENTS.md`, and PostToolUse keeps the map/symbol
+index current in the background. Do not add waypoint guidance to
+`AGENTS.md`/`CLAUDE.md` — duplicating it there muddies install/uninstall as
+an on/off boundary.
 
 ## 6. First run
 
@@ -166,4 +168,4 @@ Expected signals:
 - In code repos, `waypoint find "scan" --limit 5` usually returns symbols; in non-code repos it may return "No symbols found".
 - `waypoint arch` prints architecture context (`Languages`, and `Hotspots` when imports are present).
 
-If a hook is misconfigured, open a new Claude/Codex session and confirm read operations include `[waypoint] map:` annotations.
+If a hook is misconfigured, open a new Claude/Codex session and confirm the session-start message includes `[waypoint] arch:` context (large repos) or that `waypoint status` reports a healthy map.

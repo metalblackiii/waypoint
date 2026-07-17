@@ -60,8 +60,7 @@ pub fn run() -> Result<(), AppError> {
 /// context never reaches Task-tool subagents (separate hook, separate fresh
 /// context per Claude Code's subagent-isolation model), so they need their
 /// own delivery of this text via `SubagentStart`.
-pub(crate) const COMMAND_DIGEST: &str =
-    "waypoint CLI on PATH — run `waypoint find`/`callers`/`impact` (see `waypoint --help`) before grep/rg/reading.";
+pub(crate) const COMMAND_DIGEST: &str = "waypoint CLI on PATH — run `waypoint find`/`callers`/`impact` (see `waypoint --help`) before grep/rg/reading.";
 
 /// Emit session context: arch summary (for large projects) + command digest (always).
 ///

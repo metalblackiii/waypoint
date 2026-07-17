@@ -33,7 +33,8 @@ Waypoint runs as Claude Code/Codex hooks, injecting context automatically:
 | Hook | Trigger | What happens |
 |------|---------|--------------|
 | **session-start** | New conversation | Auto-scans if no map exists or map is stale, then injects 2-line `[waypoint] arch:` context for repos with >=20 scannable files. |
-| **pre-read** | Before the AI Agent reads a file | Injects file description and token estimate from the map (works across projects) |
+| **post-write** | After the AI Agent edits/writes a file | Silently updates the map/symbol/import/call index for that file. The only output that reaches the AI is a warning when an edit changes an *exported* symbol's signature, naming the affected importer files. |
+| **subagent-start** | New subagent (e.g. built-in Explore/Plan) | Injects the command digest. Built-in subagents never load CLAUDE.md/AGENTS.md, so this is the only channel telling them waypoint exists. |
 
 Session-start arch context details:
 
@@ -145,18 +146,9 @@ For installation and hooks, see [SETUP.md](SETUP.md). Hooks are the sole steerin
 - `waypoint impact` output is text-only in v1 (no JSON mode yet).
 - Hidden files/directories (`.`-prefixed) are intentionally excluded from scan/indexing to avoid over-indexing system/metadata paths; dotfile-heavy repos may see more lookup misses.
 
-## Cross-project map lookups
+## Cross-project lookups
 
-When Claude reads a file outside the current project, the pre-read hook automatically resolves the file's own project root and serves map context from that project's `.waypoint/` directory. This works for sibling repos, nested repos (submodules), and any waypoint-managed project on disk.
-
-Arch context is emitted at session start for the session root repo. On cross-repo pre-read, you get `[waypoint] foreign:` plus file map context for the target repo. For explicit cross-repo architecture lookup at any time, use `waypoint arch -C <repo>`.
-
-Typical cross-repo signals:
-
-```text
-[waypoint] foreign: /path/to/other-repo
-[waypoint] map: ...
-```
+Arch context is emitted at session start for the session root repo. For explicit cross-repo architecture or symbol lookup at any time, use `waypoint arch -C <repo>`, `waypoint find <symbol> -C <repo>`, or `waypoint callers <symbol> -C <repo>`.
 
 For this to work, the target project needs to have been scanned at least once. Pre-warm all your repos in one pass:
 

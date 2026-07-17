@@ -1,8 +1,8 @@
 {
   "name": "waypoint",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "displayName": "Waypoint",
-  "description": "Project intelligence hooks — session context injection and read advisory",
+  "description": "Project intelligence hooks — session context injection and silent index updates",
   "author": { "name": "Martin Burch" },
   "category": "Developer Tools"
 }

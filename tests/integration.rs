@@ -137,7 +137,8 @@ fn hook_post_write_updates_map_entry() {
         .write_stdin(payload)
         .assert()
         .success()
-        .stdout(predicate::str::contains("map updated"));
+        // Routine index updates are silent housekeeping — no AI-facing output.
+        .stdout(predicate::str::contains("map updated").not());
 
     // Verify map.md actually contains the new entry
     let map_content = std::fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
