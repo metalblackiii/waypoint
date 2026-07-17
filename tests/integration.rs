@@ -3,10 +3,29 @@
 //! Integration tests for waypoint CLI commands and Claude Code hook contracts.
 
 use std::fs;
+use std::sync::OnceLock;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
+
+/// Redirect the ledger DB used by spawned `waypoint` subprocesses into a
+/// throwaway temp dir for the lifetime of this test binary, so `cargo test`
+/// never writes find/hook/gain events into the developer's real usage ledger.
+/// Leaked intentionally (`OnceLock` statics never run `Drop`) — cleaned up by
+/// the OS temp-dir sweep like any other test tempdir.
+fn test_ledger_dir() -> &'static TempDir {
+    static DIR: OnceLock<TempDir> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = TempDir::new().unwrap();
+        // SAFETY: runs once via OnceLock before any test spawns a `waypoint`
+        // subprocess; no concurrent env reads/writes race this call.
+        unsafe {
+            std::env::set_var("WAYPOINT_DATA_DIR", dir.path());
+        }
+        dir
+    })
+}
 
 /// Create a minimal project with .git marker and a Rust source file.
 fn setup_project() -> TempDir {
@@ -22,6 +41,7 @@ fn setup_project() -> TempDir {
 }
 
 fn waypoint() -> Command {
+    test_ledger_dir();
     Command::cargo_bin("waypoint").unwrap()
 }
 

@@ -326,9 +326,19 @@ impl GainStats {
 }
 
 /// Get the platform-native database path.
+///
+/// WARNING: integration tests spawn the real `waypoint` binary as a
+/// subprocess, so a plain `#[cfg(test)]` override doesn't reach it — the
+/// override must be a runtime env var. `WAYPOINT_DATA_DIR`, when set, replaces
+/// the whole `dirs::data_dir()/waypoint` directory (not just appended),
+/// keeping test runs out of the user's real ledger at
+/// `~/Library/Application Support/waypoint/ledger.db` (or platform equivalent).
 fn db_path() -> Option<PathBuf> {
-    let data_dir = dirs::data_dir()?;
-    let dir = data_dir.join("waypoint");
+    let dir = if let Some(override_dir) = std::env::var_os("WAYPOINT_DATA_DIR") {
+        PathBuf::from(override_dir)
+    } else {
+        dirs::data_dir()?.join("waypoint")
+    };
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join("ledger.db"))
 }
@@ -653,6 +663,23 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn db_path_honors_data_dir_override() {
+        // This is the only test in this binary that touches WAYPOINT_DATA_DIR
+        // or calls dirs::data_dir() (via db_path()), so no other thread can
+        // race this env mutation.
+        let dir = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("WAYPOINT_DATA_DIR", dir.path());
+        }
+        let path = db_path();
+        unsafe {
+            std::env::remove_var("WAYPOINT_DATA_DIR");
+        }
+
+        assert_eq!(path.unwrap(), dir.path().join("ledger.db"));
     }
 
     #[test]
