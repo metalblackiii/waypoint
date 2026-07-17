@@ -363,6 +363,9 @@ fn open_db() -> Result<Connection, AppError> {
     let path =
         db_path().ok_or_else(|| AppError::Ledger("cannot determine data directory".into()))?;
     let conn = Connection::open(&path)?;
+    // WARNING: every hook in every parallel session writes here; without a
+    // busy timeout a concurrent writer surfaces as an immediate SQLITE_BUSY error.
+    conn.busy_timeout(std::time::Duration::from_secs(3))?;
     init_schema(&conn)?;
     Ok(conn)
 }

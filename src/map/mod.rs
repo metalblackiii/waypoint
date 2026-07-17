@@ -175,7 +175,7 @@ pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppErr
     })?;
 
     // Rebuild SQLite index alongside map.md — if rebuild fails, remove
-    // the stale DB so pre_read falls back to map.md instead of serving old data
+    // the stale DB so readers fall back to map.md instead of serving old data
     if index::rebuild(waypoint_dir, entries).is_err() {
         let _ = std::fs::remove_file(waypoint_dir.join("map_index.db"));
     }

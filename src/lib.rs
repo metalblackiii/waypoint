@@ -271,11 +271,9 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
         }
 
         Command::Hook { command } => match command {
-            HookCommand::PreRead => hook::pre_read::run(),
             HookCommand::PostWrite => hook::post_write::run(),
             HookCommand::SessionStart => hook::session_start::run(),
             HookCommand::SubagentStart => hook::subagent_start::run(),
-            HookCommand::UserPromptSubmit => hook::user_prompt_submit::run(),
         },
     }
 }

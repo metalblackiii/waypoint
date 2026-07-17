@@ -73,6 +73,9 @@ const ARCH_HOTSPOT_DISPLAY_LIMIT: usize = 3;
 pub(crate) fn open_index(waypoint_dir: &Path) -> Result<Connection, AppError> {
     let db_path = waypoint_dir.join(INDEX_FILENAME);
     let conn = Connection::open(&db_path)?;
+    // WARNING: parallel agent sessions share this DB; without a busy timeout
+    // a concurrent writer surfaces as an immediate SQLITE_BUSY error.
+    conn.busy_timeout(std::time::Duration::from_secs(3))?;
     conn.execute_batch(SCHEMA)?;
     // Migrate existing databases: add columns introduced in v0.10.
     // ALTER TABLE errors are silently ignored when columns already exist.

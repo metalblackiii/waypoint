@@ -161,6 +161,8 @@ Remaining work to improve ranking via import/call graph signals:
 
 **`PreToolUse:Read` nudge** — when the hook injects `[waypoint] map:` and the token count is >~200, append a harder signal: "waypoint sketch not called for this file — run it first to scope the read." Currently the map context is injected but doesn't block; a more assertive message may raise compliance without requiring a full deny.
 
+> **Addendum (2026-07-17):** the `pre-read` hook this builds on was unregistered in 276dcff and its code deleted in v0.22.0. This idea now requires rebuilding a `PreToolUse:Read` hook from scratch, not extending an existing one. (`sketch` was also dropped in v0.16.0 — the nudge target would need rethinking too.)
+
 **`PreToolUse:Bash` rg intercept** — intercept bash calls matching `rg <pattern> <path>` where the pattern looks like a symbol (no spaces, PascalCase or camelCase). Inject: "Try `waypoint find \"<pattern>\"` first — fall back to rg only if it returns no results." Avoids blocking legitimate text searches while nudging symbol lookups.
 
 ### Instruction Strengthening

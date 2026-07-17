@@ -97,14 +97,10 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum HookCommand {
-    /// PreToolUse:Read — inject file map context
-    PreRead,
     /// `PostToolUse:Edit|Write` — incremental map/symbol/import update
     PostWrite,
     /// `SessionStart` — auto-scan and record session start
     SessionStart,
     /// `SubagentStart` — deliver the command digest to Task-tool subagents
     SubagentStart,
-    /// `UserPromptSubmit` — nudge toward callers/impact on change tasks
-    UserPromptSubmit,
 }

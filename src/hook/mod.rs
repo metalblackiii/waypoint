@@ -1,8 +1,6 @@
 pub mod post_write;
-pub mod pre_read;
 pub mod session_start;
 pub mod subagent_start;
-pub mod user_prompt_submit;
 
 use std::path::{Path, PathBuf};
 
@@ -55,22 +53,18 @@ impl HookContext {
 /// Hook event types for Claude Code hook responses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HookEvent {
-    PreToolUse,
     PostToolUse,
     SessionStart,
     SubagentStart,
-    UserPromptSubmit,
 }
 
 impl HookEvent {
     #[must_use]
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
             Self::SessionStart => "SessionStart",
             Self::SubagentStart => "SubagentStart",
-            Self::UserPromptSubmit => "UserPromptSubmit",
         }
     }
 }
@@ -99,7 +93,18 @@ impl PermissionDecision {
 }
 
 /// Read full stdin and parse as JSON.
+///
+/// Refuses to read from a terminal: hook subcommands are only ever invoked
+/// with a JSON payload piped on stdin, and blocking on an interactive TTY
+/// hangs the process indefinitely.
 pub fn read_stdin() -> Result<serde_json::Value, crate::AppError> {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        return Err(std::io::Error::other(
+            "stdin is a terminal; hook subcommands expect a JSON payload piped on stdin",
+        )
+        .into());
+    }
     let input = std::io::read_to_string(std::io::stdin())?;
     let value: serde_json::Value = serde_json::from_str(&input)?;
     Ok(value)
@@ -177,25 +182,25 @@ mod tests {
     }
 
     #[test]
-    fn build_pre_tool_use_allow_with_context() {
+    fn build_output_with_permission_and_context() {
         let output = build_hook_output(
-            HookEvent::PreToolUse,
+            HookEvent::PostToolUse,
             Some(PermissionDecision::Allow),
             "some context",
         );
         let hook = &output["hookSpecificOutput"];
 
-        assert_eq!(hook["hookEventName"], "PreToolUse");
+        assert_eq!(hook["hookEventName"], "PostToolUse");
         assert_eq!(hook["permissionDecision"], "allow");
         assert_eq!(hook["additionalContext"], "some context");
     }
 
     #[test]
-    fn build_pre_tool_use_allow_empty_context() {
-        let output = build_hook_output(HookEvent::PreToolUse, Some(PermissionDecision::Allow), "");
+    fn build_output_with_permission_empty_context() {
+        let output = build_hook_output(HookEvent::PostToolUse, Some(PermissionDecision::Allow), "");
         let hook = &output["hookSpecificOutput"];
 
-        assert_eq!(hook["hookEventName"], "PreToolUse");
+        assert_eq!(hook["hookEventName"], "PostToolUse");
         assert_eq!(hook["permissionDecision"], "allow");
         assert!(hook.get("additionalContext").is_none());
     }

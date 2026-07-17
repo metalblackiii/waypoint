@@ -71,7 +71,7 @@ fn index_lookup(bencher: Bencher, n: usize) {
     bencher.bench(|| map::index::lookup(tmp.path(), &target).unwrap());
 }
 
-// --- pre_read full path: read_map + lookup (what pre_read did before) ---
+// --- read_map + lookup full path (what the pre-read hook did before its removal in v0.22.0) ---
 
 #[divan::bench(args = [1000, 3000, 5000, 9000])]
 fn read_map_then_lookup(bencher: Bencher, n: usize) {
