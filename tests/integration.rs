@@ -1246,3 +1246,124 @@ fn main() {
         .assert()
         .success();
 }
+
+// ── Hidden Paths & File-Fallback Tests ──────────────────────────
+
+#[test]
+fn cli_scan_indexes_unignored_hidden_dirs() {
+    let project = setup_project();
+    fs::create_dir_all(project.path().join(".agents/skills/demo")).unwrap();
+    fs::write(
+        project.path().join(".agents/skills/demo/SKILL.md"),
+        "# Demo skill\n\nInstructions live here.\n",
+    )
+    .unwrap();
+
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let map = fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
+    // map.md groups entries under a directory header, not full paths
+    assert!(
+        map.contains("## .agents/skills/demo") && map.contains("SKILL.md"),
+        "map should list unignored hidden skill files, got:\n{map}"
+    );
+}
+
+#[test]
+fn cli_scan_still_skips_gitignored_hidden_files() {
+    let project = setup_project();
+    fs::write(project.path().join(".gitignore"), ".cache/\n").unwrap();
+    fs::create_dir_all(project.path().join(".cache")).unwrap();
+    fs::write(
+        project.path().join(".cache/notes.md"),
+        "# Scratch\n\nGitignored — must not be indexed.\n",
+    )
+    .unwrap();
+
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let map = fs::read_to_string(project.path().join(".waypoint/map.md")).unwrap();
+    assert!(
+        !map.contains(".cache/notes.md"),
+        "gitignored hidden files must stay out of the map, got:\n{map}"
+    );
+}
+
+#[test]
+fn cli_find_falls_back_to_file_path_lookup() {
+    let project = setup_project();
+    fs::create_dir_all(project.path().join("plugins/demo/.claude-plugin")).unwrap();
+    fs::write(
+        project
+            .path()
+            .join("plugins/demo/.claude-plugin/plugin.json"),
+        "{\n  \"name\": \"demo\",\n  \"version\": \"1.0.0\"\n}\n",
+    )
+    .unwrap();
+
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // plugin.json produces no symbols — find must fall back to path lookup
+    waypoint()
+        .args(["find", "plugin.json"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "plugins/demo/.claude-plugin/plugin.json",
+        ))
+        .stdout(predicate::str::contains("No symbols found").not());
+}
+
+#[test]
+fn cli_find_file_fallback_matches_jq_scripts() {
+    let project = setup_project();
+    fs::create_dir_all(project.path().join("skills/helper")).unwrap();
+    fs::write(
+        project.path().join("skills/helper/board-summary.jq"),
+        ".issues | map({key, status: .fields.status.name})\n",
+    )
+    .unwrap();
+
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["find", "board-summary"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("skills/helper/board-summary.jq"));
+}
+
+#[test]
+fn cli_find_symbol_miss_without_file_match_still_reports_miss() {
+    let project = setup_project();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["find", "xyzzy_no_symbol_no_file_42"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No symbols found"));
+}

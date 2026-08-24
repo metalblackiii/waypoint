@@ -64,19 +64,27 @@ pub struct ScanOutput {
     pub calls: Vec<Call>,
 }
 
+/// Directory/file names excluded from walking and mapping regardless of
+/// hidden-ness or gitignore status.
+const EXCLUDED_COMPONENTS: [&str; 4] = [".waypoint", ".git", "node_modules", "__pycache__"];
+
 /// Configured walker shared by `count_scannable_files`, `scan_project`, and mtime staleness.
+///
+/// Hidden (dot-prefixed) paths are walked deliberately: dotdirs like
+/// `.agents/skills/` or `.github/workflows/` are real project content, and
+/// skipping them made `waypoint find` blind to them (observed 2026-08-06).
+/// Hidden files follow the same rule as everything else — indexed unless
+/// gitignored — so unignored-but-untracked hidden files (a not-yet-added
+/// `.config/`, say) are included, exactly like their non-hidden peers.
 pub(crate) fn project_walker(project_root: &Path) -> ignore::Walk {
     WalkBuilder::new(project_root)
-        .hidden(true)
+        .hidden(false)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
         .filter_entry(|entry| {
             let name = entry.file_name().to_string_lossy();
-            !matches!(
-                name.as_ref(),
-                ".waypoint" | ".git" | "node_modules" | "__pycache__"
-            )
+            !EXCLUDED_COMPONENTS.contains(&name.as_ref())
         })
         .build()
 }
@@ -188,18 +196,19 @@ pub fn scan_project(project_root: &Path) -> Result<ScanOutput, AppError> {
     })
 }
 
-/// Check if a file should appear in the waypoint map: scannable type and no hidden components.
+/// Check if a file should appear in the waypoint map: scannable type and no excluded components.
 /// Accepts either absolute or relative paths — only the filename/extension and component names matter.
+/// Hidden components are allowed (mirrors `project_walker`, which walks them).
 #[must_use]
 pub fn should_map_file(path: &Path) -> bool {
-    is_scannable(path) && !has_hidden_component(path)
+    is_scannable(path) && !has_excluded_component(path)
 }
 
-/// Returns true if any path component starts with `.` (hidden file or directory).
-fn has_hidden_component(path: &Path) -> bool {
+/// Returns true if any path component is in `EXCLUDED_COMPONENTS`.
+fn has_excluded_component(path: &Path) -> bool {
     path.components().any(|c| {
-        let bytes = c.as_os_str().as_encoded_bytes();
-        bytes.first() == Some(&b'.')
+        let name = c.as_os_str().to_string_lossy();
+        EXCLUDED_COMPONENTS.contains(&name.as_ref())
     })
 }
 
@@ -271,6 +280,7 @@ pub(crate) fn is_scannable(path: &Path) -> bool {
             | "sql"
             | "graphql"
             | "gql"
+            | "jq"
             | "tf"
             | "tfvars"
             | "hcl"

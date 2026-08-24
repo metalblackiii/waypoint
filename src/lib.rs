@@ -127,12 +127,26 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             let wp_dir = project::require_waypoint_dir(&project_root)?;
             let results = map::index::find_symbols(&wp_dir, &query, limit)?;
             if results.is_empty() {
-                let _ = ledger::record_event(
-                    ledger::EventKind::FindMiss,
-                    project_root.to_string_lossy().as_ref(),
-                    0,
-                );
-                println!("No symbols found: {query}");
+                // Symbol miss — fall back to file-path lookup so symbol-less
+                // files (markdown, manifests, jq) are still findable by name.
+                let file_hits = map::index::find_files(&wp_dir, &query, limit)?;
+                if file_hits.is_empty() {
+                    let _ = ledger::record_event(
+                        ledger::EventKind::FindMiss,
+                        project_root.to_string_lossy().as_ref(),
+                        0,
+                    );
+                    println!("No symbols found: {query}");
+                } else {
+                    let _ = ledger::record_event(
+                        ledger::EventKind::FindHit,
+                        project_root.to_string_lossy().as_ref(),
+                        0,
+                    );
+                    for path in &file_hits {
+                        println!("  {:6}  {path}", "file");
+                    }
+                }
             } else {
                 let _ = ledger::record_event(
                     ledger::EventKind::FindHit,

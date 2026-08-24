@@ -1116,6 +1116,24 @@ pub fn find_symbols(
     Ok(rank_candidates(&candidates, &conn, limit))
 }
 
+/// Fallback for `find` when no symbols match: exact/substring file-path lookup
+/// against map entries. Covers files that never produce symbols (markdown,
+/// JSON manifests, jq scripts) so indexed paths are still reachable by name
+/// (observed miss 2026-08-13: plugin manifests invisible to `find`).
+/// Shortest paths first — a shorter matching path is the more exact hit.
+pub fn find_files(waypoint_dir: &Path, query: &str, limit: usize) -> Result<Vec<String>, AppError> {
+    let conn = open_index(waypoint_dir)?;
+    let pattern = format!("%{query}%");
+    #[allow(clippy::cast_possible_wrap)]
+    let limit = limit as i64;
+    let mut stmt = conn.prepare(
+        "SELECT path FROM map_entries WHERE path LIKE ?1 \
+         ORDER BY length(path), path LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![pattern, limit], |row| row.get::<_, String>(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// Sibling display cap per file in the `find` "see also:" footer (FR-1).
 const SIBLING_DISPLAY_LIMIT: usize = 5;
 /// Files with this many exported symbols or more are barrel files — listing
