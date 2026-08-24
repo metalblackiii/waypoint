@@ -33,11 +33,11 @@ echo '.waypoint/' >> ~/.gitignore_global
 ./setup-plugins.sh
 ```
 
-**Prerequisites:** `jq` is required for the Codex path (`brew install jq`). The Claude Code path has no extra dependencies.
-
 What it does:
-- **Claude Code** — registers the `waypoint-plugins` marketplace and installs the `waypoint` plugin (hooks fire automatically).
-- **Codex** — writes `~/.agents/plugins/waypoint.json` and ensures `plugin_hooks = true` in `~/.codex/config.toml`.
+- **Claude Code** — registers the `waypoint-plugins` marketplace and installs `waypoint@waypoint-plugins` (hooks fire automatically).
+- **Codex** — registers the marketplace and installs the plugin via the `codex plugin` CLI, and ensures `plugin_hooks = true` in `~/.codex/config.toml`. A legacy hand-written `~/.agents/plugins/waypoint.json` from older versions of this script is removed automatically.
+
+Dev iteration: `./refresh-plugins.sh` reloads the installed plugin from the current checkout (uninstall/reinstall for Claude Code, in-place cache re-sync for Codex) — no version bump needed.
 
 To uninstall: `./setup-plugins.sh --uninstall`
 
