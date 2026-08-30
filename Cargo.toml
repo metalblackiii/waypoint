@@ -42,6 +42,11 @@ tempfile = "3.27.0"
 name = "hook_latency"
 harness = false
 
+# Full DWARF debuginfo (default debug=2) bloated target/ across
+# incremental rebuilds; line tables keep file:line backtraces
+[profile.dev]
+debug = "line-tables-only"
+
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
