@@ -480,7 +480,7 @@ mod tests {
 
         // Old import should be gone
         let results = index::find_importers(&wp_dir, "helper", Some("src/utils.rs")).unwrap();
-        assert!(results.is_empty());
+        assert_eq!(results, Vec::<(String, i64)>::new());
 
         // New import should exist
         let results = index::find_importers(&wp_dir, "other", Some("src/utils.rs")).unwrap();
@@ -500,7 +500,7 @@ mod tests {
         index::remove_file_imports(&wp_dir, "src/main.rs").unwrap();
 
         let results = index::find_importers(&wp_dir, "helper", Some("src/utils.rs")).unwrap();
-        assert!(results.is_empty());
+        assert_eq!(results, Vec::<(String, i64)>::new());
     }
 
     #[test]
@@ -638,7 +638,7 @@ mod tests {
         )];
 
         let warnings = detect_signature_changes(&wp_dir, "src/lib.rs", &old_exported, &new_syms);
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, "");
     }
 
     #[test]
@@ -755,7 +755,7 @@ mod tests {
         map::write_map(&wp_dir, &entries).unwrap();
 
         let stale = collect_stale_siblings(&wp_dir, tmp.path(), "src/a.rs");
-        assert!(stale.is_empty());
+        assert_eq!(stale, Vec::<String>::new());
     }
 
     #[test]

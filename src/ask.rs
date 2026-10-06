@@ -378,12 +378,12 @@ mod tests {
 
     #[test]
     fn tokenize_empty_returns_empty() {
-        assert!(tokenize_query("").is_empty());
+        assert_eq!(tokenize_query(""), Vec::<String>::new());
     }
 
     #[test]
     fn tokenize_only_stop_words_returns_empty() {
-        assert!(tokenize_query("the and or is").is_empty());
+        assert_eq!(tokenize_query("the and or is"), Vec::<String>::new());
     }
 
     #[test]

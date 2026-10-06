@@ -584,6 +584,6 @@ mod tests {
     fn discover_empty_dir() {
         let tmp = TempDir::new().unwrap();
         let projects = discover_projects(tmp.path()).unwrap();
-        assert!(projects.is_empty());
+        assert_eq!(projects, Vec::<PathBuf>::new());
     }
 }
