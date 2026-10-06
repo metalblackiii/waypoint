@@ -70,3 +70,23 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+  test-pi:
+    name: Test pi adapter
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # WHY: Node >= 22.18 strips TypeScript types natively, so the .ts adapter loads with no build or install step
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Run pi adapter tests
+        run: node --test plugins/waypoint/pi/*-test.mjs

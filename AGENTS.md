@@ -58,4 +58,5 @@ See `SETUP.md` for installation and plugin registration (`./setup-plugins.sh`).
 2. Add hook script in `plugins/waypoint/hooks/`
 3. Register in `plugins/waypoint/hooks/hooks.json`
 4. Update `SETUP.md` (manual hook section + hook list)
-5. Bump version — a new hook type is a minor feature
+5. Wire the matching pi event in `plugins/waypoint/pi/index.ts` when pi has one (it has no SubagentStart), then run `just test-pi`
+6. Bump version — a new hook type is a minor feature

@@ -1,0 +1,13 @@
+{
+  "name": "waypoint-pi",
+  "private": true,
+  "type": "module",
+  "description": "Waypoint hooks and skill for the pi coding agent, loaded as a local package",
+  "pi": {
+    "extensions": ["./pi/index.ts"],
+    "skills": ["./skills"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

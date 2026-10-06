@@ -111,6 +111,16 @@ Then add to **`~/.claude/settings.json`** (hooks should come **before** other ho
 
 For **Codex**, the manual path uses a raw `~/.codex/hooks.json` (different from the plugin-based mechanism `setup-plugins.sh` uses). Copy the same hook scripts to `~/.codex/hooks/`, make them executable, and add the equivalent JSON to `~/.codex/hooks.json` pointing at those paths. Also ensure `plugin_hooks = true` under `[features]` in `~/.codex/config.toml`.
 
+### Pi
+
+Pi loads `plugins/waypoint` as a local package straight from this checkout: no npm publish, no copy. Add the `~`-relative or absolute path to `packages` in `~/.pi/agent/settings.json`:
+
+```json
+{ "packages": ["~/repos/waypoint/plugins/waypoint"] }
+```
+
+Or run `pi install ~/repos/waypoint/plugins/waypoint`. The manifest in `plugins/waypoint/package.json` loads the adapter at `pi/index.ts` and the skill under `skills/`; checkout edits take effect on the next pi session. The adapter maps `session_start` and `session_compact` to `waypoint hook session-start`, and successful `write`/`edit`/`undo_last_edit` results to `waypoint hook post-write`. Pi has no SubagentStart event. Like the shell hooks, it runs `~/.cargo/bin/waypoint` (override with `WAYPOINT_BINARY`) and skips silently when that binary is absent. Tests: `just test-pi`
+
 ## 5. Agent instructions — none needed
 
 Hooks are the sole steering surface: SessionStart injects a command digest

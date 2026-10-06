@@ -35,6 +35,10 @@ fmt:
 test:
     cargo test
 
+# Run the pi adapter tests (Node >= 22.18 for .ts type stripping)
+test-pi:
+    node --test plugins/waypoint/pi/*-test.mjs
+
 # Scan current project
 scan:
     cargo run -- scan

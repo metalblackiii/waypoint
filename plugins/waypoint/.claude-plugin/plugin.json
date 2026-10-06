@@ -1,6 +1,6 @@
 {
   "name": "waypoint",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Project intelligence hooks and skill — session context, silent incremental index updates, and subagent onboarding",
   "author": { "name": "Martin Burch" }
 }
