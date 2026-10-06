@@ -98,11 +98,12 @@ fn worktree_main_waypoint_dir(root: &Path) -> Option<PathBuf> {
 /// use `require_waypoint_dir` or `ensure_initialized`.
 pub fn resolve_with_context(context_path: Option<&str>) -> Result<PathBuf, AppError> {
     if let Some(path) = context_path {
-        let abs = if Path::new(path).is_relative() {
-            std::env::current_dir()?.join(path)
-        } else {
-            PathBuf::from(path)
-        };
+        // WHY: canonical, because cwd resolution sees the OS's resolved path (macOS
+        // `/private/var/...`) and the ledger keys events by this string — a `-C` path spelled
+        // through a symlink would otherwise count as a different project in `gain`.
+        let abs = Path::new(path).canonicalize().map_err(|e| {
+            std::io::Error::new(e.kind(), format!("no project root found for: {path}"))
+        })?;
         let root = find_root(&abs).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -528,7 +529,20 @@ mod tests {
 
         let result = resolve_with_context(Some(tmp.path().to_str().unwrap()));
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), tmp.path());
+        assert_eq!(result.unwrap(), tmp.path().canonicalize().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_with_context_matches_cwd_spelling_through_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&project, &link).unwrap();
+
+        let root = resolve_with_context(Some(link.to_str().unwrap())).unwrap();
+        assert_eq!(root, project.canonicalize().unwrap());
     }
 
     #[test]
@@ -565,7 +579,7 @@ mod tests {
         std::fs::write(&file, "fn main() {}").unwrap();
 
         let root = resolve_with_context(Some(file.to_str().unwrap())).unwrap();
-        assert_eq!(root, tmp.path());
+        assert_eq!(root, tmp.path().canonicalize().unwrap());
     }
 
     /// Helper: create a child git repo under `parent`.
