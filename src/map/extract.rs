@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -1667,6 +1667,9 @@ pub fn extract_imports(path: &Path, content: &str) -> Vec<Import> {
             _ => {}
         }
     }
+    if ext == "rs" {
+        imports_from_rust_qualified_calls(root, content, &mut imports);
+    }
 
     imports
 }
@@ -1891,6 +1894,143 @@ fn import_from_rust(node: tree_sitter::Node, content: &str, imports: &mut Vec<Im
     }
 }
 
+/// Record each crate function called through a module path (`project::resolve()`) as an import
+/// of that function, once per file at its first call. WHY: idiomatic Rust imports the module,
+/// not the function, so `use` rows alone left `callers`, `impact`, and the signature-change
+/// warning blind to most cross-file function calls.
+///
+/// A path's first segment counts only when Rust itself would resolve it inside the crate:
+/// `crate`/`self`/`super`, a name a `use crate::…`/`self::…`/`super::…` brings in, or a module
+/// this file declares with `mod`. External crates (`serde_json::`) and type paths
+/// (`String::from`, `Entry::new`) are skipped — they never map to a project file.
+fn imports_from_rust_qualified_calls(
+    root: tree_sitter::Node,
+    content: &str,
+    imports: &mut Vec<Import>,
+) {
+    let mut in_scope = rust_use_paths(root, content);
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "mod_item"
+            && let Some(name) = child.child_by_field_name("name")
+        {
+            let name = node_text(name, content);
+            in_scope.insert(name.to_string(), format!("self::{name}"));
+        }
+    }
+
+    let mut seen: HashSet<(String, String)> = imports
+        .iter()
+        .map(|i| (i.raw_path.clone(), i.imported_name.clone()))
+        .collect();
+    collect_rust_qualified_calls(root, content, &in_scope, &mut seen, imports);
+}
+
+#[allow(clippy::cast_possible_wrap)]
+fn collect_rust_qualified_calls(
+    node: tree_sitter::Node,
+    content: &str,
+    in_scope: &HashMap<String, String>,
+    seen: &mut HashSet<(String, String)>,
+    imports: &mut Vec<Import>,
+) {
+    if node.kind() == "call_expression"
+        && let Some((raw_path, name)) = rust_call_module_path(node, content, in_scope)
+        && seen.insert((raw_path.clone(), name.clone()))
+    {
+        let line = node.start_position().row as i64 + 1;
+        imports.push(build_raw_import(&raw_path, &name, line));
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_rust_qualified_calls(child, content, in_scope, seen, imports);
+    }
+}
+
+/// `(module path, function name)` for a call like `a::b::f(…)` or `a::f::<T>(…)`, with the
+/// first segment rewritten to the crate-relative path it names; `None` outside the crate.
+fn rust_call_module_path(
+    call: tree_sitter::Node,
+    content: &str,
+    in_scope: &HashMap<String, String>,
+) -> Option<(String, String)> {
+    let mut function = call.child_by_field_name("function")?;
+    if function.kind() == "generic_function" {
+        function = function.child_by_field_name("function")?;
+    }
+    if function.kind() != "scoped_identifier" {
+        return None;
+    }
+    let path = node_text(function.child_by_field_name("path")?, content);
+    let name = node_text(function.child_by_field_name("name")?, content);
+
+    let (first, rest) = path
+        .split_once("::")
+        .map_or((path, None), |(f, r)| (f, Some(r)));
+    let base = match first {
+        "crate" | "self" | "super" => first.to_string(),
+        _ => in_scope.get(first)?.clone(),
+    };
+    let raw_path = rest.map_or_else(|| base.clone(), |rest| format!("{base}::{rest}"));
+    // Rust files and modules are snake_case: a capitalised or generic segment is a type.
+    let is_module_path = raw_path.split("::").all(|segment| {
+        segment
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    });
+    is_module_path.then(|| (raw_path, name.to_string()))
+}
+
+/// Names that top-level `use crate::…`, `use self::…`, and `use super::…` declarations bring
+/// into scope, mapped to the full path each one names. Glob and nested-brace items are skipped.
+fn rust_use_paths(root: tree_sitter::Node, content: &str) -> HashMap<String, String> {
+    let mut paths = HashMap::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() != "use_declaration" {
+            continue;
+        }
+        let Some(argument) = child.child_by_field_name("argument") else {
+            continue;
+        };
+        let text = node_text(argument, content);
+        if !["crate::", "self::", "super::"]
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
+        {
+            continue;
+        }
+        if let Some(brace) = text.find('{') {
+            let prefix = text[..brace].trim_end_matches(':');
+            let items = text[brace..].trim_start_matches('{').trim_end_matches('}');
+            for item in items.split(',').map(str::trim) {
+                if item.contains(['{', '}', '*']) || item.is_empty() {
+                    continue;
+                }
+                if item == "self" {
+                    if let Some((_, last)) = prefix.rsplit_once("::") {
+                        paths.insert(last.to_string(), prefix.to_string());
+                    }
+                } else {
+                    insert_use_path(&mut paths, &format!("{prefix}::{item}"));
+                }
+            }
+        } else if !text.ends_with('*') {
+            insert_use_path(&mut paths, text);
+        }
+    }
+    paths
+}
+
+/// Map the name `use_item` brings into scope (`a::b` → `b`, `a::b as c` → `c`) to its path.
+fn insert_use_path(paths: &mut HashMap<String, String>, use_item: &str) {
+    let (path, alias) = match use_item.split_once(" as ") {
+        Some((path, alias)) => (path.trim(), alias.trim()),
+        None => (use_item, use_item.rsplit("::").next().unwrap_or(use_item)),
+    };
+    paths.insert(alias.to_string(), path.to_string());
+}
+
 // --- Go imports ---
 
 #[allow(clippy::cast_possible_wrap)]
@@ -1944,7 +2084,7 @@ pub fn resolve_import_path(
             resolve_js_import(source_file, raw_path, project_root)
         }
         "py" => resolve_python_import(source_file, raw_path, project_root),
-        "rs" => resolve_rust_import(raw_path, project_root),
+        "rs" => resolve_rust_import(&crate_relative(source_file, raw_path)?, project_root),
         _ => None,
     }
 }
@@ -2003,6 +2143,41 @@ fn resolve_python_import(source_file: &str, raw_path: &str, root: &Path) -> Opti
         return Some(candidate);
     }
     None
+}
+
+/// Rewrite a `self::…`/`super::…` path to its `crate::…` form using the module `source_file`
+/// defines (`src/hook/mod.rs` → `crate::hook`); other paths pass through. `None` for a
+/// relative path in a file outside `src/`, which belongs to no module of this crate.
+fn crate_relative(source_file: &str, raw_path: &str) -> Option<String> {
+    let mut segments = raw_path.split("::").peekable();
+    if !matches!(segments.peek(), Some(&("self" | "super"))) {
+        return Some(raw_path.to_string());
+    }
+    let module_file = source_file.strip_prefix("src/")?.strip_suffix(".rs")?;
+    let mut module: Vec<&str> = match module_file {
+        "lib" | "main" => Vec::new(),
+        _ => module_file
+            .split('/')
+            .filter(|segment| *segment != "mod")
+            .collect(),
+    };
+    while let Some(&segment) = segments.peek() {
+        match segment {
+            "self" => {}
+            "super" => {
+                module.pop()?;
+            }
+            _ => break,
+        }
+        segments.next();
+    }
+    Some(
+        std::iter::once("crate")
+            .chain(module)
+            .chain(segments)
+            .collect::<Vec<_>>()
+            .join("::"),
+    )
 }
 
 fn resolve_rust_import(raw_path: &str, root: &Path) -> Option<String> {
@@ -3015,6 +3190,101 @@ export class Service {
         assert_eq!(imports.len(), 2);
         assert_eq!(imports[0].imported_name, "MapEntry");
         assert_eq!(imports[1].imported_name, "Symbol");
+    }
+
+    fn raw_imports(imports: &[Import]) -> Vec<(&str, &str, i64)> {
+        imports
+            .iter()
+            .map(|i| (i.raw_path.as_str(), i.imported_name.as_str(), i.line_number))
+            .collect()
+    }
+
+    #[test]
+    fn rust_qualified_call_through_child_module() {
+        let src = "pub mod project;\nfn run() {\n    let root = project::resolve_root(1);\n}\n";
+        let imports = extract_imports(Path::new("src/lib.rs"), src);
+        assert_eq!(
+            raw_imports(&imports),
+            vec![("self::project", "resolve_root", 3)]
+        );
+    }
+
+    #[test]
+    fn rust_qualified_call_through_use_aliases() {
+        let src = "use crate::map::{self, index};\nuse crate::ledger as log;\n\
+                   fn f() {\n    index::find(1);\n    map::scan::go();\n    log::record();\n}\n";
+        let imports = extract_imports(Path::new("src/hook/post_write.rs"), src);
+        assert_eq!(
+            raw_imports(&imports),
+            vec![
+                ("crate::map", "index", 1),
+                ("crate", "ledger", 2),
+                ("crate::map::index", "find", 4),
+                ("crate::map::scan", "go", 5),
+                ("crate::ledger", "record", 6),
+            ]
+        );
+    }
+
+    #[test]
+    fn rust_qualified_call_recorded_once_per_file() {
+        let src = "mod ledger;\nfn f() {\n    ledger::record(1);\n    ledger::record(2);\n}\n";
+        let imports = extract_imports(Path::new("src/lib.rs"), src);
+        assert_eq!(raw_imports(&imports), vec![("self::ledger", "record", 3)]);
+    }
+
+    #[test]
+    fn rust_qualified_calls_outside_the_crate_skipped() {
+        let src = "use crate::map::Entry;\nfn f() {\n    serde_json::to_string(1);\n    \
+                   String::from(\"a\");\n    Entry::new();\n    std::fs::read(\"x\");\n}\n";
+        let imports = extract_imports(Path::new("src/lib.rs"), src);
+        assert_eq!(raw_imports(&imports), vec![("crate::map", "Entry", 1)]);
+    }
+
+    #[test]
+    fn rust_qualified_generic_call() {
+        let src = "fn f() {\n    crate::conv::parse::<u8>(\"1\");\n}\n";
+        let imports = extract_imports(Path::new("src/lib.rs"), src);
+        assert_eq!(raw_imports(&imports), vec![("crate::conv", "parse", 2)]);
+    }
+
+    #[test]
+    fn rust_unqualified_and_method_calls_skipped() {
+        let src = "fn f() {\n    run();\n    x.go();\n}\n";
+        assert!(extract_imports(Path::new("src/lib.rs"), src).is_empty());
+    }
+
+    #[test]
+    fn resolve_rust_self_and_super_paths() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/hook")).unwrap();
+        std::fs::write(tmp.path().join("src/project.rs"), "").unwrap();
+        std::fs::write(tmp.path().join("src/hook/util.rs"), "").unwrap();
+        let root = tmp.path();
+        assert_eq!(
+            resolve_import_path("src/lib.rs", "self::project", "rs", root),
+            Some("src/project.rs".to_string())
+        );
+        assert_eq!(
+            resolve_import_path("src/hook/mod.rs", "self::util", "rs", root),
+            Some("src/hook/util.rs".to_string())
+        );
+        assert_eq!(
+            resolve_import_path("src/hook/session_start.rs", "super::util", "rs", root),
+            Some("src/hook/util.rs".to_string())
+        );
+        assert_eq!(
+            resolve_import_path("src/hook/mod.rs", "super::project", "rs", root),
+            Some("src/project.rs".to_string())
+        );
+        assert_eq!(
+            resolve_import_path("src/lib.rs", "self::std::fs", "rs", root),
+            None
+        );
+        assert_eq!(
+            resolve_import_path("tests/integration.rs", "self::project", "rs", root),
+            None
+        );
     }
 
     #[test]

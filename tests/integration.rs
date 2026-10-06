@@ -1614,6 +1614,33 @@ fn cli_find_context_flag_lists_foreign_project_candidates() {
 }
 
 #[test]
+fn cli_callers_finds_rust_module_qualified_calls() {
+    let project = setup_project();
+    fs::write(
+        project.path().join("src/lib.rs"),
+        "pub mod project;\n\npub fn run() {\n    project::resolve_root();\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("src/project.rs"),
+        "pub fn resolve_root() {}\n",
+    )
+    .unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["callers", "resolve_root"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout("1 file(s) import resolve_root:\n  src/lib.rs:4\n");
+}
+
+#[test]
 fn cli_find_help_mentions_ranked_candidates() {
     waypoint()
         .args(["find", "--help"])
