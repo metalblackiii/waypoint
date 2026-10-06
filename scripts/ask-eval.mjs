@@ -15,6 +15,7 @@
 //   1. node scripts/ask-eval.mjs <cases> --rescan --cutoff 0.64,0.02 --groups --dump <dir>/control.jsonl
 //   2. node scripts/ask-eval.mjs <cases> --bin target/release/waypoint --rescan --cutoff 0.64,0.02 --groups --compare <dir>/control.jsonl
 //   3. node scripts/ask-eval.mjs <cases> --rescan --cutoff 0.64,0.02   (restores indexes with the installed binary)
+// Add --list to steps 1 and 2 to also measure the candidate list `find` shows for a phrase miss.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, openSync, closeSync, renameSync, rmSync, existsSync, realpathSync, mkdtempSync } from 'node:fs';
@@ -24,10 +25,10 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 
 const USAGE =
   'usage: node scripts/ask-eval.mjs <cases.json> [--bin <waypoint>] [--rescan] [--target 0.8] [--misses] [--swap]\n' +
-  '       node scripts/ask-eval.mjs <cases.json> [--bin <waypoint>] [--rescan] --cutoff score,lead [--groups] [--dump <out.jsonl>] [--compare <control.jsonl>]';
+  '       node scripts/ask-eval.mjs <cases.json> [--bin <waypoint>] [--rescan] --cutoff score,lead [--list] [--groups] [--dump <out.jsonl>] [--compare <control.jsonl>]';
 const VALUE_FLAGS = new Set(['--bin', '--target', '--cutoff', '--dump', '--compare']);
-const SWITCH_FLAGS = new Set(['--rescan', '--misses', '--swap', '--groups']);
-const FIXED_GATE_ONLY = ['--groups', '--dump', '--compare'];
+const SWITCH_FLAGS = new Set(['--rescan', '--misses', '--swap', '--groups', '--list']);
+const FIXED_GATE_ONLY = ['--groups', '--dump', '--compare', '--list'];
 const TUNING_ONLY = ['--target', '--misses', '--swap'];
 
 function failUsage(message) {
@@ -70,6 +71,12 @@ if ('--target' in flags && !UNIT_NUMBER.test(flags['--target'])) {
   failUsage('--target needs a number in [0, 1] (e.g. 0.8)');
 }
 const target = Number(flags['--target'] ?? '0.8');
+const listMode = Boolean(flags['--list']);
+
+// WARNING: mirrors `CANDIDATE_FLOOR` and `CANDIDATE_MAX` in src/ask.rs; change both together or
+// --list stops describing the candidate list `find` shows.
+const LIST_FLOOR = 0.4;
+const LIST_SIZE = 3;
 
 // Canonical paths follow symlinks, so a link into the repo cannot smuggle a dump past the guard.
 // A dangling link is left unresolved here; writeDump renames over the link, never through it.
@@ -125,6 +132,8 @@ function readControl(path) {
     if (!row) mismatch(`case #${c.id} missing`);
     if (row.caseHash !== caseHash(c)) mismatch(`case #${c.id} query or labels differ`);
     if (JSON.stringify(row.cutoff) !== JSON.stringify(fixedCutoff)) mismatch(`cutoff ${JSON.stringify(row.cutoff)}, this run ${fixedCutoff.join(',')}`);
+    // Controls written before --list existed carry no `list` field; they measured no list.
+    if ((row.list ?? false) !== listMode) mismatch(`list ${row.list ?? false}, this run ${listMode}`);
   }
   return byId;
 }
@@ -144,7 +153,7 @@ if (flags['--rescan']) {
 }
 
 function rank(c) {
-  // --json gives full-precision scores, so cutoffs here match `ask::confident` exactly.
+  // --json gives full-precision scores, so cutoffs here match `ask::candidates` exactly.
   const out = execFileSync(bin, ['ask', c.query, '--limit', String(RANK_DEPTH), '--json', '-C', caseRoot(c)], {
     encoding: 'utf8',
     env: runEnv,
@@ -155,6 +164,7 @@ function rank(c) {
 const scored = cases.map((c) => {
   const ranked = rank(c);
   const top = ranked[0];
+  const list = ranked.slice(0, LIST_SIZE).filter((r) => r.score >= LIST_FLOOR);
   return {
     ...c,
     positive: c.verdict !== 'abstain',
@@ -164,6 +174,9 @@ const scored = cases.map((c) => {
     correct: Boolean(top) && c.verdict !== 'abstain' && c.accept.includes(top.path),
     correctRank: ranked.findIndex((r) => c.accept.includes(r.path)) + 1 || null,
     correctScore: ranked.find((r) => c.accept.includes(r.path))?.score ?? null,
+    listLength: list.length,
+    // 1-based position of the right file in the shown list; null when absent or for abstain cases.
+    listed: c.verdict === 'abstain' ? null : list.findIndex((r) => c.accept.includes(r.path)) + 1 || null,
   };
 });
 
@@ -197,11 +210,12 @@ console.log(binVersion);
 if (fixedCutoff) reportFixedGate(...fixedCutoff);
 else reportTunedGate();
 
-// --cutoff score,lead measures a fixed gate (e.g. the one `ask::confident` ships) on every
-// case; nothing is chosen from the data, so no half is spent on tuning.
+// --cutoff score,lead measures a fixed gate (e.g. the one `ask::candidates` labels `strong`) on
+// every case; nothing is chosen from the data, so no half is spent on tuning.
 function reportFixedGate(minScore, minMargin) {
   console.log(`cases: ${scored.length}\n`);
   row(`all, cutoff ${minScore}/${minMargin}`, measure(scored, minScore, minMargin));
+  if (listMode) printListMeasure();
   const rows = scored.map((c) => ({
     id: c.id,
     caseHash: caseHash(c),
@@ -213,6 +227,8 @@ function reportFixedGate(minScore, minMargin) {
     margin: c.margin,
     top: c.top,
     correctRank: c.correctRank,
+    list: listMode,
+    listed: listMode ? c.listed : null,
     accept: c.accept,
   }));
   if (flags['--groups']) printMissGroups(minScore, minMargin);
@@ -241,6 +257,23 @@ function writeDump(rows) {
     rmSync(staging, { force: true });
     throw new Error(`could not write --dump ${dumpPath}`, { cause });
   }
+}
+
+// The candidate list `find` prints for a phrase miss: the first LIST_SIZE ranked files at or
+// above LIST_FLOOR, shown whether or not the gate passes.
+function printListMeasure() {
+  const answerable = scored.filter((c) => c.positive);
+  const noAnswer = scored.filter((c) => !c.positive);
+  const answerableLists = answerable.filter((c) => c.listLength > 0);
+  const lists = scored.filter((c) => c.listLength > 0);
+  const entries = lists.reduce((sum, c) => sum + c.listLength, 0);
+  const ratio = (n, d) => `${n}/${d} (${pct(d ? n / d : null)})`;
+  console.log(`\nlist (top ${LIST_SIZE}, score >= ${LIST_FLOOR}):`);
+  console.log(`  right file listed          ${ratio(answerable.filter((c) => c.listed).length, answerable.length)}`);
+  console.log(`  right file first           ${ratio(answerable.filter((c) => c.listed === 1).length, answerable.length)}`);
+  console.log(`  lists without right file   ${ratio(answerableLists.filter((c) => !c.listed).length, answerableLists.length)}`);
+  console.log(`  no-answer cases with list  ${ratio(noAnswer.filter((c) => c.listLength > 0).length, noAnswer.length)}`);
+  console.log(`  average entries per list   ${lists.length ? (entries / lists.length).toFixed(1) : '-'}`);
 }
 
 // Each group needs a different kind of fix, so one coverage number hides which change helps.
@@ -283,6 +316,13 @@ function printComparison(rows) {
   for (const [shift, count] of [...tally].sort()) console.log(`  ${String(count).padStart(3)}  ${shift}`);
   for (const { r, before } of changed) {
     console.log(`  #${r.id} [${r.verdict}] ${describe(before)}  =>  ${describe(r)}; want ${r.accept.join(' | ') || 'nothing'}`);
+  }
+  if (!listMode) return;
+  const position = (r) => (r.listed ? `listed #${r.listed}` : 'not listed');
+  const moved = rows.filter((r) => control.get(r.id).listed !== r.listed);
+  console.log(`\nchanged list positions vs control: ${moved.length}`);
+  for (const r of moved) {
+    console.log(`  #${r.id} [${r.verdict}] ${position(control.get(r.id))}  =>  ${position(r)}; want ${r.accept.join(' | ') || 'nothing'}`);
   }
 }
 

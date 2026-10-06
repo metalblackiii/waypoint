@@ -86,7 +86,15 @@ Remaining work to improve ranking via import/call graph signals:
 - Extra prose lifted wrong files over the gate: test files whose docstrings restate the code under test, docs pages, and sibling skills whose "use X instead" clauses name the right file
 - Where the 79 answerable cases fall at the shipped gate: 18 covered, 19 have the right file at rank 1 but under the 0.64 score bar, 19 have it at rank 2–20, 3 tie, 20 have it outside the top 20. The rank-1-under-the-bar group is the next lever, a gate/scoring change that needs freshly labelled misses to tune without overfitting these 104
 
-**Revisit when**: Real-world usage reveals ranking quality gaps that description + symbol matching alone can't resolve. The ledger's `find_ranked` events count fallback answers; gate any weight change on `scripts/ask-eval.mjs`.
+**Delivered in v0.25.0: ranked candidate list in `find`**:
+
+- The single gated `ranked <path>` line hid ranking gains from agents: the right file ranked first in 40 of 79 answerable dev cases but was shown in only 18. A multi-word miss now lists up to 3 files scoring ≥ 0.40, labelled `strong` (the old gate, score ≥ 0.64 and lead ≥ 0.02, now frozen as the label rule) or `possible`, with the best-matching symbol and line or the description, and the query words matched
+- Interface before features: three agent clients (Codex, a fresh subagent, an in-session agent) independently asked for one `find` with a short labelled list, matched words, and no raw scores. Judging scoring features first would have measured gains agents could not see
+- Dev numbers at the 0.40 floor (2026-10-06, observations, not thresholds): right file listed in 36 of 79 answerable cases, first in 32; lists on 3 of 25 no-answer cases. Reproduce with `scripts/ask-eval.mjs --cutoff 0.64,0.02 --list`
+- Ledger: `find_ranked` counts lists with a `strong` candidate, `find_possible` lists with only `possible` ones. The find rate counts only hits and `strong` lists as answered
+- Next: after ~2 weeks of use, label `find` queries mined from agent transcripts and measure which list entry agents opened. Test-file demotion is the first scoring candidate (in the 0.48–0.64 band, 4 of 8 wrong top files were tests vs 1 of 9 right ones)
+
+**Revisit when**: Real-world usage reveals ranking quality gaps that description + symbol matching alone can't resolve. The ledger's `find_ranked` and `find_possible` events count candidate lists; gate any weight change on `scripts/ask-eval.mjs`.
 
 **Estimated effort**: V2 graph boost ~2-3 days, eval harness ~1 day.
 

@@ -750,8 +750,7 @@ fn cli_find_miss_records_ledger_event() {
         .current_dir(project.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("No symbols found"))
-        .stdout(predicate::str::contains("see also").not());
+        .stdout("No symbols found: xyzzy_nonexistent_symbol_42\n");
 
     // "Find rate:" only renders when find_hits + find_misses > 0,
     // so its presence proves a FindMiss event was actually recorded.
@@ -1456,12 +1455,24 @@ fn cli_find_file_fallback_matches_jq_scripts() {
         .stdout(predicate::str::contains("skills/helper/board-summary.jq"));
 }
 
-fn setup_project_with_skill_dirs() -> TempDir {
+const RETRY_HEADING: &str = "Retry policy for webhook delivery and exponential backoff";
+
+/// Markdown files with no symbols, so multi-word `find` queries reach ranked mode. Scores
+/// measured on this exact file set: "writing skills" 1.0 / 0.75, "writing zebra" 0.265,
+/// "alpha beta gamma" 0.562, "retry policy" 1.0.
+fn setup_phrase_project() -> TempDir {
     let project = setup_project();
     for dir in ["skills/writing-skills", "skills/writing-subagents"] {
         fs::create_dir_all(project.path().join(dir)).unwrap();
         fs::write(project.path().join(dir).join("SKILL.md"), "Guide.\n").unwrap();
     }
+    fs::create_dir_all(project.path().join("docs")).unwrap();
+    fs::write(
+        project.path().join("docs/retry-policy.md"),
+        format!("# {RETRY_HEADING}\n\nBody.\n"),
+    )
+    .unwrap();
+    fs::write(project.path().join("docs/alpha-beta.md"), "Notes.\n").unwrap();
     waypoint()
         .arg("scan")
         .current_dir(project.path())
@@ -1470,43 +1481,177 @@ fn setup_project_with_skill_dirs() -> TempDir {
     project
 }
 
-#[test]
-fn cli_find_phrase_miss_returns_confident_ranked_files() {
-    let project = setup_project_with_skill_dirs();
-
+fn find_stdout(project: &TempDir, query: &str) -> String {
     let output = waypoint()
-        .args(["find", "writing skills"])
+        .args(["find", query])
         .current_dir(project.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("No symbols found").not())
         .get_output()
         .stdout
         .clone();
-    let stdout = String::from_utf8(output).unwrap();
+    String::from_utf8(output).unwrap()
+}
+
+/// The count on a `waypoint gain` row such as `Find ranked:` for `project`.
+fn gain_count(project: &TempDir, row: &str) -> i64 {
+    let output = waypoint()
+        .arg("gain")
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    stdout
+        .lines()
+        .find(|line| line.starts_with(row))
+        .and_then(|line| line.split_whitespace().last())
+        .unwrap_or_else(|| panic!("no {row} row in gain output:\n{stdout}"))
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn cli_find_symbol_hit_prints_no_ranked_block() {
+    let project = setup_project();
+    fs::write(
+        project.path().join("src/rank.rs"),
+        "pub fn rank_files() {}\n",
+    )
+    .unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let stdout = find_stdout(&project, "rank_files");
+    assert!(stdout.contains("rank_files"), "got:\n{stdout}");
+    assert!(stdout.contains("src/rank.rs:1"), "got:\n{stdout}");
+    assert!(!stdout.contains("Files ranked"), "got:\n{stdout}");
+}
+
+#[test]
+fn cli_find_phrase_miss_lists_labelled_candidates() {
+    let project = setup_phrase_project();
+
     assert_eq!(
-        stdout.trim(),
-        "ranked  skills/writing-skills/SKILL.md",
-        "only the top file is shown"
+        find_stdout(&project, "writing skills"),
+        "No symbol or file named \"writing skills\". Files ranked by matching words:\n\
+         \x20 strong    skills/writing-skills/SKILL.md  markdown document  matched: writing, skills\n\
+         \x20 possible  skills/writing-subagents/SKILL.md  markdown document  matched: writing, skills\n"
+    );
+    assert_eq!(gain_count(&project, "Find ranked:"), 1);
+}
+
+#[test]
+fn cli_find_phrase_without_confident_top_lists_only_possible() {
+    let project = setup_phrase_project();
+
+    assert_eq!(
+        find_stdout(&project, "alpha beta gamma"),
+        "No symbol or file named \"alpha beta gamma\". Files ranked by matching words:\n\
+         \x20 possible  docs/alpha-beta.md  markdown document  matched: alpha, beta\n"
+    );
+    assert_eq!(gain_count(&project, "Find possible:"), 1);
+    assert_eq!(gain_count(&project, "Find ranked:"), 0);
+}
+
+#[test]
+fn cli_find_candidate_shows_truncated_heading() {
+    let project = setup_phrase_project();
+
+    let stdout = find_stdout(&project, "retry policy");
+    let expected = format!(
+        "  strong    docs/retry-policy.md  {}…  matched: retry, policy",
+        &RETRY_HEADING[..40]
+    );
+    assert_eq!(
+        stdout.lines().nth(1),
+        Some(expected.as_str()),
+        "got:\n{stdout}"
     );
 }
 
 #[test]
-fn cli_find_phrase_miss_below_confidence_reports_miss() {
-    let project = setup_project_with_skill_dirs();
+fn cli_find_phrase_below_floor_points_to_rg() {
+    let project = setup_phrase_project();
 
-    waypoint()
-        .args(["find", "writing zebra"])
-        .current_dir(project.path())
+    assert_eq!(
+        find_stdout(&project, "writing zebra"),
+        "No match for \"writing zebra\": no file matched enough of these words. Use rg.\n"
+    );
+    assert_eq!(
+        find_stdout(&project, "the and of"),
+        "No match for \"the and of\": no file matched enough of these words. Use rg.\n"
+    );
+    assert_eq!(gain_count(&project, "Find misses:"), 2);
+}
+
+#[test]
+fn cli_find_context_flag_lists_foreign_project_candidates() {
+    let here = setup_scanned_project();
+    let project = setup_phrase_project();
+
+    let output = waypoint()
+        .args([
+            "find",
+            "-C",
+            project.path().to_str().unwrap(),
+            "writing skills",
+        ])
+        .current_dir(here.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("No symbols found: writing zebra"))
-        .stdout(predicate::str::contains("ranked").not());
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(
+        stdout.contains("  strong    skills/writing-skills/SKILL.md  "),
+        "got:\n{stdout}"
+    );
+    assert_eq!(gain_count(&project, "Find ranked:"), 1);
+}
+
+#[test]
+fn cli_find_help_mentions_ranked_candidates() {
+    waypoint()
+        .args(["find", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ranked candidate"));
+}
+
+#[test]
+fn skill_explains_candidate_labels_and_rg_fallback() {
+    let skill = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/plugins/waypoint/skills/waypoint/SKILL.md"
+    ))
+    .unwrap();
+    for word in ["`strong`", "`possible`", "`rg`", "Files ranked", "No match"] {
+        assert!(skill.contains(word), "SKILL.md lacks {word}:\n{skill}");
+    }
+}
+
+#[test]
+fn cli_find_escapes_quotes_in_query() {
+    let project = setup_phrase_project();
+
+    let ranked = find_stdout(&project, "writing \"skills");
+    assert_eq!(
+        ranked.lines().next(),
+        Some("No symbol or file named \"writing \\\"skills\". Files ranked by matching words:")
+    );
+    assert_eq!(
+        find_stdout(&project, "zebra \"quux\nline"),
+        "No match for \"zebra \\\"quux\\nline\": no file matched enough of these words. Use rg.\n"
+    );
 }
 
 #[test]
 fn cli_ask_json_prints_full_precision_scores() {
-    let project = setup_project_with_skill_dirs();
+    let project = setup_phrase_project();
 
     let output = waypoint()
         .args(["ask", "writing skills", "--json"])

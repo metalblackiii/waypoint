@@ -71,11 +71,21 @@ waypoint scan --all /path/to/repos  # Explicit parent directory
 
 ### `waypoint find`
 
-Full-text search across all indexed symbols (function names, structs, classes, types).
+Look up a symbol, file, or feature by name or phrase. Output has two modes:
+
+- **Index matches** — symbol rows (`kind  name  path:line`, then `see also` sibling exports) when every query word appears in a symbol's name, kind, signature, or path; otherwise `file` rows when the query matches a file path
+- **Ranked candidates** — a multi-word query matching neither lists up to 3 files ranked by how much of the query they cover. Each line carries a label (`strong`: open first; `possible`: a lead to check), the best-matching symbol and line or the file description, and the query words matched. When no file covers enough of the words, `find` prints `No match … Use rg.`
 
 ```sh
-waypoint find "token savings"     # BM25-ranked results from the symbol index
-waypoint find "scan" --limit 5
+waypoint find "scan" --limit 5                  # symbol rows
+waypoint find "phrase candidates for find"      # in this repo: ranked candidates
+```
+
+```text
+No symbol or file named "phrase candidates for find". Files ranked by matching words:
+  strong    tests/integration.rs:1534  cli_find_phrase_miss_lists_labelled_candidates  matched: phrase, candidates, find
+  possible  src/lib.rs:312  print_phrase_candidates  matched: phrase, candidates
+  possible  src/ask.rs:56  CANDIDATE_FLOOR  matched: phrase, candidates
 ```
 
 ### `waypoint callers`

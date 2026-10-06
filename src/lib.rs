@@ -130,21 +130,11 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 // Symbol miss — fall back to file-path lookup so symbol-less
                 // files (markdown, manifests, jq) are still findable by name.
                 let file_hits = map::index::find_files(&wp_dir, &query, limit)?;
-                // Agents send `find` phrases ("auto-review unattended mode") far more often
-                // than they call `ask`, so a phrase miss answers with the top ranked file
-                // instead — but only when `ask::confident` judges it trustworthy.
-                let ranked = if file_hits.is_empty() && query.split_whitespace().nth(1).is_some() {
-                    ask::confident(&wp_dir, &query)?
-                } else {
-                    None
-                };
-                if let Some(top) = ranked {
-                    let _ = ledger::record_event(
-                        ledger::EventKind::FindRanked,
-                        project_root.to_string_lossy().as_ref(),
-                        0,
-                    );
-                    println!("  {:6}  {}", "ranked", top.path);
+                if file_hits.is_empty() && query.split_whitespace().nth(1).is_some() {
+                    // Agents send `find` phrases ("auto-review unattended mode") far more
+                    // often than they call `ask`, so a phrase miss answers with ranked
+                    // candidate files, labelled so a lead is never mistaken for the answer.
+                    print_phrase_candidates(&wp_dir, &project_root, &query, limit)?;
                 } else if file_hits.is_empty() {
                     let _ = ledger::record_event(
                         ledger::EventKind::FindMiss,
@@ -315,6 +305,42 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             HookCommand::SubagentStart => hook::subagent_start::run(),
         },
     }
+}
+
+/// `find`'s answer to a multi-word query matching no symbol or path: up to 3 labelled
+/// candidate files, or a miss line pointing to `rg`.
+fn print_phrase_candidates(
+    wp_dir: &std::path::Path,
+    project_root: &std::path::Path,
+    query: &str,
+    limit: usize,
+) -> Result<(), AppError> {
+    let candidates = ask::candidates(wp_dir, query, limit)?;
+    let event = match candidates.first() {
+        None => ledger::EventKind::FindMiss,
+        Some(top) if top.label == ask::Label::Strong => ledger::EventKind::FindRanked,
+        Some(_) => ledger::EventKind::FindPossible,
+    };
+    let _ = ledger::record_event(event, project_root.to_string_lossy().as_ref(), 0);
+
+    if candidates.is_empty() {
+        println!("No match for {query:?}: no file matched enough of these words. Use rg.");
+        return Ok(());
+    }
+    println!("No symbol or file named {query:?}. Files ranked by matching words:");
+    for candidate in &candidates {
+        let location = match candidate.line {
+            Some(line) => format!("{}:{line}", candidate.path),
+            None => candidate.path.clone(),
+        };
+        println!(
+            "  {:<8}  {location}  {}  matched: {}",
+            candidate.label.as_str(),
+            candidate.evidence,
+            candidate.matched_words.join(", ")
+        );
+    }
+    Ok(())
 }
 
 fn scan_all(path: Option<std::path::PathBuf>) -> Result<(), AppError> {

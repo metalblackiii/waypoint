@@ -40,7 +40,7 @@ pub enum Command {
         #[arg(long)]
         all: bool,
     },
-    /// Search symbols or files by name; a multi-word query may return a ranked file
+    /// Search symbols or files by name; a multi-word query may return ranked candidate files
     Find {
         /// Search query
         query: String,

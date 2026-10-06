@@ -35,17 +35,47 @@ const STOP_WORDS: &[&str] = &[
 /// Maximum length of the reason string in output.
 const REASON_MAX_LEN: usize = 60;
 
+/// Maximum length of a description shown as `find` candidate evidence.
+const EVIDENCE_MAX_LEN: usize = 40;
+const _: () = assert!(EVIDENCE_MAX_LEN < REASON_MAX_LEN);
+
 /// Share of the score earned by single-term coverage; the rest comes from term pairs.
 const TERM_WEIGHT: f64 = 0.75;
 
-/// WHY: `find` shows ranked files only past this bar, because a wrong file costs an agent
-/// more than a miss. Chosen 2026-10-05 with `scripts/ask-eval.mjs` on 104 labelled real
-/// `find` misses: this gate was right on 18 of 20 answers and silent on all 25 queries with
-/// no right answer. Both halves informed the choice, so confirm on misses collected after
-/// that date. Rerun `--cutoff 0.64,0.02` after any change to scoring or file descriptions;
-/// retune if precision drops below 80%.
+/// WHY: this bar decides which `find` candidate is labelled `strong` (open first), because
+/// a wrong file presented as the answer costs an agent more than a lead to check. Chosen
+/// 2026-10-05 with `scripts/ask-eval.mjs` on 104 labelled real `find` misses, when it gated
+/// the only file shown: right on 18 of 20 answers and silent on all 25 queries with no right
+/// answer. Frozen until transcript data from the candidate list exists; rerun
+/// `--cutoff 0.64,0.02` after any change to scoring or file descriptions.
 const CONFIDENT_SCORE: f64 = 0.64;
 const CONFIDENT_LEAD: f64 = 0.02;
+
+/// WARNING: mirrored as `LIST_FLOOR` and `LIST_SIZE` in `scripts/ask-eval.mjs`; change both
+/// together or the eval's `--list` measure stops describing what `find` shows.
+const CANDIDATE_FLOOR: f64 = 0.40;
+const CANDIDATE_MAX: usize = 3;
+// `candidates` ranks only CANDIDATE_MAX files; `is_confident` needs the runner-up among them.
+const _: () = assert!(CANDIDATE_MAX >= 2);
+
+/// How far `find` trusts a ranked candidate file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Label {
+    /// The top file cleared the confidence bar: open it first.
+    Strong,
+    /// A lead to check.
+    Possible,
+}
+
+impl Label {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Strong => "strong",
+            Self::Possible => "possible",
+        }
+    }
+}
 
 /// Every term a file can be found by — path segments, description words, symbol names — and
 /// every pair of terms adjacent within one of those phrases.
@@ -106,18 +136,122 @@ pub fn ask(waypoint_dir: &Path, query: &str, limit: usize) -> Result<Vec<AskResu
     Ok(results)
 }
 
-/// The one file confident enough to answer a query `find` could not match by name: the top
-/// file, when it clears `CONFIDENT_SCORE` and leads the runner-up by `CONFIDENT_LEAD`.
-///
-/// Only the top file is returned because only the top file's precision was measured;
-/// runners-up clearing the score bar were mostly wrong in real repos.
-pub fn confident(waypoint_dir: &Path, query: &str) -> Result<Option<AskResult>, AppError> {
-    let ranked = ask(waypoint_dir, query, 2)?;
-    Ok(if is_confident(&ranked) {
-        ranked.into_iter().next()
-    } else {
-        None
-    })
+/// A file `find` offers for a phrase it could not match by name.
+#[derive(Debug)]
+pub struct Candidate {
+    pub path: String,
+    pub label: Label,
+    /// Line of the evidence symbol; `None` when the evidence is the file description.
+    pub line: Option<i64>,
+    /// The symbol matching the most query words, else the truncated file description.
+    pub evidence: String,
+    /// Query words, as written, that the file matched.
+    pub matched_words: Vec<String>,
+}
+
+/// Up to `min(limit, 3)` labelled candidate files for a phrase `find` could not match by
+/// name; empty when no file reaches `CANDIDATE_FLOOR`.
+pub fn candidates(
+    waypoint_dir: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<Candidate>, AppError> {
+    let ranked = ask(waypoint_dir, query, CANDIDATE_MAX)?;
+    let labelled = label_candidates(&ranked, limit);
+    if labelled.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let conn = open_index(waypoint_dir)?;
+    let placeholders = vec!["?"; labelled.len()].join(", ");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT file_path, name, line_start FROM symbols WHERE file_path IN ({placeholders})"
+    ))?;
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(labelled.iter().map(|(result, _)| &result.path)),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get(2)?,
+            ))
+        },
+    )?;
+    let mut symbols_by_path: HashMap<String, Vec<(String, i64)>> = HashMap::new();
+    for row in rows {
+        let (file_path, name, line_start) = row?;
+        symbols_by_path
+            .entry(file_path)
+            .or_default()
+            .push((name, line_start));
+    }
+
+    Ok(labelled
+        .into_iter()
+        .map(|(result, label)| {
+            let symbols = symbols_by_path
+                .get(&result.path)
+                .map_or(&[][..], Vec::as_slice);
+            build_candidate(result, label, symbols, query)
+        })
+        .collect())
+}
+
+/// Evidence for one candidate: the symbol whose name holds the most matched terms (ties:
+/// lowest line, then name), else the file description cut to `EVIDENCE_MAX_LEN`.
+fn build_candidate(
+    result: &AskResult,
+    label: Label,
+    symbols: &[(String, i64)],
+    query: &str,
+) -> Candidate {
+    let best_symbol = symbols
+        .iter()
+        .map(|(name, line)| {
+            let name_terms: HashSet<String> = phrase_terms(name).into_iter().collect();
+            let hits = result
+                .matched_terms
+                .iter()
+                .filter(|term| name_terms.contains(*term))
+                .count();
+            (hits, *line, name)
+        })
+        .filter(|(hits, ..)| *hits > 0)
+        .min_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(b.2)));
+    let (line, evidence) = match best_symbol {
+        Some((_, line, name)) => (Some(line), name.clone()),
+        // `reason` is the description cut at REASON_MAX_LEN, so cutting it again at the
+        // shorter EVIDENCE_MAX_LEN equals cutting the full description.
+        None => (None, truncate_description(&result.reason, EVIDENCE_MAX_LEN)),
+    };
+    Candidate {
+        path: result.path.clone(),
+        label,
+        line,
+        evidence,
+        matched_words: matched_words(query, &result.matched_terms),
+    }
+}
+
+/// The first `min(limit, CANDIDATE_MAX)` files of `ranked` at or above `CANDIDATE_FLOOR`.
+/// The top one is `Strong` when the whole ranking — including a runner-up below the floor —
+/// passes `is_confident`; every other candidate is `Possible`.
+fn label_candidates(ranked: &[AskResult], limit: usize) -> Vec<(&AskResult, Label)> {
+    let top_is_strong = is_confident(ranked);
+    ranked
+        .iter()
+        .take(limit.min(CANDIDATE_MAX))
+        .take_while(|result| result.score >= CANDIDATE_FLOOR)
+        .enumerate()
+        .map(|(rank, result)| {
+            let label = if rank == 0 && top_is_strong {
+                Label::Strong
+            } else {
+                Label::Possible
+            };
+            (result, label)
+        })
+        .collect()
 }
 
 fn is_confident(ranked: &[AskResult]) -> bool {
@@ -178,9 +312,15 @@ fn tokenize(text: &str) -> Vec<String> {
     terms
 }
 
-/// Emit each term in `text`: split on non-alphanumerics and `camelCase`, lowercase, drop stop
-/// words and single characters, and fold a trailing plural `s` so "skills" finds "skill".
+/// Emit each term in `text`: every word from `for_each_word`, with a trailing plural `s`
+/// folded so "skills" finds "skill".
 fn for_each_term(text: &str, mut emit: impl FnMut(String)) {
+    for_each_word(text, |word| emit(singular(word)));
+}
+
+/// Emit each word in `text` as written, before plural folding: split on non-alphanumerics and
+/// `camelCase`, lowercase, drop stop words and single characters.
+fn for_each_word(text: &str, mut emit: impl FnMut(String)) {
     for segment in text.split(|c: char| !c.is_alphanumeric()) {
         if segment.is_empty() {
             continue;
@@ -190,9 +330,21 @@ fn for_each_term(text: &str, mut emit: impl FnMut(String)) {
             if lower.len() < 2 || STOP_WORDS.contains(&lower.as_str()) {
                 continue;
             }
-            emit(singular(lower));
+            emit(lower);
         }
     }
+}
+
+/// The query's words, as written and in order, that produced one of `matched_terms` — so an
+/// agent reads "status", never the folded term "statu".
+fn matched_words(query: &str, matched_terms: &[String]) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    for_each_word(query, |word| {
+        if !words.contains(&word) && matched_terms.contains(&singular(word.clone())) {
+            words.push(word);
+        }
+    });
+    words
 }
 
 /// SHORTCUT: strips one trailing `s` (not `ss`) from words over three letters. Mangles words
@@ -622,6 +774,99 @@ mod tests {
         assert!(!is_confident(&scored(&[0.6, 0.1])), "score below bar");
         assert!(!is_confident(&scored(&[0.9, 0.89])), "no clear lead");
         assert!(!is_confident(&[]));
+    }
+
+    // -- candidate labels ---------------------------------------------------
+
+    fn labels(ranked: &[AskResult], limit: usize) -> Vec<(&str, Label)> {
+        label_candidates(ranked, limit)
+            .into_iter()
+            .map(|(result, label)| (result.path.as_str(), label))
+            .collect()
+    }
+
+    #[test]
+    fn candidates_confident_top_is_strong() {
+        let ranked = scored(&[0.70, 0.30]);
+        assert_eq!(labels(&ranked, 20), vec![("f0", Label::Strong)]);
+    }
+
+    #[test]
+    fn candidates_without_lead_are_all_possible() {
+        let ranked = scored(&[0.70, 0.69, 0.20]);
+        assert_eq!(
+            labels(&ranked, 20),
+            vec![("f0", Label::Possible), ("f1", Label::Possible)]
+        );
+    }
+
+    #[test]
+    fn candidates_cap_at_three_and_at_limit() {
+        let ranked = scored(&[0.60, 0.55, 0.50, 0.45, 0.41]);
+        assert_eq!(labels(&ranked, 20).len(), 3);
+        assert_eq!(labels(&ranked, 1), vec![("f0", Label::Possible)]);
+    }
+
+    #[test]
+    fn candidates_below_floor_are_dropped() {
+        assert_eq!(labels(&scored(&[0.39, 0.30]), 20), vec![]);
+    }
+
+    // -- candidate evidence -------------------------------------------------
+
+    fn top_candidate(files: &[FileTerms], query: &str, symbols: &[(&str, i64)]) -> Candidate {
+        let ranked = rank(files, query);
+        let symbols: Vec<(String, i64)> = symbols
+            .iter()
+            .map(|(name, line)| ((*name).to_string(), *line))
+            .collect();
+        build_candidate(&ranked[0], Label::Possible, &symbols, query)
+    }
+
+    #[test]
+    fn evidence_is_symbol_matching_most_terms() {
+        let files = vec![file(
+            "src/gate.rs",
+            "fn run(), fn check_status()",
+            &["run", "check_status"],
+        )];
+        let candidate = top_candidate(&files, "status checks", &[("run", 3), ("check_status", 9)]);
+        assert_eq!(candidate.line, Some(9));
+        assert_eq!(candidate.evidence, "check_status");
+    }
+
+    #[test]
+    fn evidence_ties_break_by_lowest_line() {
+        let files = vec![file("src/gate.rs", "", &["check_late", "check_early"])];
+        let candidate = top_candidate(
+            &files,
+            "check gate",
+            &[("check_late", 40), ("check_early", 12)],
+        );
+        assert_eq!(candidate.evidence, "check_early");
+    }
+
+    #[test]
+    fn matched_words_are_surface_forms() {
+        let files = vec![file("src/gate.rs", "", &["check_status"])];
+        let candidate = top_candidate(&files, "status checks", &[("check_status", 9)]);
+        assert_eq!(candidate.matched_words, vec!["status", "checks"]);
+    }
+
+    #[test]
+    fn matched_words_keep_each_surface_form() {
+        let files = vec![file("skills/SKILL.md", "Skill guide", &[])];
+        let candidate = top_candidate(&files, "the skill Skills skills", &[]);
+        assert_eq!(candidate.matched_words, vec!["skill", "skills"]);
+    }
+
+    #[test]
+    fn evidence_falls_back_to_truncated_description() {
+        let heading = "Retry policy guide for webhook delivery and backoff";
+        let files = vec![file("docs/retry.md", heading, &[])];
+        let candidate = top_candidate(&files, "retry policy", &[("unrelated", 4)]);
+        assert_eq!(candidate.line, None);
+        assert_eq!(candidate.evidence, format!("{}…", &heading[..40]));
     }
 
     #[test]

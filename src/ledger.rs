@@ -18,6 +18,7 @@ pub enum EventKind {
     FindHit,
     FindMiss,
     FindRanked,
+    FindPossible,
     FirstEdit,
     FirstEditTurns,
     AskHit,
@@ -39,6 +40,7 @@ impl EventKind {
             Self::FindHit => "find_hit",
             Self::FindMiss => "find_miss",
             Self::FindRanked => "find_ranked",
+            Self::FindPossible => "find_possible",
             Self::FirstEdit => "first_edit",
             Self::FirstEditTurns => "first_edit_turns",
             Self::AskHit => "ask_hit",
@@ -60,8 +62,10 @@ pub struct GainStats {
     pub map_misses: i64,
     pub find_hits: i64,
     pub find_misses: i64,
-    /// Phrase misses `find` answered with a confident ranked file.
+    /// Phrase misses `find` answered with a `strong` candidate file.
     pub find_ranked: i64,
+    /// Phrase misses `find` answered only with `possible` candidate files.
+    pub find_possible: i64,
     pub find_hit_rate: f64,
     pub first_edit_count: i64,
     pub avg_first_edit_secs: f64,
@@ -172,6 +176,11 @@ impl fmt::Display for GainStats {
                 Some(Color::Blue),
             ),
             (
+                "Find possible:",
+                self.find_possible.to_string(),
+                Some(Color::Yellow),
+            ),
+            (
                 "Find misses:",
                 self.find_misses.to_string(),
                 Some(Color::Yellow),
@@ -207,7 +216,7 @@ impl fmt::Display for GainStats {
         )?;
 
         // Find hit rate meter
-        if self.find_hits + self.find_ranked + self.find_misses > 0 {
+        if self.find_hits + self.find_ranked + self.find_possible + self.find_misses > 0 {
             let find_ratio = self.find_hit_rate / 100.0;
             let find_meter = bar(find_ratio, METER_WIDTH);
             let find_color = rate_color(self.find_hit_rate);
@@ -486,6 +495,7 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
     let find_hits = query_count_kind(conn, "find_hit", param_ref)?;
     let find_misses = query_count_kind(conn, "find_miss", param_ref)?;
     let find_ranked = query_count_kind(conn, "find_ranked", param_ref)?;
+    let find_possible = query_count_kind(conn, "find_possible", param_ref)?;
     let ask_hits = query_count_kind(conn, "ask_hit", param_ref)?;
     let ask_misses = query_count_kind(conn, "ask_miss", param_ref)?;
     let arch_hits = query_count_kind(conn, "arch_hit", param_ref)?;
@@ -498,10 +508,12 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         0.0
     };
 
-    // A ranked fallback answer is an answer: it counts toward the find rate, not as a miss.
+    // A `strong` candidate is an answer; a `possible`-only list is a lead, not an answer, so it
+    // sits in the denominator like a miss — turning misses into lists leaves the rate unchanged.
+    let find_attempts = find_hits + find_ranked + find_possible + find_misses;
     #[allow(clippy::cast_precision_loss)]
-    let find_hit_rate = if find_hits + find_ranked + find_misses > 0 {
-        (find_hits + find_ranked) as f64 / (find_hits + find_ranked + find_misses) as f64 * 100.0
+    let find_hit_rate = if find_attempts > 0 {
+        (find_hits + find_ranked) as f64 / find_attempts as f64 * 100.0
     } else {
         0.0
     };
@@ -588,6 +600,7 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         find_hits,
         find_misses,
         find_ranked,
+        find_possible,
         find_hit_rate,
         first_edit_count,
         avg_first_edit_secs,
@@ -731,6 +744,21 @@ mod tests {
         assert_eq!(stats.find_ranked, 1);
         assert!((stats.find_hit_rate - 50.0).abs() < f64::EPSILON);
         assert!(stats.to_string().contains("Find ranked:"));
+    }
+
+    #[test]
+    fn find_possible_counts_as_attempted_not_answered() {
+        let conn = test_db();
+        record_event_with(&conn, EventKind::FindHit, "/tmp/project", 0).unwrap();
+        record_event_with(&conn, EventKind::FindRanked, "/tmp/project", 0).unwrap();
+        record_event_with(&conn, EventKind::FindPossible, "/tmp/project", 0).unwrap();
+        record_event_with(&conn, EventKind::FindMiss, "/tmp/project", 0).unwrap();
+
+        let stats = gain_stats_with(&conn, None).unwrap();
+
+        assert_eq!(stats.find_possible, 1);
+        assert!((stats.find_hit_rate - 50.0).abs() < f64::EPSILON);
+        assert!(stats.to_string().contains("Find possible:"));
     }
 
     #[test]
@@ -1010,6 +1038,7 @@ mod tests {
             find_hits: 0,
             find_misses: 0,
             find_ranked: 0,
+            find_possible: 0,
             find_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
@@ -1040,6 +1069,7 @@ mod tests {
             find_hits: 0,
             find_misses: 0,
             find_ranked: 0,
+            find_possible: 0,
             find_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
@@ -1082,6 +1112,7 @@ mod tests {
             find_hits: 0,
             find_misses: 0,
             find_ranked: 0,
+            find_possible: 0,
             find_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
@@ -1112,6 +1143,7 @@ mod tests {
             find_hits: 0,
             find_misses: 0,
             find_ranked: 0,
+            find_possible: 0,
             find_hit_rate: 0.0,
             first_edit_count: 3,
             avg_first_edit_secs: 42.0,
