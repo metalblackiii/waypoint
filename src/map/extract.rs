@@ -808,8 +808,24 @@ fn extract_shell(content: &str) -> String {
 }
 
 fn extract_markdown(content: &str) -> String {
-    for line in content.lines() {
-        if let Some(heading) = line.strip_prefix("# ") {
+    // WARNING: `# ` also starts YAML frontmatter comments and shell comments in code fences;
+    // neither is a title.
+    let opens_frontmatter = content.starts_with("---\n") || content.starts_with("---\r\n");
+    let frontmatter_lines = if opens_frontmatter {
+        content
+            .lines()
+            .skip(1)
+            .position(|line| line.trim_end() == "---")
+            .map_or(0, |close| close + 2)
+    } else {
+        0
+    };
+    let mut in_fence = false;
+    for line in content.lines().skip(frontmatter_lines) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+        } else if !in_fence && let Some(heading) = line.strip_prefix("# ") {
             return heading.trim().to_string();
         }
     }
@@ -2334,6 +2350,27 @@ enum State {}
         let src = "# My Awesome Project\n\nSome text.";
         let desc = extract_description(Path::new("README.md"), src);
         assert_eq!(desc, "Project documentation");
+    }
+
+    #[test]
+    fn markdown_title_skips_comments_in_code_fences() {
+        let src = "Intro line.\n\n```bash\n# install deps\nnpm ci\n```\n\n# Release Guide\n";
+        let desc = extract_description(Path::new("guide.md"), src);
+        assert_eq!(desc, "Release Guide");
+    }
+
+    #[test]
+    fn markdown_unclosed_leading_rule_is_not_frontmatter() {
+        let src = "---\n# Release Guide\n\nBody.\n";
+        let desc = extract_description(Path::new("guide.md"), src);
+        assert_eq!(desc, "Release Guide");
+    }
+
+    #[test]
+    fn markdown_title_skips_yaml_comments_in_frontmatter() {
+        let src = "---\n# owner: platform\nstatus: draft\n---\n\n# Release Guide\n";
+        let desc = extract_description(Path::new("guide.md"), src);
+        assert_eq!(desc, "Release Guide");
     }
 
     #[test]
