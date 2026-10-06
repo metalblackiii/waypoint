@@ -4,7 +4,7 @@ Project intelligence for Claude Code — hooks, file map, symbol index, ledger.
 
 ## Non-Negotiables
 
-- **Never use `.unwrap()` or `.expect()`** — clippy denies both. Use `?` propagation or return `Result`. The one exception: `re()` helper in `extract.rs` for compile-time-constant regex patterns.
+- **Never use `.unwrap()` or `.expect()` in non-test code** — clippy denies both. Use `?` propagation or return `Result`. The one non-test exception: `re()` helper in `src/map/extract.rs` for compile-time-constant regex patterns. `#[cfg(test)]` modules, `tests/`, and `benches/` may use `.unwrap()` under `#[allow(clippy::unwrap_used)]`; `.expect()` stays denied everywhere.
 - **Never hand-format Rust code** — `cargo fmt` runs automatically via PostToolUse hook on `.rs` edits. Let it be authoritative.
 - Hooks must never set `permissionDecision` — advisory only, use `None` to defer to the agent's permission system.
 
