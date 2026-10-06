@@ -26,8 +26,14 @@ impl HookContext {
         let cwd = extract_cwd(payload).unwrap_or(".");
         let cwd_path = Path::new(cwd);
 
+        // WARNING: an empty `file_path` (session-start payloads carry none) would resolve
+        // against the hook process's own cwd and could land on the home directory.
         let project_root = project::find_root(cwd_path)
-            .or_else(|| project::find_root(Path::new(&file_path)))
+            .or_else(|| {
+                (!file_path.is_empty())
+                    .then(|| project::find_root(Path::new(&file_path)))
+                    .flatten()
+            })
             .unwrap_or_else(|| cwd_path.to_path_buf());
 
         let wp_dir = project::waypoint_dir(&project_root);

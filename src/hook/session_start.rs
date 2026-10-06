@@ -13,6 +13,10 @@ const ARCH_FILE_THRESHOLD: i64 = 20;
 /// `SessionStart` — auto-scan, emit arch context, record session start.
 pub fn run() -> Result<(), AppError> {
     let ctx = super::HookContext::from_stdin()?;
+    if project::is_home_dir(&ctx.project_root) {
+        super::emit_hook_output(super::HookEvent::SessionStart, None, COMMAND_DIGEST);
+        return Ok(());
+    }
     let wp_dir = project::ensure_initialized(&ctx.project_root)?;
 
     // Auto-scan if map.md doesn't exist or is stale

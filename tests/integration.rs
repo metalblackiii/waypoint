@@ -297,6 +297,112 @@ fn cli_status() {
         .success();
 }
 
+// ── Home Directory Is Never A Project ────────────────────────────
+
+/// A fake home holding a stray `.git` dir, as tools like `GitKraken`'s `gk` leave behind,
+/// plus a non-repo `notes/` folder.
+fn setup_fake_home() -> TempDir {
+    let home = TempDir::new().unwrap();
+    fs::create_dir_all(home.path().join(".git/gk")).unwrap();
+    fs::create_dir_all(home.path().join("notes")).unwrap();
+    fs::write(home.path().join("notes/todo.rs"), "fn main() {}\n").unwrap();
+    home
+}
+
+#[test]
+fn session_start_in_home_does_not_index_home() {
+    let home = setup_fake_home();
+    let payload = serde_json::json!({ "cwd": home.path().to_string_lossy() }).to_string();
+
+    // A real session-start hook runs with its process cwd at the session cwd.
+    let assert = waypoint()
+        .env("HOME", home.path())
+        .current_dir(home.path())
+        .args(["hook", "session-start"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    assert!(!home.path().join(".waypoint").exists());
+    let output = parse_hook_output(&assert);
+    assert!(
+        output["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("waypoint find")
+    );
+}
+
+#[test]
+fn session_start_below_home_does_not_walk_up_to_home() {
+    let home = setup_fake_home();
+    let notes = home.path().join("notes");
+    let payload = serde_json::json!({ "cwd": notes.to_string_lossy() }).to_string();
+
+    waypoint()
+        .env("HOME", home.path())
+        .args(["hook", "session-start"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    assert!(!home.path().join(".waypoint").exists());
+}
+
+#[test]
+fn scan_refuses_home_directory() {
+    let home = setup_fake_home();
+
+    waypoint()
+        .env("HOME", home.path())
+        .current_dir(home.path())
+        .arg("scan")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("home directory"));
+
+    assert!(!home.path().join(".waypoint").exists());
+}
+
+#[test]
+fn scan_all_from_home_skips_home_and_scans_child_repos() {
+    let home = setup_fake_home();
+    let repo = home.path().join("app");
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    fs::write(repo.join("main.rs"), "fn main() {}\n").unwrap();
+
+    waypoint()
+        .env("HOME", home.path())
+        .args(["scan", "--all"])
+        .arg(home.path())
+        .assert()
+        .success();
+
+    assert!(repo.join(".waypoint/map.md").exists());
+    assert!(!home.path().join(".waypoint").exists());
+}
+
+#[test]
+fn find_below_home_ignores_existing_home_index() {
+    let home = setup_fake_home();
+    // Build a home index the way older versions did, without the guard.
+    waypoint()
+        .env("HOME", home.path().join("not-home"))
+        .current_dir(home.path())
+        .arg("scan")
+        .assert()
+        .success();
+    assert!(home.path().join(".waypoint/map.md").exists());
+
+    waypoint()
+        .env("HOME", home.path())
+        .current_dir(home.path().join("notes"))
+        .args(["find", "main"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no .waypoint/ directory"));
+}
+
 // ── Hook Integration Tests ───────────────────────────────────────
 
 #[test]

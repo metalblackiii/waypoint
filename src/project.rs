@@ -144,6 +144,7 @@ pub fn discover_projects(base: &Path) -> Result<Vec<PathBuf>, AppError> {
     if scan_dir.join(".git").exists() && !projects.contains(&scan_dir.to_path_buf()) {
         projects.push(scan_dir.to_path_buf());
     }
+    projects.retain(|project| !is_home_dir(project));
     projects.sort();
     Ok(projects)
 }
@@ -193,6 +194,8 @@ pub fn require_waypoint_dir(project_root: &Path) -> Result<PathBuf, AppError> {
 }
 
 /// Find the project root by walking up from `start` looking for .git (primary) or .waypoint/ (secondary).
+///
+/// The walk stops at the home directory, which is never a project root.
 #[must_use]
 pub fn find_root(start: &Path) -> Option<PathBuf> {
     let mut current = if start.is_file() {
@@ -200,8 +203,12 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
     } else {
         start.to_path_buf()
     };
+    let home = canonical_home();
 
     loop {
+        if home.is_some() && canonical(&current) == home {
+            return None;
+        }
         if current.join(".git").exists() {
             return Some(current);
         }
@@ -220,8 +227,38 @@ pub fn waypoint_dir(project_root: &Path) -> PathBuf {
     project_root.join(".waypoint")
 }
 
+/// True when `path` is the user's home directory.
+///
+/// WARNING: tools such as `GitKraken`'s `gk` keep config under `~/.git/`, which makes home
+/// look like a repo root. Indexing it took 1.2 GB and made every unindexed directory below
+/// home answer `find` from that index.
+#[must_use]
+pub fn is_home_dir(path: &Path) -> bool {
+    canonical_home().is_some_and(|home| canonical(path).as_ref() == Some(&home))
+}
+
+fn canonical_home() -> Option<PathBuf> {
+    canonical(&dirs::home_dir()?)
+}
+
+/// Canonical form for path comparison; `None` when the path does not exist.
+fn canonical(path: &Path) -> Option<PathBuf> {
+    path.canonicalize().ok()
+}
+
 /// Ensure .waypoint/ exists with initial files. Returns the waypoint dir path.
+/// Refuses the home directory.
 pub fn ensure_initialized(project_root: &Path) -> Result<PathBuf, AppError> {
+    if is_home_dir(project_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to index the home directory ({}); run waypoint inside a project",
+                project_root.display()
+            ),
+        )
+        .into());
+    }
     let dir = waypoint_dir(project_root);
     if !dir.exists() {
         std::fs::create_dir_all(&dir)?;
