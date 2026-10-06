@@ -73,14 +73,15 @@ Remaining work to improve ranking via import/call graph signals:
 - **God-file cap**: log-scaled or P95 clamp on fan-in to prevent `mod.rs`/`lib.rs`/`index.ts` from dominating rankings via sheer import count
 - Weight tuning: empirical, gated on eval harness results
 
-**V2: Eval harness**:
+**Delivered in v0.24.0: rescoring, eval harness, `find` fallback**:
 
-- Formalize smoke tests into task→expected-files pairs across waypoint + neb-www repos
-- Track hit@5 and hit@10 metrics
-- Gate future scoring changes (graph boost weights, new signals) on non-regression
-- Prerequisite for confidently tuning graph boost weights
+- Agents never called `ask`, so it is hidden from `--help`; `find` answers a multi-word miss with `ask`'s ranked files instead, only past a confidence bar (`ask::confident`)
+- Scoring rewritten: IDF-weighted coverage of query terms across path, description, and symbol names, blended 75/25 with adjacent-term pairs. The v1 FTS signal counted matching symbol rows normalized to the best file, so the file with the most symbols always scored at least 0.40 and won most queries
+- `scripts/ask-eval.mjs` scores `ask` on labelled real `find` misses: precision when answering, coverage, and silence on queries with no right answer, with the cutoff chosen on one half and judged on the other. Case files stay outside this repo — they carry private repo paths
+- Baseline on 104 cases (2026-10-05): v1 was right 12–17% of the time when answering and no cutoff reached 80%; v0.24.0's shipped gate (score ≥ 0.64, lead ≥ 0.02) was right on 18 of 20 answers, found the right file for 23% of queries that have one, and stayed silent on all 25 with none. Both halves informed the gate, so confirm on misses collected after that date
+- Next lever: richer file descriptions (markdown frontmatter `description:`, module doc comments) — the largest remaining failure group is "right file not in the top 20"
 
-**Revisit when**: Real-world usage reveals ranking quality gaps that description + symbol matching alone can't resolve. The ledger's `AskHit`/`AskMiss` events provide the signal.
+**Revisit when**: Real-world usage reveals ranking quality gaps that description + symbol matching alone can't resolve. The ledger's `find_ranked` events count fallback answers; gate any weight change on `scripts/ask-eval.mjs`.
 
 **Estimated effort**: V2 graph boost ~2-3 days, eval harness ~1 day.
 

@@ -1088,7 +1088,7 @@ fn cli_ask_no_results_for_nonsense() {
 }
 
 #[test]
-fn cli_ask_explain_shows_signal_breakdown() {
+fn cli_ask_explain_shows_matched_terms() {
     let project = setup_project();
     waypoint()
         .arg("scan")
@@ -1101,8 +1101,7 @@ fn cli_ask_explain_shows_signal_breakdown() {
         .current_dir(project.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("desc="))
-        .stdout(predicate::str::contains("sym="));
+        .stdout(predicate::str::contains("matched=main"));
 }
 
 #[test]
@@ -1349,6 +1348,83 @@ fn cli_find_file_fallback_matches_jq_scripts() {
         .assert()
         .success()
         .stdout(predicate::str::contains("skills/helper/board-summary.jq"));
+}
+
+fn setup_project_with_skill_dirs() -> TempDir {
+    let project = setup_project();
+    for dir in ["skills/writing-skills", "skills/writing-subagents"] {
+        fs::create_dir_all(project.path().join(dir)).unwrap();
+        fs::write(project.path().join(dir).join("SKILL.md"), "Guide.\n").unwrap();
+    }
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+    project
+}
+
+#[test]
+fn cli_find_phrase_miss_returns_confident_ranked_files() {
+    let project = setup_project_with_skill_dirs();
+
+    let output = waypoint()
+        .args(["find", "writing skills"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No symbols found").not())
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert_eq!(
+        stdout.trim(),
+        "ranked  skills/writing-skills/SKILL.md",
+        "only the top file is shown"
+    );
+}
+
+#[test]
+fn cli_find_phrase_miss_below_confidence_reports_miss() {
+    let project = setup_project_with_skill_dirs();
+
+    waypoint()
+        .args(["find", "writing zebra"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No symbols found: writing zebra"))
+        .stdout(predicate::str::contains("ranked").not());
+}
+
+#[test]
+fn cli_ask_json_prints_full_precision_scores() {
+    let project = setup_project_with_skill_dirs();
+
+    let output = waypoint()
+        .args(["ask", "writing skills", "--json"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let results: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let first = &results[0];
+    assert_eq!(first["path"], "skills/writing-skills/SKILL.md");
+    assert!(first["score"].as_f64().unwrap() > 0.0);
+    assert_eq!(first["matched_terms"][0], "writing");
+}
+
+#[test]
+fn cli_help_hides_ask() {
+    waypoint()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("find"))
+        .stdout(predicate::str::contains("ask").not());
 }
 
 #[test]

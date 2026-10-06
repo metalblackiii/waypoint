@@ -40,7 +40,7 @@ pub enum Command {
         #[arg(long)]
         all: bool,
     },
-    /// Search symbols by name or intent
+    /// Search symbols or files by name; a multi-word query may return a ranked file
     Find {
         /// Search query
         query: String,
@@ -69,15 +69,21 @@ pub enum Command {
         context: Option<String>,
     },
     /// Rank files by relevance to a task description
+    // Hidden: agents ignored a separate ranking command; `find` falls back to it on phrase
+    // misses instead. Kept callable for `scripts/ask-eval.mjs` and manual tuning.
+    #[command(hide = true)]
     Ask {
         /// Task description (natural language)
         query: String,
         /// Maximum results to return
         #[arg(long, default_value = "10")]
         limit: usize,
-        /// Show per-signal score breakdown
+        /// Show matched query terms per file
         #[arg(long)]
         explain: bool,
+        /// Print results as JSON with full-precision scores (for `scripts/ask-eval.mjs`)
+        #[arg(long, conflicts_with = "explain")]
+        json: bool,
         /// Resolve project from this path instead of cwd
         #[arg(short = 'C', long = "context")]
         context: Option<String>,

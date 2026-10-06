@@ -130,7 +130,22 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 // Symbol miss — fall back to file-path lookup so symbol-less
                 // files (markdown, manifests, jq) are still findable by name.
                 let file_hits = map::index::find_files(&wp_dir, &query, limit)?;
-                if file_hits.is_empty() {
+                // Agents send `find` phrases ("auto-review unattended mode") far more often
+                // than they call `ask`, so a phrase miss answers with the top ranked file
+                // instead — but only when `ask::confident` judges it trustworthy.
+                let ranked = if file_hits.is_empty() && query.split_whitespace().nth(1).is_some() {
+                    ask::confident(&wp_dir, &query)?
+                } else {
+                    None
+                };
+                if let Some(top) = ranked {
+                    let _ = ledger::record_event(
+                        ledger::EventKind::FindRanked,
+                        project_root.to_string_lossy().as_ref(),
+                        0,
+                    );
+                    println!("  {:6}  {}", "ranked", top.path);
+                } else if file_hits.is_empty() {
                     let _ = ledger::record_event(
                         ledger::EventKind::FindMiss,
                         project_root.to_string_lossy().as_ref(),
@@ -175,6 +190,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             query,
             limit,
             explain,
+            json,
             context,
         } => {
             // Clamp to 1 rather than reject — returning nothing for --limit 0
@@ -183,6 +199,12 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             let project_root = project::resolve_with_context(context.as_deref())?;
             let wp_dir = project::require_waypoint_dir(&project_root)?;
             let results = ask::ask(&wp_dir, &query, limit)?;
+            // JSON is the eval harness's interface; it records no ledger event so eval runs
+            // never count as usage.
+            if json {
+                println!("{}", serde_json::to_string(&results)?);
+                return Ok(());
+            }
             if results.is_empty() {
                 let _ = ledger::record_event(
                     ledger::EventKind::AskMiss,
@@ -201,8 +223,11 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 for r in &results {
                     if explain {
                         println!(
-                            "  {:<max_path$}  {:.2}  desc={:.2} sym={:.2}  {}",
-                            r.path, r.score, r.desc_score, r.symbol_score, r.reason,
+                            "  {:<max_path$}  {:.2}  matched={}  {}",
+                            r.path,
+                            r.score,
+                            r.matched_terms.join(","),
+                            r.reason,
                         );
                     } else {
                         println!("  {:<max_path$}  {:.2}  {}", r.path, r.score, r.reason);

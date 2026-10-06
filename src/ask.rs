@@ -1,31 +1,29 @@
 //! Natural-language file ranking for task descriptions.
 //!
-//! Given a task description, scores all project files by relevance using:
-//! - IDF-weighted token coverage over map entry descriptions (primary signal)
-//! - FTS5 symbol name matching (secondary signal)
-//! - Query-shape detection to adjust signal weights
+//! A file's score is the share of the query it covers: the IDF-weighted fraction of query
+//! terms found anywhere in the file's path, map description, or symbol names. Scores are
+//! absolute, so a low score means a weak match, never "best of a weak lot" — callers can
+//! treat a low top score as "no answer".
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 
 use crate::AppError;
 use crate::map::index::open_index;
 
 /// Ranked file result from the ask pipeline.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct AskResult {
     /// Relative file path within the project.
     pub path: String,
-    /// Combined relevance score in [0, 1].
+    /// IDF-weighted share of query terms the file covers, in [0, 1].
     pub score: f64,
     /// Human-readable reason for the ranking.
     pub reason: String,
-    /// Description-axis score (for `--explain`).
-    pub desc_score: f64,
-    /// Symbol-axis score (for `--explain`).
-    pub symbol_score: f64,
+    /// Query terms the file covers (for `--explain`).
+    pub matched_terms: Vec<String>,
 }
 
 const STOP_WORDS: &[&str] = &[
@@ -34,84 +32,180 @@ const STOP_WORDS: &[&str] = &[
     "that", "to", "was", "we", "what", "when", "which", "with",
 ];
 
-/// Description weight for prose-style queries.
-const DESC_WEIGHT: f64 = 0.6;
-/// Symbol weight for prose-style queries.
-const SYMBOL_WEIGHT: f64 = 0.4;
-/// Description weight when query contains code identifiers.
-const CODE_DESC_WEIGHT: f64 = 0.35;
-/// Symbol weight when query contains code identifiers.
-const CODE_SYMBOL_WEIGHT: f64 = 0.65;
 /// Maximum length of the reason string in output.
 const REASON_MAX_LEN: usize = 60;
 
+/// Share of the score earned by single-term coverage; the rest comes from term pairs.
+const TERM_WEIGHT: f64 = 0.75;
+
+/// WHY: `find` shows ranked files only past this bar, because a wrong file costs an agent
+/// more than a miss. Chosen 2026-10-05 with `scripts/ask-eval.mjs` on 104 labelled real
+/// `find` misses: this gate was right on 18 of 20 answers and silent on all 25 queries with
+/// no right answer. Both halves informed the choice, so confirm on misses collected after
+/// that date. Rerun `--cutoff 0.64,0.02` after any change to scoring or file descriptions;
+/// retune if precision drops below 80%.
+const CONFIDENT_SCORE: f64 = 0.64;
+const CONFIDENT_LEAD: f64 = 0.02;
+
+/// Every term a file can be found by — path segments, description words, symbol names — and
+/// every pair of terms adjacent within one of those phrases.
+struct FileTerms {
+    path: String,
+    description: String,
+    terms: HashSet<String>,
+    pairs: HashSet<(String, String)>,
+}
+
+impl FileTerms {
+    fn new(path: String, description: String) -> Self {
+        let mut file = Self {
+            path: String::new(),
+            description: String::new(),
+            terms: HashSet::new(),
+            pairs: HashSet::new(),
+        };
+        // WARNING: pairs must not span `/` — `skills/writing-subagents` would otherwise hold
+        // "skills writing" and tie with `writing-skills`. `query_pairs` splits the same way.
+        for segment in path.split('/') {
+            file.add_phrase(segment);
+        }
+        // Code descriptions list declarations ("fn a(), fn b()"); adjacency across a comma
+        // would pair unrelated names, so each item is its own phrase.
+        for item in description.split(',') {
+            file.add_phrase(item);
+        }
+        file.path = path;
+        file.description = description;
+        file
+    }
+
+    fn add_phrase(&mut self, text: &str) {
+        let sequence = phrase_terms(text);
+        for pair in sequence.windows(2) {
+            if let Some(key) = pair_key(&pair[0], &pair[1]) {
+                self.pairs.insert(key);
+            }
+        }
+        self.terms.extend(sequence);
+    }
+}
+
 /// Rank project files by relevance to a natural-language task description.
 ///
-/// Loads all file descriptions from `map_index.db`, scores each against the
-/// tokenized query using IDF-weighted token coverage, fuses with FTS5 symbol matches,
-/// and returns the top `limit` results sorted by descending relevance.
+/// Returns at most `limit` files with a nonzero score, highest first; ties break by path.
 pub fn ask(waypoint_dir: &Path, query: &str, limit: usize) -> Result<Vec<AskResult>, AppError> {
+    let query_terms = tokenize(query);
+    if query_terms.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let conn = open_index(waypoint_dir)?;
-
-    let entries = load_descriptions(&conn)?;
-    if entries.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let tokens = tokenize_query(query);
-    if tokens.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let code_heavy = is_code_heavy(query);
-
-    // Lowercase descriptions once — reused for IDF computation and scoring.
-    let lower_descs: Vec<String> = entries.iter().map(|(_, d)| d.to_lowercase()).collect();
-
-    let idf = compute_idf(&lower_descs, &tokens);
-    let total_idf: f64 = tokens
-        .iter()
-        .map(|t| idf.get(t).copied().unwrap_or(0.0))
-        .sum();
-    let desc_scores = score_descriptions(&lower_descs, &tokens, &idf, total_idf);
-    let symbol_scores = score_symbols(&conn, &tokens);
-
-    let (dw, sw) = if code_heavy {
-        (CODE_DESC_WEIGHT, CODE_SYMBOL_WEIGHT)
-    } else {
-        (DESC_WEIGHT, SYMBOL_WEIGHT)
-    };
-
-    let mut results = combine_scores(&entries, &desc_scores, &symbol_scores, dw, sw);
-    results.sort_by(|a, b| b.score.total_cmp(&a.score));
+    let files = load_file_terms(&conn)?;
+    let mut results = rank_files(&files, &query_terms, &query_pairs(query));
     results.truncate(limit);
-
     Ok(results)
 }
 
+/// The one file confident enough to answer a query `find` could not match by name: the top
+/// file, when it clears `CONFIDENT_SCORE` and leads the runner-up by `CONFIDENT_LEAD`.
+///
+/// Only the top file is returned because only the top file's precision was measured;
+/// runners-up clearing the score bar were mostly wrong in real repos.
+pub fn confident(waypoint_dir: &Path, query: &str) -> Result<Option<AskResult>, AppError> {
+    let ranked = ask(waypoint_dir, query, 2)?;
+    Ok(if is_confident(&ranked) {
+        ranked.into_iter().next()
+    } else {
+        None
+    })
+}
+
+fn is_confident(ranked: &[AskResult]) -> bool {
+    match ranked {
+        [] => false,
+        [top] => top.score >= CONFIDENT_SCORE,
+        [top, runner_up, ..] => {
+            top.score >= CONFIDENT_SCORE && top.score - runner_up.score >= CONFIDENT_LEAD
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Query processing
+// Terms
 // ---------------------------------------------------------------------------
 
-/// Tokenize a query into lowercase terms, splitting on word boundaries and
-/// `camelCase`. Removes stop words and short tokens (<2 chars). Deduplicates.
-fn tokenize_query(query: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
+/// All terms in `text`, in order, with repeats — the sequence adjacency is read from.
+fn phrase_terms(text: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    for_each_term(text, |term| terms.push(term));
+    terms
+}
 
-    for segment in query.split(|c: char| !c.is_alphanumeric()) {
+/// Order-free key for two adjacent terms, so "config default" matches `default_config`.
+/// `None` for a term repeated next to itself, which says nothing about the phrase.
+fn pair_key(a: &str, b: &str) -> Option<(String, String)> {
+    match a.cmp(b) {
+        std::cmp::Ordering::Less => Some((a.to_string(), b.to_string())),
+        std::cmp::Ordering::Greater => Some((b.to_string(), a.to_string())),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
+/// Unique adjacent term pairs in the query, never spanning `/` (file paths pair the same way).
+fn query_pairs(query: &str) -> Vec<(String, String)> {
+    let mut seen = HashSet::new();
+    query
+        .split('/')
+        .flat_map(|segment| {
+            phrase_terms(segment)
+                .windows(2)
+                .filter_map(|pair| pair_key(&pair[0], &pair[1]))
+                .collect::<Vec<_>>()
+        })
+        .filter(|key| seen.insert(key.clone()))
+        .collect()
+}
+
+/// Tokenize text into unique terms, in first-seen order.
+fn tokenize(text: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut terms = Vec::new();
+    for_each_term(text, |term| {
+        if seen.insert(term.clone()) {
+            terms.push(term);
+        }
+    });
+    terms
+}
+
+/// Emit each term in `text`: split on non-alphanumerics and `camelCase`, lowercase, drop stop
+/// words and single characters, and fold a trailing plural `s` so "skills" finds "skill".
+fn for_each_term(text: &str, mut emit: impl FnMut(String)) {
+    for segment in text.split(|c: char| !c.is_alphanumeric()) {
         if segment.is_empty() {
             continue;
         }
         for word in split_camel_case(segment) {
             let lower = word.to_lowercase();
-            if lower.len() >= 2 && !STOP_WORDS.contains(&lower.as_str()) && !tokens.contains(&lower)
-            {
-                tokens.push(lower);
+            if lower.len() < 2 || STOP_WORDS.contains(&lower.as_str()) {
+                continue;
             }
+            emit(singular(lower));
         }
     }
+}
 
-    tokens
+/// SHORTCUT: strips one trailing `s` (not `ss`) from words over three letters. Mangles words
+/// like "status", harmlessly, because queries and files fold the same way. Upgrade to a real
+/// stemmer if the ask eval shows misses on other inflections ("-ing", "-ed").
+fn singular(word: String) -> String {
+    if word.len() > 3
+        && !word.ends_with("ss")
+        && let Some(stem) = word.strip_suffix('s')
+    {
+        return stem.to_string();
+    }
+    word
 }
 
 /// Split a string on `camelCase` / `PascalCase` boundaries.
@@ -128,10 +222,7 @@ fn split_camel_case(s: &str) -> Vec<&str> {
     let mut start = 0;
 
     for i in 1..bytes.len() {
-        // lowercase → UPPERCASE: "camelCase" → "camel" | "Case"
         let lc_to_uc = bytes[i - 1].is_ascii_lowercase() && bytes[i].is_ascii_uppercase();
-
-        // UPPER run ending: "HTTPServer" → "HTTP" | "Server"
         let uc_run_end = i + 1 < bytes.len()
             && bytes[i - 1].is_ascii_uppercase()
             && bytes[i].is_ascii_uppercase()
@@ -152,168 +243,111 @@ fn split_camel_case(s: &str) -> Vec<&str> {
     result
 }
 
-/// Detect whether a query contains code-like patterns (`::`, `_`, camelCase).
-///
-/// When true, symbol matching weight is boosted over description matching.
-fn is_code_heavy(query: &str) -> bool {
-    query.contains("::")
-        || query.contains('_')
-        || query
-            .as_bytes()
-            .windows(2)
-            .any(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_uppercase())
+/// Load every mapped file with the terms from its path, description, and symbol names.
+fn load_file_terms(conn: &Connection) -> Result<Vec<FileTerms>, AppError> {
+    let mut stmt = conn.prepare("SELECT path, description FROM map_entries")?;
+    let mut files = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .map(|row| row.map(|(path, description)| FileTerms::new(path, description)))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let position: HashMap<String, usize> = files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.path.clone(), i))
+        .collect();
+
+    let mut stmt = conn.prepare("SELECT file_path, name FROM symbols")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (file_path, name) = row?;
+        if let Some(&i) = position.get(&file_path) {
+            files[i].add_phrase(&name);
+        }
+    }
+
+    Ok(files)
 }
 
 // ---------------------------------------------------------------------------
 // Scoring
 // ---------------------------------------------------------------------------
 
-/// Check whether a description contains a token as a whole word.
+/// Inverse document frequency of each query term across files, aligned with `query_terms`.
 ///
-/// Splits on non-alphanumeric boundaries to avoid substring false positives
-/// (e.g., token `"rs"` must not match the word `"first"`).
-fn desc_has_word(desc: &str, token: &str) -> bool {
-    desc.split(|c: char| !c.is_alphanumeric())
-        .any(|word| word == token)
-}
-
-/// Load `(path, description)` pairs from the `map_entries` table.
-fn load_descriptions(conn: &Connection) -> Result<Vec<(String, String)>, AppError> {
-    let mut stmt = conn.prepare("SELECT path, description FROM map_entries")?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
-}
-
-/// Compute inverse document frequency for each query token.
-///
-/// `IDF = ln(1 + total_docs / (1 + docs_containing_token))`. Higher values
-/// indicate rarer, more discriminative terms. The `1 +` ensures IDF is always
-/// positive even when a term appears in every document.
-#[allow(clippy::cast_precision_loss)]
-fn compute_idf(lower_descs: &[String], tokens: &[String]) -> HashMap<String, f64> {
-    let total = lower_descs.len() as f64;
-    let mut idf = HashMap::with_capacity(tokens.len());
-
-    for token in tokens {
-        let doc_freq = lower_descs
-            .iter()
-            .filter(|desc| desc_has_word(desc, token))
-            .count() as f64;
-        idf.insert(token.clone(), (1.0 + total / (1.0 + doc_freq)).ln());
-    }
-
-    idf
-}
-
-/// Score each file's description by summing IDF of matched query tokens
-/// (binary coverage, not term-frequency), normalized by total query IDF
-/// so the result is in [0, 1].
-fn score_descriptions(
-    lower_descs: &[String],
-    tokens: &[String],
-    idf: &HashMap<String, f64>,
-    total_idf: f64,
-) -> Vec<f64> {
-    if total_idf <= 0.0 {
-        return vec![0.0; lower_descs.len()];
-    }
-
-    lower_descs
+/// `IDF = ln(1 + total_files / (1 + files_containing_term))`. A term no file contains gets
+/// the highest weight, which lowers every file's coverage — a query about something absent
+/// from the project should score low everywhere.
+#[allow(clippy::cast_precision_loss)] // file counts are far below f64's exact-integer range
+fn compute_idf(files: &[FileTerms], query_terms: &[String]) -> Vec<f64> {
+    let total = files.len() as f64;
+    query_terms
         .iter()
-        .map(|desc| {
-            let matched_idf: f64 = tokens
-                .iter()
-                .filter(|t| desc_has_word(desc, t))
-                .map(|t| idf.get(t).copied().unwrap_or(0.0))
-                .sum();
-            matched_idf / total_idf
+        .map(|term| {
+            let doc_freq = files.iter().filter(|f| f.terms.contains(term)).count() as f64;
+            (1.0 + total / (1.0 + doc_freq)).ln()
         })
         .collect()
 }
 
-/// Score files by FTS5 symbol matches, normalized to [0, 1].
+/// Score each file by IDF-weighted term coverage, blended with the share of the query's
+/// adjacent term pairs it holds adjacent too; drop files that cover nothing.
 ///
-/// Returns an empty map if FTS5 is unavailable or the query fails —
-/// the pipeline degrades to description-only scoring.
-fn score_symbols(conn: &Connection, tokens: &[String]) -> HashMap<String, f64> {
-    let fts_query = build_fts_query(tokens);
-    if fts_query.is_empty() {
-        return HashMap::new();
+/// Pairs separate files that merely contain the query's words from the one that names the
+/// query's phrase: `writing-skills/SKILL.md` over `writing-subagents/SKILL.md`.
+#[allow(clippy::cast_precision_loss)] // pair counts are tiny
+fn rank_files(
+    files: &[FileTerms],
+    query_terms: &[String],
+    query_pairs: &[(String, String)],
+) -> Vec<AskResult> {
+    let idf = compute_idf(files, query_terms);
+    let total_idf: f64 = idf.iter().sum();
+    if total_idf <= 0.0 {
+        return Vec::new();
     }
 
-    // FTS5 is best-effort — degrade gracefully on error
-    #[allow(clippy::cast_precision_loss)]
-    let result: Result<HashMap<String, f64>, rusqlite::Error> = (|| {
-        let mut stmt = conn.prepare(
-            "SELECT file_path, COUNT(*) as hits \
-             FROM symbols_fts \
-             WHERE symbols_fts MATCH ?1 \
-             GROUP BY file_path",
-        )?;
-        let rows = stmt.query_map(params![fts_query], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })?;
-        let file_hits: Vec<(String, i64)> = rows.collect::<Result<Vec<_>, _>>()?;
-
-        let max_hits = file_hits.iter().map(|(_, h)| *h).max().unwrap_or(1).max(1);
-        let max_f64 = max_hits as f64;
-
-        Ok(file_hits
-            .into_iter()
-            .map(|(path, hits)| (path, hits as f64 / max_f64))
-            .collect())
-    })();
-
-    // Intentional: FTS5 failures degrade to description-only scoring rather than
-    // failing the entire ask pipeline. Symbol matching is a secondary signal.
-    result.unwrap_or_default()
-}
-
-/// Build an FTS5 OR query from tokenized terms, quoting each to escape specials.
-fn build_fts_query(tokens: &[String]) -> String {
-    tokens
+    let mut results: Vec<AskResult> = files
         .iter()
-        .map(|t| {
-            let escaped = t.replace('"', "\"\"");
-            format!("\"{escaped}\"")
-        })
-        .collect::<Vec<_>>()
-        .join(" OR ")
-}
-
-/// Fuse description and symbol scores into ranked `AskResult`s.
-///
-/// Entries with zero combined score are filtered out.
-fn combine_scores(
-    entries: &[(String, String)],
-    desc_scores: &[f64],
-    symbol_scores: &HashMap<String, f64>,
-    desc_weight: f64,
-    symbol_weight: f64,
-) -> Vec<AskResult> {
-    entries
-        .iter()
-        .enumerate()
-        .filter_map(|(i, (path, description))| {
-            let ds = desc_scores.get(i).copied().unwrap_or(0.0);
-            let ss = symbol_scores.get(path).copied().unwrap_or(0.0);
-            let combined = ds * desc_weight + ss * symbol_weight;
-
-            if combined <= 0.0 {
-                return None;
+        .filter_map(|file| {
+            let mut covered = 0.0;
+            let mut matched_terms = Vec::new();
+            for (term, weight) in query_terms.iter().zip(&idf) {
+                if file.terms.contains(term) {
+                    covered += weight;
+                    matched_terms.push(term.clone());
+                }
             }
-
-            Some(AskResult {
-                path: path.clone(),
-                score: combined,
-                reason: truncate_description(description, REASON_MAX_LEN),
-                desc_score: ds,
-                symbol_score: ss,
+            let term_score = covered / total_idf;
+            let score = if query_pairs.is_empty() {
+                term_score
+            } else {
+                let held = query_pairs
+                    .iter()
+                    .filter(|p| file.pairs.contains(p))
+                    .count();
+                let pair_score = held as f64 / query_pairs.len() as f64;
+                TERM_WEIGHT * term_score + (1.0 - TERM_WEIGHT) * pair_score
+            };
+            (!matched_terms.is_empty()).then(|| AskResult {
+                path: file.path.clone(),
+                score,
+                reason: truncate_description(&file.description, REASON_MAX_LEN),
+                matched_terms,
             })
         })
-        .collect()
+        .collect();
+
+    results.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    results
 }
 
 /// Truncate a description to `max_len` characters, appending `…` if shortened.
@@ -338,65 +372,93 @@ fn truncate_description(s: &str, max_len: usize) -> String {
 mod tests {
     use super::*;
 
+    fn file(path: &str, description: &str, symbols: &[&str]) -> FileTerms {
+        let mut file = FileTerms::new(path.to_string(), description.to_string());
+        for name in symbols {
+            file.add_phrase(name);
+        }
+        file
+    }
+
+    fn rank(files: &[FileTerms], query: &str) -> Vec<AskResult> {
+        rank_files(files, &tokenize(query), &query_pairs(query))
+    }
+
     // -- tokenizer ----------------------------------------------------------
 
     #[test]
     fn tokenize_simple_prose() {
-        let tokens = tokenize_query("add retry logic to billing");
-        assert_eq!(tokens, vec!["add", "retry", "logic", "billing"]);
+        assert_eq!(
+            tokenize("add retry logic to billing"),
+            vec!["add", "retry", "logic", "billing"]
+        );
     }
 
     #[test]
     fn tokenize_removes_stop_words() {
-        let tokens = tokenize_query("the quick brown fox");
-        assert_eq!(tokens, vec!["quick", "brown", "fox"]);
+        assert_eq!(
+            tokenize("the quick brown fox"),
+            vec!["quick", "brown", "fox"]
+        );
     }
 
     #[test]
     fn tokenize_splits_camel_case() {
-        let tokens = tokenize_query("fix CamelCase handling");
-        assert_eq!(tokens, vec!["fix", "camel", "case", "handling"]);
+        assert_eq!(
+            tokenize("fix CamelCase handling"),
+            vec!["fix", "camel", "case", "handling"]
+        );
     }
 
     #[test]
     fn tokenize_splits_snake_case() {
-        let tokens = tokenize_query("update retry_logic function");
-        assert_eq!(tokens, vec!["update", "retry", "logic", "function"]);
+        assert_eq!(
+            tokenize("update retry_logic function"),
+            vec!["update", "retry", "logic", "function"]
+        );
     }
 
     #[test]
     fn tokenize_splits_paths() {
-        let tokens = tokenize_query("fix src/billing/webhook.rs");
-        assert_eq!(tokens, vec!["fix", "src", "billing", "webhook", "rs"]);
+        assert_eq!(
+            tokenize("fix src/billing/webhook.rs"),
+            vec!["fix", "src", "billing", "webhook", "rs"]
+        );
     }
 
     #[test]
     fn tokenize_deduplicates() {
-        let tokens = tokenize_query("retry retry retry");
-        assert_eq!(tokens, vec!["retry"]);
+        assert_eq!(tokenize("retry retry retry"), vec!["retry"]);
     }
 
     #[test]
     fn tokenize_empty_returns_empty() {
-        assert_eq!(tokenize_query(""), Vec::<String>::new());
+        assert_eq!(tokenize(""), Vec::<String>::new());
     }
 
     #[test]
     fn tokenize_only_stop_words_returns_empty() {
-        assert_eq!(tokenize_query("the and or is"), Vec::<String>::new());
+        assert_eq!(tokenize("the and or is"), Vec::<String>::new());
     }
 
     #[test]
     fn tokenize_short_tokens_filtered() {
-        // Single-char tokens are dropped
-        let tokens = tokenize_query("a b cd ef");
-        assert_eq!(tokens, vec!["cd", "ef"]);
+        assert_eq!(tokenize("a b cd ef"), vec!["cd", "ef"]);
     }
 
     #[test]
     fn tokenize_uppercase_acronym_split() {
-        let tokens = tokenize_query("HTTPServer");
-        assert_eq!(tokens, vec!["http", "server"]);
+        assert_eq!(tokenize("HTTPServer"), vec!["http", "server"]);
+    }
+
+    #[test]
+    fn tokenize_folds_plural_s() {
+        assert_eq!(tokenize("skills plugins"), vec!["skill", "plugin"]);
+    }
+
+    #[test]
+    fn tokenize_keeps_double_s_and_short_words() {
+        assert_eq!(tokenize("process gas"), vec!["process", "gas"]);
     }
 
     // -- camelCase splitter -------------------------------------------------
@@ -426,181 +488,150 @@ mod tests {
         assert_eq!(split_camel_case("HTTP"), vec!["HTTP"]);
     }
 
-    // -- code detection -----------------------------------------------------
-
-    #[test]
-    fn code_heavy_double_colon() {
-        assert!(is_code_heavy("std::path::Path"));
-    }
-
-    #[test]
-    fn code_heavy_underscore() {
-        assert!(is_code_heavy("retry_logic"));
-    }
-
-    #[test]
-    fn code_heavy_camel_case() {
-        assert!(is_code_heavy("add retryLogic handler"));
-    }
-
-    #[test]
-    fn code_heavy_false_for_prose() {
-        assert!(!is_code_heavy("add retry logic to billing"));
-    }
-
     // -- IDF ----------------------------------------------------------------
 
     #[test]
-    fn idf_rare_terms_score_higher() {
-        let descs = vec![
-            "handles billing events".to_string(),
-            "billing configuration".to_string(),
-            "retry logic for failures".to_string(),
+    fn idf_rare_terms_weigh_more() {
+        let files = vec![
+            file("a.md", "billing events", &[]),
+            file("b.md", "billing configuration", &[]),
+            file("c.md", "retry logic", &[]),
         ];
-        let tokens = vec!["billing".to_string(), "retry".to_string()];
-        let idf = compute_idf(&descs, &tokens);
-
-        // "billing" in 2/3 docs, "retry" in 1/3 — retry should have higher IDF
-        assert!(idf["retry"] > idf["billing"]);
+        let idf = compute_idf(&files, &tokenize("billing retry"));
+        assert!(idf[1] > idf[0]);
     }
 
-    #[test]
-    fn idf_absent_term_gets_max_weight() {
-        let descs = vec!["alpha".to_string(), "beta".to_string()];
-        let tokens = vec!["alpha".to_string(), "gamma".to_string()];
-        let idf = compute_idf(&descs, &tokens);
-
-        // "gamma" appears in 0 docs → highest IDF
-        assert!(idf["gamma"] > idf["alpha"]);
-    }
-
-    // -- description scoring ------------------------------------------------
+    // -- ranking ------------------------------------------------------------
 
     #[test]
-    fn description_scoring_all_tokens_match() {
-        let descs = vec!["billing webhook retry handler".to_string()];
-        let tokens = vec![
-            "billing".to_string(),
-            "webhook".to_string(),
-            "retry".to_string(),
+    fn rank_matches_terms_in_path() {
+        let files = vec![
+            file(
+                ".github/workflows/run-all-tests.yml",
+                "GHA: Run All Tests",
+                &[],
+            ),
+            file("src/billing.js", "fn charge()", &["charge"]),
         ];
-        let idf = compute_idf(&descs, &tokens);
-        let total_idf: f64 = tokens.iter().map(|t| idf[t]).sum();
-        let scores = score_descriptions(&descs, &tokens, &idf, total_idf);
-
-        // All tokens match → score = 1.0
-        assert!((scores[0] - 1.0).abs() < f64::EPSILON);
+        let results = rank(&files, "run all tests workflow");
+        assert_eq!(results[0].path, ".github/workflows/run-all-tests.yml");
+        assert!(results[0].score > 0.9, "score was {}", results[0].score);
     }
 
     #[test]
-    fn description_scoring_partial_match() {
-        let descs = vec![
-            "billing webhook retry handler".to_string(),
-            "user authentication module".to_string(),
-            "billing configuration defaults".to_string(),
+    fn rank_matches_terms_in_symbol_names() {
+        let files = vec![
+            file("src/guard.ts", "export function", &["acquireGuardDir"]),
+            file("src/other.ts", "export function", &["releaseLock"]),
         ];
-        let tokens = vec![
-            "billing".to_string(),
-            "webhook".to_string(),
-            "retry".to_string(),
-        ];
-        let idf = compute_idf(&descs, &tokens);
-        let total_idf: f64 = tokens.iter().map(|t| idf[t]).sum();
-        let scores = score_descriptions(&descs, &tokens, &idf, total_idf);
-
-        // First matches all 3, third matches 1, second matches 0
-        assert!(scores[0] > scores[2]);
-        assert!(scores[2] > scores[1]);
-        assert!(scores[1].abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn description_scoring_no_substring_false_positives() {
-        // "rs" must NOT match "first" or "errors" — only whole-word "rs"
-        let descs = vec![
-            "first errors in parsing".to_string(), // contains "rs" as substring, not word
-            "webhook.rs — handler".to_string(),    // contains "rs" as word boundary
-        ];
-        let tokens = vec!["rs".to_string()];
-        let idf = compute_idf(&descs, &tokens);
-        let total_idf: f64 = tokens.iter().map(|t| idf[t]).sum();
-        let scores = score_descriptions(&descs, &tokens, &idf, total_idf);
-
-        // "first errors" should NOT match on "rs"
-        assert!(
-            scores[0].abs() < f64::EPSILON,
-            "substring match on 'first'/'errors' is a false positive"
-        );
-        // "webhook.rs" should match on "rs"
-        assert!(
-            scores[1] > 0.0,
-            "'rs' should match as whole word in 'webhook.rs'"
-        );
-    }
-
-    #[test]
-    fn desc_has_word_rejects_substrings() {
-        assert!(!desc_has_word("first errors bitmap", "rs"));
-        assert!(!desc_has_word("bitmap manager", "map"));
-        assert!(desc_has_word("webhook rs handler", "rs"));
-        assert!(desc_has_word("the map module", "map"));
-    }
-
-    #[test]
-    fn description_scoring_zero_total_idf() {
-        let descs = vec!["anything".to_string()];
-        let tokens = vec!["test".to_string()];
-        let idf = HashMap::new(); // empty — simulates zero total
-        let scores = score_descriptions(&descs, &tokens, &idf, 0.0);
-        assert!(scores[0].abs() < f64::EPSILON);
-    }
-
-    // -- combine ------------------------------------------------------------
-
-    #[test]
-    fn combine_filters_zero_scores() {
-        let entries = vec![
-            ("a.rs".to_string(), "matching file".to_string()),
-            ("b.rs".to_string(), "unrelated file".to_string()),
-        ];
-        let desc_scores = vec![0.8, 0.0];
-        let symbol_scores = HashMap::new();
-
-        let results = combine_scores(
-            &entries,
-            &desc_scores,
-            &symbol_scores,
-            DESC_WEIGHT,
-            SYMBOL_WEIGHT,
-        );
+        let results = rank(&files, "acquire guard");
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].path, "a.rs");
+        assert_eq!(results[0].path, "src/guard.ts");
     }
 
     #[test]
-    fn combine_weights_signals_correctly() {
-        let entries = vec![
-            ("desc_heavy.rs".to_string(), "description match".to_string()),
-            ("sym_heavy.rs".to_string(), "no match".to_string()),
+    fn rank_score_is_absolute_not_relative_to_best() {
+        // Only one of three rare query terms is covered anywhere: the best file must
+        // still score well below 1.0.
+        let files = vec![
+            file("src/a.rs", "alpha", &[]),
+            file("src/b.rs", "beta", &[]),
         ];
-        let desc_scores = vec![1.0, 0.0];
-        let mut symbol_scores = HashMap::new();
-        symbol_scores.insert("sym_heavy.rs".to_string(), 1.0);
+        let results = rank(&files, "alpha gamma delta");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].score < 0.5, "score was {}", results[0].score);
+    }
 
-        let results = combine_scores(
-            &entries,
-            &desc_scores,
-            &symbol_scores,
-            DESC_WEIGHT,
-            SYMBOL_WEIGHT,
+    #[test]
+    fn rank_symbol_count_does_not_inflate_score() {
+        let many: Vec<String> = (0..200).map(|i| format!("skillHelper{i}")).collect();
+        let many_refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        let files = vec![
+            file("plugins/big/scripts/triage.ts", "export", &many_refs),
+            file("plugins/ui-tester/skills/SKILL.md", "UI tester skill", &[]),
+        ];
+        let results = rank(&files, "ui tester skill");
+        assert_eq!(results[0].path, "plugins/ui-tester/skills/SKILL.md");
+    }
+
+    #[test]
+    fn rank_ties_break_by_path() {
+        let files = vec![file("b.md", "retry", &[]), file("a.md", "retry", &[])];
+        let results = rank(&files, "retry");
+        assert_eq!(results[0].path, "a.md");
+        assert!((results[0].score - results[1].score).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rank_reports_matched_terms() {
+        let files = vec![file("src/retry.rs", "billing", &[])];
+        let results = rank(&files, "billing retry webhook");
+        assert_eq!(results[0].matched_terms, vec!["billing", "retry"]);
+    }
+
+    #[test]
+    fn rank_empty_files_returns_empty() {
+        assert!(rank(&[], "retry").is_empty());
+    }
+
+    #[test]
+    fn rank_prefers_file_holding_query_phrase() {
+        let files = vec![
+            file(".codex/skills/writing-subagents/SKILL.md", "Writing", &[]),
+            file(
+                "codex/.agents/skills/writing-skills/SKILL.md",
+                "Writing",
+                &[],
+            ),
+        ];
+        let results = rank(&files, "writing skills");
+        assert_eq!(
+            results[0].path,
+            "codex/.agents/skills/writing-skills/SKILL.md"
         );
-        assert_eq!(results.len(), 2);
+        assert!(results[0].score > results[1].score);
+    }
 
-        let desc_result = results.iter().find(|r| r.path == "desc_heavy.rs").unwrap();
-        let sym_result = results.iter().find(|r| r.path == "sym_heavy.rs").unwrap();
+    #[test]
+    fn rank_pairs_ignore_word_order() {
+        let files = vec![
+            file("cli/config.py", "config module", &["load"]),
+            file("cli/defaults.py", "defaults", &["DEFAULT_CONFIG"]),
+        ];
+        let results = rank(&files, "config default");
+        assert_eq!(results[0].path, "cli/defaults.py");
+    }
 
-        // With default weights (0.6/0.4), desc-only scores higher
-        assert!(desc_result.score > sym_result.score);
+    fn scored(scores: &[f64]) -> Vec<AskResult> {
+        scores
+            .iter()
+            .enumerate()
+            .map(|(i, &score)| AskResult {
+                path: format!("f{i}"),
+                score,
+                reason: String::new(),
+                matched_terms: Vec::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn confident_needs_score_and_lead() {
+        assert!(is_confident(&scored(&[0.9, 0.5])));
+        assert!(is_confident(&scored(&[0.7])));
+        assert!(!is_confident(&scored(&[0.6, 0.1])), "score below bar");
+        assert!(!is_confident(&scored(&[0.9, 0.89])), "no clear lead");
+        assert!(!is_confident(&[]));
+    }
+
+    #[test]
+    fn rank_pairs_do_not_span_description_items() {
+        let joined = file("a.rs", "fn retry(), fn billing()", &[]);
+        assert!(
+            !joined
+                .pairs
+                .contains(&("billing".to_string(), "retry".to_string()))
+        );
     }
 
     // -- truncation ---------------------------------------------------------
@@ -620,27 +651,6 @@ mod tests {
     fn truncate_long_adds_ellipsis() {
         let result = truncate_description("this is a long description", 10);
         assert!(result.ends_with('…'));
-        // "this is a " (10 chars) + "…" (3 bytes)
         assert!(result.len() <= 13);
-    }
-
-    // -- FTS query building -------------------------------------------------
-
-    #[test]
-    fn fts_query_basic() {
-        let tokens = vec!["retry".to_string(), "billing".to_string()];
-        assert_eq!(build_fts_query(&tokens), r#""retry" OR "billing""#);
-    }
-
-    #[test]
-    fn fts_query_escapes_quotes() {
-        let tokens = vec!["say\"hello".to_string()];
-        assert_eq!(build_fts_query(&tokens), r#""say""hello""#);
-    }
-
-    #[test]
-    fn fts_query_empty_tokens() {
-        let tokens: Vec<String> = Vec::new();
-        assert_eq!(build_fts_query(&tokens), "");
     }
 }
