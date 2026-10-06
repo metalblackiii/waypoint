@@ -79,7 +79,12 @@ Remaining work to improve ranking via import/call graph signals:
 - Scoring rewritten: IDF-weighted coverage of query terms across path, description, and symbol names, blended 75/25 with adjacent-term pairs. The v1 FTS signal counted matching symbol rows normalized to the best file, so the file with the most symbols always scored at least 0.40 and won most queries
 - `scripts/ask-eval.mjs` scores `ask` on labelled real `find` misses: precision when answering, coverage, and silence on queries with no right answer, with the cutoff chosen on one half and judged on the other. Case files stay outside this repo — they carry private repo paths
 - Baseline on 104 cases (2026-10-05): v1 was right 12–17% of the time when answering and no cutoff reached 80%; v0.24.0's shipped gate (score ≥ 0.64, lead ≥ 0.02) was right on 18 of 20 answers, found the right file for 23% of queries that have one, and stayed silent on all 25 with none. Both halves informed the gate, so confirm on misses collected after that date
-- Next lever: richer file descriptions (markdown frontmatter `description:`, module doc comments) — the largest remaining failure group is "right file not in the top 20"
+
+**Tried and rejected (2026-10-06): richer file descriptions**:
+
+- Appending markdown frontmatter `description:`, Rust `//!`, Python module docstrings, and JS/TS file-header comments to descriptions (capped at 200 chars) lowered the shipped gate from 18 of 20 right (90%) to 17 of 23 (74%) on the same 104 cases, and turned no miss into a right answer
+- Extra prose lifted wrong files over the gate: test files whose docstrings restate the code under test, docs pages, and sibling skills whose "use X instead" clauses name the right file
+- Where the 79 answerable cases fall at the shipped gate: 18 covered, 19 have the right file at rank 1 but under the 0.64 score bar, 19 have it at rank 2–20, 3 tie, 20 have it outside the top 20. The rank-1-under-the-bar group is the next lever, a gate/scoring change that needs freshly labelled misses to tune without overfitting these 104
 
 **Revisit when**: Real-world usage reveals ranking quality gaps that description + symbol matching alone can't resolve. The ledger's `find_ranked` events count fallback answers; gate any weight change on `scripts/ask-eval.mjs`.
 
