@@ -347,7 +347,12 @@ fn print_phrase_candidates(
         // WHY: `lead`, not `strong` — the `strong` bar was calibrated on single-repo misses and
         // cross-repo precision is unmeasured (2026-10-19 replay looked roughly two-thirds
         // right). Promote once transcript data shows agents' sibling opens are right.
-        println!("No match for {query:?} in this repo. Leads in sibling repos:");
+        // WARNING: say only what was checked (paths, descriptions, symbol names). A flat "not in
+        // this repo" sends an in-scope agent to another service when a content grep here
+        // would have found the answer.
+        println!(
+            "No match for {query:?}: no file in this repo matched enough of these words (rg searches contents). Leads in sibling repos:"
+        );
         for sibling in &siblings {
             let path = sibling.repo_root.join(&sibling.candidate.path);
             print_candidate_line("lead", &path.to_string_lossy(), &sibling.candidate);

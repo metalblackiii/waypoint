@@ -1583,7 +1583,7 @@ fn cli_find_local_miss_lists_sibling_lead() {
         .assert()
         .success()
         .stdout(format!(
-            "No match for \"auto review unattended mode\" in this repo. Leads in sibling repos:\n\
+            "No match for \"auto review unattended mode\": no file in this repo matched enough of these words (rg searches contents). Leads in sibling repos:\n\
              \x20 lead      {}/skills/auto-review/references/unattended-mode.md  Unattended Mode  matched: auto, review, unattended, mode\n",
             sibling.display()
         ));
