@@ -79,6 +79,7 @@ Look up a symbol, file, or feature by name or phrase. Output has two modes:
 ```sh
 waypoint find "scan" --limit 5                  # symbol rows
 waypoint find "phrase candidates for find"      # in this repo: ranked candidates
+waypoint find phrase candidates for find        # same: unquoted words join into one phrase
 ```
 
 ```text

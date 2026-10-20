@@ -122,6 +122,9 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             limit,
             context,
         } => {
+            // WHY: agents often send `find payment model` unquoted; rejecting the extra words
+            // costs them a turn to re-quote.
+            let query = query.join(" ");
             let limit = limit.max(1);
             let project_root = project::resolve_with_context(context.as_deref())?;
             let wp_dir = project::require_waypoint_dir(&project_root)?;

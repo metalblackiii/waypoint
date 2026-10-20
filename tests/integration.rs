@@ -1544,6 +1544,22 @@ fn cli_find_phrase_miss_lists_labelled_candidates() {
 }
 
 #[test]
+fn cli_find_unquoted_words_search_as_one_phrase() {
+    let project = setup_phrase_project();
+
+    waypoint()
+        .args(["find", "writing", "skills"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(
+            "No symbol or file named \"writing skills\". Files ranked by matching words:\n\
+             \x20 strong    skills/writing-skills/SKILL.md  markdown document  matched: writing, skills\n\
+             \x20 possible  skills/writing-subagents/SKILL.md  markdown document  matched: writing, skills\n",
+        );
+}
+
+#[test]
 fn cli_find_phrase_without_confident_top_lists_only_possible() {
     let project = setup_phrase_project();
 

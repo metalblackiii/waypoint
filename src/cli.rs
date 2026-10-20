@@ -42,8 +42,9 @@ pub enum Command {
     },
     /// Search symbols or files by name; a multi-word query may return ranked candidate files
     Find {
-        /// Search query
-        query: String,
+        /// Search query; unquoted words are joined into one phrase
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
         /// Maximum results (minimum 1)
         #[arg(long, default_value = "20")]
         limit: usize,
