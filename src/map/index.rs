@@ -88,6 +88,17 @@ pub(crate) fn open_index(waypoint_dir: &Path) -> Result<Connection, AppError> {
     Ok(conn)
 }
 
+/// Open an existing index without creating, migrating, or writing it. For reading another
+/// repo's index, which `find` must never change; fails when the database does not exist.
+pub(crate) fn open_index_read_only(waypoint_dir: &Path) -> Result<Connection, AppError> {
+    let conn = Connection::open_with_flags(
+        waypoint_dir.join(INDEX_FILENAME),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_secs(3))?;
+    Ok(conn)
+}
+
 /// Row returned by find queries.
 #[derive(Debug, Clone)]
 pub struct SymbolRow {

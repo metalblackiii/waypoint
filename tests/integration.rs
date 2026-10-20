@@ -1482,9 +1482,13 @@ fn setup_phrase_project() -> TempDir {
 }
 
 fn find_stdout(project: &TempDir, query: &str) -> String {
+    find_stdout_in(project.path(), query)
+}
+
+fn find_stdout_in(dir: &std::path::Path, query: &str) -> String {
     let output = waypoint()
         .args(["find", query])
-        .current_dir(project.path())
+        .current_dir(dir)
         .assert()
         .success()
         .get_output()
@@ -1494,10 +1498,10 @@ fn find_stdout(project: &TempDir, query: &str) -> String {
 }
 
 /// The count on a `waypoint gain` row such as `Find ranked:` for `project`.
-fn gain_count(project: &TempDir, row: &str) -> i64 {
+fn gain_count(project: impl AsRef<std::path::Path>, row: &str) -> i64 {
     let output = waypoint()
         .arg("gain")
-        .current_dir(project.path())
+        .current_dir(project.as_ref())
         .output()
         .unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -1541,6 +1545,240 @@ fn cli_find_phrase_miss_lists_labelled_candidates() {
          \x20 possible  skills/writing-subagents/SKILL.md  markdown document  matched: writing, skills\n"
     );
     assert_eq!(gain_count(&project, "Find ranked:"), 1);
+}
+
+/// Repos `local` and `sibling` under one private parent, so sibling discovery never sees
+/// other tests' temp projects. Only `sibling` holds a file covering "auto review unattended
+/// mode" (score 1.0 there; 0 in `local`).
+fn setup_sibling_repos() -> TempDir {
+    let parent = TempDir::new().unwrap();
+    let local = parent.path().join("local");
+    let sibling = parent.path().join("sibling");
+    for repo in [&local, &sibling] {
+        fs::create_dir_all(repo.join(".git")).unwrap();
+    }
+    fs::create_dir_all(local.join("docs")).unwrap();
+    fs::write(local.join("docs/overview.md"), "Overview.\n").unwrap();
+    let references = sibling.join("skills/auto-review/references");
+    fs::create_dir_all(&references).unwrap();
+    fs::write(
+        references.join("unattended-mode.md"),
+        "# Unattended Mode\n\nBody.\n",
+    )
+    .unwrap();
+    for repo in [&local, &sibling] {
+        waypoint().arg("scan").current_dir(repo).assert().success();
+    }
+    parent
+}
+
+#[test]
+fn cli_find_local_miss_lists_sibling_lead() {
+    let parent = setup_sibling_repos();
+    let sibling = parent.path().join("sibling").canonicalize().unwrap();
+
+    waypoint()
+        .args(["find", "auto review unattended mode"])
+        .current_dir(parent.path().join("local"))
+        .assert()
+        .success()
+        .stdout(format!(
+            "No match for \"auto review unattended mode\" in this repo. Leads in sibling repos:\n\
+             \x20 lead      {}/skills/auto-review/references/unattended-mode.md  Unattended Mode  matched: auto, review, unattended, mode\n",
+            sibling.display()
+        ));
+}
+
+#[test]
+fn cli_find_never_indexes_an_unindexed_sibling() {
+    let parent = setup_sibling_repos();
+    let index = parent.path().join("sibling/.waypoint/map_index.db");
+    // `.waypoint/` stays: opening an index there would create the missing database file.
+    fs::remove_file(&index).unwrap();
+
+    waypoint()
+        .args(["find", "auto review unattended mode"])
+        .current_dir(parent.path().join("local"))
+        .assert()
+        .success()
+        .stdout(
+            "No match for \"auto review unattended mode\": no file matched enough of these words. Use rg.\n",
+        )
+        .stderr("");
+    assert!(!index.exists());
+}
+
+#[test]
+fn cli_find_leaves_an_older_sibling_index_unmigrated() {
+    let parent = setup_sibling_repos();
+    let index = parent.path().join("sibling/.waypoint/map_index.db");
+    let has_calls_table = || -> i64 {
+        rusqlite::Connection::open(&index)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'calls'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    // An index from a waypoint version before the `calls` table.
+    rusqlite::Connection::open(&index)
+        .unwrap()
+        .execute_batch("DROP TABLE calls")
+        .unwrap();
+    assert_eq!(has_calls_table(), 0);
+
+    let stdout = find_stdout_in(&parent.path().join("local"), "auto review unattended mode");
+
+    assert!(stdout.contains("Leads in sibling repos:"), "got:\n{stdout}");
+    assert_eq!(has_calls_table(), 0, "find migrated a sibling's index");
+}
+
+#[test]
+fn cli_find_searches_siblings_when_repo_holds_a_nested_repo() {
+    let parent = setup_sibling_repos();
+    let local = parent.path().join("local");
+    // An immediate child repo is what made batch discovery scan children instead of siblings.
+    fs::create_dir_all(local.join("lib/.git")).unwrap();
+
+    let stdout = find_stdout_in(&local, "auto review unattended mode");
+
+    assert!(
+        stdout.contains("/sibling/skills/auto-review/references/unattended-mode.md"),
+        "got:\n{stdout}"
+    );
+}
+
+#[test]
+fn cli_find_sibling_rows_respect_limit() {
+    let parent = setup_sibling_repos();
+    let second = parent.path().join("sibling-two");
+    let references = second.join("skills/auto-review/references");
+    fs::create_dir_all(second.join(".git")).unwrap();
+    fs::create_dir_all(&references).unwrap();
+    fs::write(references.join("unattended-mode.md"), "# Unattended Mode\n").unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(&second)
+        .assert()
+        .success();
+
+    let output = waypoint()
+        .args(["find", "auto review unattended mode", "--limit", "1"])
+        .current_dir(parent.path().join("local"))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+
+    let rows: Vec<&str> = stdout.lines().filter(|l| l.starts_with("  lead")).collect();
+    assert_eq!(rows.len(), 1, "got:\n{stdout}");
+    // Equal scores tie-break by repo path, and `sibling` sorts before `sibling-two`.
+    assert!(rows[0].contains("/sibling/skills/"), "got:\n{stdout}");
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_find_unlistable_parent_still_reports_local_miss() {
+    use std::os::unix::fs::PermissionsExt;
+    let parent = setup_sibling_repos();
+    // Traversable but not listable: `find` can reach its repo but cannot enumerate siblings.
+    fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o311)).unwrap();
+
+    let assert = waypoint()
+        .args(["find", "auto review unattended mode"])
+        .current_dir(parent.path().join("local"))
+        .assert();
+    fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert
+        .success()
+        .stdout(
+            "No match for \"auto review unattended mode\": no file matched enough of these words. Use rg.\n",
+        )
+        .stderr(predicate::str::starts_with(
+            "[waypoint] sibling repos not searched:",
+        ));
+}
+
+#[test]
+fn cli_find_ignores_sibling_without_strong_file() {
+    let parent = setup_sibling_repos();
+    let sibling = parent.path().join("sibling");
+    // A second file covering every query word removes the top file's lead, so the
+    // sibling's best candidate is only `possible`.
+    let docs = sibling.join("docs/auto-review");
+    fs::create_dir_all(&docs).unwrap();
+    fs::write(docs.join("unattended-mode.md"), "# Unattended Mode\n").unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(&sibling)
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["find", "auto review unattended mode"])
+        .current_dir(parent.path().join("local"))
+        .assert()
+        .success()
+        .stdout(
+            "No match for \"auto review unattended mode\": no file matched enough of these words. Use rg.\n",
+        );
+}
+
+#[test]
+fn cli_find_from_linked_worktree_searches_main_checkout_siblings() {
+    let parent = setup_sibling_repos();
+    let local = parent.path().join("local");
+    // A linked worktree outside the repos dir, as `.batch-worktrees/<name>` checkouts are.
+    let worktree = parent.path().join("worktrees/local-feature");
+    fs::create_dir_all(local.join(".git/worktrees/local-feature")).unwrap();
+    fs::create_dir_all(&worktree).unwrap();
+    fs::write(
+        worktree.join(".git"),
+        format!(
+            "gitdir: {}\n",
+            local.join(".git/worktrees/local-feature").display()
+        ),
+    )
+    .unwrap();
+    // Sibling paths derive from the main root read out of the `.git` file, spelled as written.
+    let sibling = parent.path().join("sibling");
+
+    let output = waypoint()
+        .args(["find", "auto review unattended mode"])
+        .current_dir(&worktree)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(
+        stdout.contains(&format!(
+            "{}/skills/auto-review/references/unattended-mode.md",
+            sibling.display()
+        )),
+        "got:\n{stdout}"
+    );
+}
+
+#[test]
+fn cli_find_sibling_answer_counts_in_gain() {
+    let parent = setup_sibling_repos();
+    let local = parent.path().join("local");
+
+    waypoint()
+        .args(["find", "auto review unattended mode"])
+        .current_dir(&local)
+        .assert()
+        .success();
+
+    assert_eq!(gain_count(&local, "Find sibling:"), 1);
+    assert_eq!(gain_count(&local, "Find misses:"), 0);
 }
 
 #[test]

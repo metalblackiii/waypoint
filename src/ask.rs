@@ -6,12 +6,13 @@
 //! treat a low top score as "no answer".
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
 use crate::AppError;
-use crate::map::index::open_index;
+use crate::map::index::{index_mtime, open_index, open_index_read_only};
+use crate::project;
 
 /// Ranked file result from the ask pipeline.
 #[derive(Debug, serde::Serialize)]
@@ -124,13 +125,16 @@ impl FileTerms {
 ///
 /// Returns at most `limit` files with a nonzero score, highest first; ties break by path.
 pub fn ask(waypoint_dir: &Path, query: &str, limit: usize) -> Result<Vec<AskResult>, AppError> {
+    rank_index(&open_index(waypoint_dir)?, query, limit)
+}
+
+fn rank_index(conn: &Connection, query: &str, limit: usize) -> Result<Vec<AskResult>, AppError> {
     let query_terms = tokenize(query);
     if query_terms.is_empty() {
         return Ok(Vec::new());
     }
 
-    let conn = open_index(waypoint_dir)?;
-    let files = load_file_terms(&conn)?;
+    let files = load_file_terms(conn)?;
     let mut results = rank_files(&files, &query_terms, &query_pairs(query));
     results.truncate(limit);
     Ok(results)
@@ -147,6 +151,15 @@ pub struct Candidate {
     pub evidence: String,
     /// Query words, as written, that the file matched.
     pub matched_words: Vec<String>,
+    /// Share of the query the file covers, in [0, 1].
+    pub score: f64,
+}
+
+/// A `strong` candidate found in a sibling repo of the project `find` ran in.
+#[derive(Debug)]
+pub struct SiblingCandidate {
+    pub repo_root: PathBuf,
+    pub candidate: Candidate,
 }
 
 /// Up to `min(limit, 3)` labelled candidate files for a phrase `find` could not match by
@@ -156,13 +169,20 @@ pub fn candidates(
     query: &str,
     limit: usize,
 ) -> Result<Vec<Candidate>, AppError> {
-    let ranked = ask(waypoint_dir, query, CANDIDATE_MAX)?;
+    candidates_in_index(&open_index(waypoint_dir)?, query, limit)
+}
+
+fn candidates_in_index(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<Candidate>, AppError> {
+    let ranked = rank_index(conn, query, CANDIDATE_MAX)?;
     let labelled = label_candidates(&ranked, limit);
     if labelled.is_empty() {
         return Ok(Vec::new());
     }
 
-    let conn = open_index(waypoint_dir)?;
     let placeholders = vec!["?"; labelled.len()].join(", ");
     let mut stmt = conn.prepare(&format!(
         "SELECT file_path, name, line_start FROM symbols WHERE file_path IN ({placeholders})"
@@ -230,7 +250,108 @@ fn build_candidate(
         line,
         evidence,
         matched_words: matched_words(query, &result.matched_terms),
+        score: result.score,
     }
+}
+
+/// Up to `min(limit, CANDIDATE_MAX)` `strong` candidates from the already-indexed sibling
+/// repos of `project_root`, best score first (ties: repo path). A linked worktree looks
+/// beside its main checkout, since its own siblings are other worktrees without indexes.
+///
+/// Scores come from each repo's own term weights, so cross-repo order is approximate; only
+/// `strong` files are kept because shared vocabulary across sibling services makes
+/// `possible` ones mostly noise.
+pub fn sibling_strong_candidates(
+    project_root: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SiblingCandidate>, AppError> {
+    let own_root =
+        project::worktree_main_root(project_root).unwrap_or_else(|| project_root.to_path_buf());
+    // WHY: the parent is listed directly, not via `discover_projects` — that batch-scan helper
+    // descends into a repo's own child repos instead of looking beside it.
+    let Some(parent) = own_root.parent() else {
+        return Ok(Vec::new());
+    };
+    let mut sibling_roots = Vec::new();
+    for entry in std::fs::read_dir(parent)? {
+        let repo_root = entry?.path();
+        // Unindexed siblings are skipped up front: the read-only open would fail on each one
+        // and print a warning for a repo that was simply never scanned.
+        if repo_root != own_root && index_mtime(&project::waypoint_dir(&repo_root)).is_some() {
+            sibling_roots.push(repo_root);
+        }
+    }
+
+    let mut found = Vec::new();
+    for (repo_root, ranked) in rank_in_parallel(&sibling_roots, query) {
+        match ranked {
+            Ok(repo_candidates) => found.extend(
+                repo_candidates
+                    .into_iter()
+                    .filter(|candidate| candidate.label == Label::Strong)
+                    .map(|candidate| SiblingCandidate {
+                        repo_root: repo_root.clone(),
+                        candidate,
+                    }),
+            ),
+            // A broken or locked sibling index must not fail `find` in this repo.
+            Err(error) => eprintln!(
+                "[waypoint] skipped sibling {}: {error}",
+                repo_root.display()
+            ),
+        }
+    }
+    found.sort_by(|a, b| {
+        b.candidate
+            .score
+            .total_cmp(&a.candidate.score)
+            .then_with(|| a.repo_root.cmp(&b.repo_root))
+    });
+    found.truncate(limit.min(CANDIDATE_MAX));
+    Ok(found)
+}
+
+/// `candidates` for every repo in `repo_roots`, spread over the available cores. Workers
+/// claim the next repo from a shared counter, so a few large indexes don't leave cores idle.
+/// SHORTCUT: wall time is bounded below by the largest index (neb-www's 209 MB took 0.64 s
+/// alone, 2026-10-19), since `ask` loads every file's terms. Upgrade trigger: sibling misses
+/// regularly slower than ~1 s — prefilter files by query term before loading them.
+fn rank_in_parallel<'a>(
+    repo_roots: &'a [PathBuf],
+    query: &str,
+) -> Vec<(&'a PathBuf, Result<Vec<Candidate>, AppError>)> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(repo_roots.len());
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut ranked = Vec::new();
+                    while let Some(repo_root) =
+                        repo_roots.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                    {
+                        // WARNING: never `open_index` here — it creates and migrates
+                        // indexes, and `find` must not change another repo.
+                        let ranking = open_index_read_only(&project::waypoint_dir(repo_root))
+                            .and_then(|conn| candidates_in_index(&conn, query, CANDIDATE_MAX));
+                        ranked.push((repo_root, ranking));
+                    }
+                    ranked
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    })
 }
 
 /// The first `min(limit, CANDIDATE_MAX)` files of `ranked` at or above `CANDIDATE_FLOOR`.

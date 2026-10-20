@@ -324,26 +324,55 @@ fn print_phrase_candidates(
         Some(top) if top.label == ask::Label::Strong => ledger::EventKind::FindRanked,
         Some(_) => ledger::EventKind::FindPossible,
     };
-    let _ = ledger::record_event(event, project_root.to_string_lossy().as_ref(), 0);
 
     if candidates.is_empty() {
-        println!("No match for {query:?}: no file matched enough of these words. Use rg.");
+        // In a multi-repo workspace agents start from a hub repo and ask about code in its
+        // siblings; naming the sibling file beats sending them to `rg` here.
+        // The sibling search only adds leads; when it cannot run, the local miss still stands.
+        let siblings =
+            ask::sibling_strong_candidates(project_root, query, limit).unwrap_or_else(|error| {
+                eprintln!("[waypoint] sibling repos not searched: {error}");
+                Vec::new()
+            });
+        let event = if siblings.is_empty() {
+            event
+        } else {
+            ledger::EventKind::FindSibling
+        };
+        let _ = ledger::record_event(event, project_root.to_string_lossy().as_ref(), 0);
+        if siblings.is_empty() {
+            println!("No match for {query:?}: no file matched enough of these words. Use rg.");
+            return Ok(());
+        }
+        // WHY: `lead`, not `strong` — the `strong` bar was calibrated on single-repo misses and
+        // cross-repo precision is unmeasured (2026-10-19 replay looked roughly two-thirds
+        // right). Promote once transcript data shows agents' sibling opens are right.
+        println!("No match for {query:?} in this repo. Leads in sibling repos:");
+        for sibling in &siblings {
+            let path = sibling.repo_root.join(&sibling.candidate.path);
+            print_candidate_line("lead", &path.to_string_lossy(), &sibling.candidate);
+        }
         return Ok(());
     }
+    let _ = ledger::record_event(event, project_root.to_string_lossy().as_ref(), 0);
     println!("No symbol or file named {query:?}. Files ranked by matching words:");
     for candidate in &candidates {
-        let location = match candidate.line {
-            Some(line) => format!("{}:{line}", candidate.path),
-            None => candidate.path.clone(),
-        };
-        println!(
-            "  {:<8}  {location}  {}  matched: {}",
-            candidate.label.as_str(),
-            candidate.evidence,
-            candidate.matched_words.join(", ")
-        );
+        print_candidate_line(candidate.label.as_str(), &candidate.path, candidate);
     }
     Ok(())
+}
+
+/// One candidate row: label, `path[:line]`, evidence, and the query words matched.
+fn print_candidate_line(label: &str, path: &str, candidate: &ask::Candidate) {
+    let location = match candidate.line {
+        Some(line) => format!("{path}:{line}"),
+        None => path.to_string(),
+    };
+    println!(
+        "  {label:<8}  {location}  {}  matched: {}",
+        candidate.evidence,
+        candidate.matched_words.join(", ")
+    );
 }
 
 fn scan_all(path: Option<std::path::PathBuf>) -> Result<(), AppError> {
