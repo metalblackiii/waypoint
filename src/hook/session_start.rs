@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::{AppError, ledger, map, project};
 
 use crate::map::MAP_STALE_DAYS;
@@ -12,16 +14,20 @@ const ARCH_FILE_THRESHOLD: i64 = 20;
 
 /// `SessionStart` — auto-scan, emit arch context, record session start.
 pub fn run() -> Result<(), AppError> {
-    let ctx = super::HookContext::from_stdin()?;
-    if project::is_home_dir(&ctx.project_root) {
+    let payload = super::read_stdin()?;
+    let cwd = super::extract_cwd(&payload).unwrap_or(".");
+    // WHY: a session outside any repo (Downloads, /tmp, a folder of repos) must not
+    // get an index — a stray `.waypoint` becomes a root marker and captures every
+    // later session started beneath it. `find_root` also returns `None` at home.
+    let Some(project_root) = project::find_root(Path::new(cwd)) else {
         super::emit_hook_output(super::HookEvent::SessionStart, None, COMMAND_DIGEST);
         return Ok(());
-    }
-    let wp_dir = project::ensure_initialized(&ctx.project_root)?;
+    };
+    let wp_dir = project::ensure_initialized(&project_root)?;
 
     // Auto-scan if map.md doesn't exist or is stale
-    let fresh_arch = if should_rescan(&wp_dir, &ctx.project_root) {
-        let output = map::scan::scan_project(&ctx.project_root)?;
+    let fresh_arch = if should_rescan(&wp_dir, &project_root) {
+        let output = map::scan::scan_project(&project_root)?;
         map::write_map(&wp_dir, &output.entries)?;
         if let Err(e) = map::index::rebuild_symbols(&wp_dir, &output.symbols) {
             eprintln!("Warning: symbol index failed: {e}");
@@ -37,12 +43,12 @@ pub fn run() -> Result<(), AppError> {
     };
 
     // Emit session context: arch (if large enough) + command reminder (always)
-    emit_session_context(&wp_dir, &ctx.project_root, fresh_arch);
+    emit_session_context(&wp_dir, &project_root, fresh_arch);
 
     // Record session start (silent failure)
     let _ = ledger::record_event(
         ledger::EventKind::SessionStart,
-        &ctx.project_root.to_string_lossy(),
+        &project_root.to_string_lossy(),
         0,
     );
 

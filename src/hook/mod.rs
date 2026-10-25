@@ -26,7 +26,7 @@ impl HookContext {
         let cwd = extract_cwd(payload).unwrap_or(".");
         let cwd_path = Path::new(cwd);
 
-        // WARNING: an empty `file_path` (session-start payloads carry none) would resolve
+        // WARNING: an empty `file_path` (subagent-start payloads carry none) would resolve
         // against the hook process's own cwd and could land on the home directory.
         let project_root = project::find_root(cwd_path)
             .or_else(|| {

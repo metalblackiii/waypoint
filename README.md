@@ -155,7 +155,8 @@ For installation and hooks, see [SETUP.md](SETUP.md). Hooks are the sole steerin
 - `waypoint impact` depends on a fresh map/index; if you see a staleness warning, run `waypoint scan` first.
 - Hook-powered context injection requires hook setup; without it, context lines are not auto-injected. Run `./setup-plugins.sh` once after `cargo install` to wire this up.
 - `waypoint impact` output is text-only in v1 (no JSON mode yet).
-- Hidden files/directories (`.`-prefixed) are intentionally excluded from scan/indexing to avoid over-indexing system/metadata paths; dotfile-heavy repos may see more lookup misses.
+- Hidden files/directories (`.`-prefixed) are scanned and indexed like any other path unless gitignored, so dotdirs such as `.claude/` appear in `waypoint find` results and count toward index size.
+- Session start only indexes a git repo or a folder already holding `.waypoint/`; sessions started elsewhere get the command digest but no index. Run `waypoint scan` there to opt a folder in.
 
 ## Cross-project lookups
 

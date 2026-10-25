@@ -347,6 +347,26 @@ fn session_start_below_home_does_not_walk_up_to_home() {
         .success();
 
     assert!(!home.path().join(".waypoint").exists());
+    assert!(!notes.join(".waypoint").exists());
+}
+
+#[test]
+fn session_start_outside_any_project_does_not_index() {
+    let folder = TempDir::new().unwrap();
+    fs::write(folder.path().join("notes.rs"), "fn main() {}\n").unwrap();
+    let payload = serde_json::json!({ "cwd": folder.path().to_string_lossy() }).to_string();
+
+    let assert = waypoint()
+        .args(["hook", "session-start"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    assert!(!folder.path().join(".waypoint").exists());
+    let output = parse_hook_output(&assert);
+    let context = output["additionalContext"].as_str().unwrap();
+    assert!(context.contains("waypoint find"));
+    assert!(!context.contains("[waypoint] arch:"));
 }
 
 #[test]

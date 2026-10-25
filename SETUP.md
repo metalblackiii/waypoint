@@ -132,7 +132,7 @@ an on/off boundary.
 
 ## 6. First run
 
-Open Claude Code or Codex in any project. The session-start hook auto-creates `.waypoint/` and runs the initial scan. Or run manually:
+Open Claude Code or Codex in any git repo. The session-start hook auto-creates `.waypoint/` and runs the initial scan. Folders outside a git repo are skipped; to index one, run manually:
 
 ```sh
 waypoint scan
