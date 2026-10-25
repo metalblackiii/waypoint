@@ -28,16 +28,9 @@ pub fn run() -> Result<(), AppError> {
     // Auto-scan if map.md doesn't exist or is stale
     let fresh_arch = if should_rescan(&wp_dir, &project_root) {
         let output = map::scan::scan_project(&project_root)?;
-        map::write_map(&wp_dir, &output.entries)?;
-        if let Err(e) = map::index::rebuild_symbols(&wp_dir, &output.symbols) {
-            eprintln!("Warning: symbol index failed: {e}");
-        }
-        if let Err(e) = map::index::rebuild_imports(&wp_dir, &output.imports) {
-            eprintln!("Warning: import index failed: {e}");
-        }
         // Pass the computed summary directly to emit_arch_context to avoid a
         // write-then-read round-trip through SQLite on every rescan.
-        map::index::rebuild_arch_summary(&wp_dir, &output.entries, &output.imports).ok()
+        map::write_scan(&wp_dir, &output)?
     } else {
         None
     };

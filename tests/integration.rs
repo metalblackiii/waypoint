@@ -550,6 +550,27 @@ fn hook_session_start_rebuilds_import_index() {
     );
 }
 
+#[test]
+fn hook_session_start_rebuilds_call_index() {
+    let project = setup_call_graph_project();
+    let payload = serde_json::json!({ "cwd": project.path().to_string_lossy() }).to_string();
+
+    waypoint()
+        .args(["hook", "session-start"])
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    let call_count: i64 = rusqlite::Connection::open(project.path().join(".waypoint/map_index.db"))
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM calls", [], |row| row.get(0))
+        .unwrap();
+    assert!(
+        call_count > 0,
+        "session-start rescan should rebuild the call index"
+    );
+}
+
 // ── Cross-Project CLI Tests ─────────────────────────────────────
 
 /// Create a scanned project with .waypoint/ initialized.
