@@ -64,21 +64,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 let sym_count = output.symbols.len();
                 let imp_count = output.imports.len();
                 let call_count = output.calls.len();
-                map::write_map(&wp_dir, &output.entries)?;
-                if let Err(e) = map::index::rebuild_symbols(&wp_dir, &output.symbols) {
-                    eprintln!("Warning: symbol index failed: {e}");
-                }
-                if let Err(e) = map::index::rebuild_imports(&wp_dir, &output.imports) {
-                    eprintln!("Warning: import index failed: {e}");
-                }
-                if let Err(e) = map::index::rebuild_calls(&wp_dir, &output.calls) {
-                    eprintln!("Warning: call index failed: {e}");
-                }
-                if let Err(e) =
-                    map::index::rebuild_arch_summary(&wp_dir, &output.entries, &output.imports)
-                {
-                    eprintln!("Warning: arch summary failed: {e}");
-                }
+                map::write_scan(&wp_dir, &output)?;
                 println!(
                     "Scanned {count} files, {sym_count} symbols, {imp_count} imports, {call_count} calls → .waypoint/map.md"
                 );
@@ -451,19 +437,7 @@ fn scan_one_project(root: &std::path::Path) -> Result<(usize, usize, bool), AppE
     let output = map::scan::scan_project(root)?;
     let files = output.entries.len();
     let symbols = output.symbols.len();
-    map::write_map(&wp_dir, &output.entries)?;
-    if let Err(e) = map::index::rebuild_symbols(&wp_dir, &output.symbols) {
-        eprintln!("    Warning: symbol index failed: {e}");
-    }
-    if let Err(e) = map::index::rebuild_imports(&wp_dir, &output.imports) {
-        eprintln!("    Warning: import index failed: {e}");
-    }
-    if let Err(e) = map::index::rebuild_calls(&wp_dir, &output.calls) {
-        eprintln!("    Warning: call index failed: {e}");
-    }
-    if let Err(e) = map::index::rebuild_arch_summary(&wp_dir, &output.entries, &output.imports) {
-        eprintln!("    Warning: arch summary failed: {e}");
-    }
+    map::write_scan(&wp_dir, &output)?;
     Ok((files, symbols, initialized))
 }
 

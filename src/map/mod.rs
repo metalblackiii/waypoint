@@ -129,6 +129,34 @@ fn parse_entry_tail(s: &str) -> (String, usize, Option<f32>) {
     (s.trim().to_string(), 0, None)
 }
 
+/// Persist a full scan: write map.md, then rebuild every index table from it.
+///
+/// Index failures warn on stderr instead of failing the scan — map.md is the
+/// source of truth and the index rebuilds on the next scan. Returns the arch
+/// summary when its rebuild succeeded.
+pub fn write_scan(
+    waypoint_dir: &Path,
+    output: &scan::ScanOutput,
+) -> Result<Option<index::ArchSummary>, AppError> {
+    write_map(waypoint_dir, &output.entries)?;
+    if let Err(e) = index::rebuild_symbols(waypoint_dir, &output.symbols) {
+        eprintln!("Warning: symbol index failed: {e}");
+    }
+    if let Err(e) = index::rebuild_imports(waypoint_dir, &output.imports) {
+        eprintln!("Warning: import index failed: {e}");
+    }
+    if let Err(e) = index::rebuild_calls(waypoint_dir, &output.calls) {
+        eprintln!("Warning: call index failed: {e}");
+    }
+    match index::rebuild_arch_summary(waypoint_dir, &output.entries, &output.imports) {
+        Ok(summary) => Ok(Some(summary)),
+        Err(e) => {
+            eprintln!("Warning: arch summary failed: {e}");
+            Ok(None)
+        }
+    }
+}
+
 /// Write entries to map.md grouped by directory. Uses atomic write (temp + rename).
 pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppError> {
     let map_path = waypoint_dir.join("map.md");
