@@ -19,6 +19,10 @@ install:
 uninstall:
     cargo uninstall waypoint
 
+# Delete build output in target/ (the installed binary stays)
+clean:
+    cargo clean
+
 # Run the linter
 lint:
     cargo clippy --all-targets --all-features
