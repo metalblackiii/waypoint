@@ -19,7 +19,6 @@ pub enum EventKind {
     FindMiss,
     FindRanked,
     FindPossible,
-    FindSibling,
     FirstEdit,
     FirstEditTurns,
     AskHit,
@@ -42,7 +41,6 @@ impl EventKind {
             Self::FindMiss => "find_miss",
             Self::FindRanked => "find_ranked",
             Self::FindPossible => "find_possible",
-            Self::FindSibling => "find_sibling",
             Self::FirstEdit => "first_edit",
             Self::FirstEditTurns => "first_edit_turns",
             Self::AskHit => "ask_hit",
@@ -68,8 +66,6 @@ pub struct GainStats {
     pub find_ranked: i64,
     /// Phrase misses `find` answered only with `possible` candidate files.
     pub find_possible: i64,
-    /// Phrase misses in this repo that `find` answered with sibling-repo leads.
-    pub find_sibling: i64,
     pub find_hit_rate: f64,
     pub first_edit_count: i64,
     pub avg_first_edit_secs: f64,
@@ -185,11 +181,6 @@ impl fmt::Display for GainStats {
                 Some(Color::Yellow),
             ),
             (
-                "Find sibling:",
-                self.find_sibling.to_string(),
-                Some(Color::Yellow),
-            ),
-            (
                 "Find misses:",
                 self.find_misses.to_string(),
                 Some(Color::Yellow),
@@ -225,13 +216,7 @@ impl fmt::Display for GainStats {
         )?;
 
         // Find hit rate meter
-        if self.find_hits
-            + self.find_ranked
-            + self.find_possible
-            + self.find_sibling
-            + self.find_misses
-            > 0
-        {
+        if self.find_hits + self.find_ranked + self.find_possible + self.find_misses > 0 {
             let find_ratio = self.find_hit_rate / 100.0;
             let find_meter = bar(find_ratio, METER_WIDTH);
             let find_color = rate_color(self.find_hit_rate);
@@ -508,10 +493,12 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
     let map_hits = query_count_kind(conn, "map_hit", param_ref)?;
     let map_misses = query_count_kind(conn, "map_miss", param_ref)?;
     let find_hits = query_count_kind(conn, "find_hit", param_ref)?;
-    let find_misses = query_count_kind(conn, "find_miss", param_ref)?;
+    // WHY: v0.27 wrote `find_sibling` for a local phrase miss answered only with sibling-repo
+    // leads. Nothing writes it since the leads were removed; those rows were local misses.
+    let find_misses = query_count_kind(conn, "find_miss", param_ref)?
+        + query_count_kind(conn, "find_sibling", param_ref)?;
     let find_ranked = query_count_kind(conn, "find_ranked", param_ref)?;
     let find_possible = query_count_kind(conn, "find_possible", param_ref)?;
-    let find_sibling = query_count_kind(conn, "find_sibling", param_ref)?;
     let ask_hits = query_count_kind(conn, "ask_hit", param_ref)?;
     let ask_misses = query_count_kind(conn, "ask_miss", param_ref)?;
     let arch_hits = query_count_kind(conn, "arch_hit", param_ref)?;
@@ -526,9 +513,7 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
 
     // A `strong` candidate is an answer; a `possible`-only list is a lead, not an answer, so it
     // sits in the denominator like a miss — turning misses into lists leaves the rate unchanged.
-    // Sibling-repo files print as leads until their precision is measured, so they count the
-    // same way.
-    let find_attempts = find_hits + find_ranked + find_possible + find_sibling + find_misses;
+    let find_attempts = find_hits + find_ranked + find_possible + find_misses;
     #[allow(clippy::cast_precision_loss)]
     let find_hit_rate = if find_attempts > 0 {
         (find_hits + find_ranked) as f64 / find_attempts as f64 * 100.0
@@ -619,7 +604,6 @@ fn gain_stats_with(conn: &Connection, project_path: Option<&str>) -> Result<Gain
         find_misses,
         find_ranked,
         find_possible,
-        find_sibling,
         find_hit_rate,
         first_edit_count,
         avg_first_edit_secs,
@@ -781,16 +765,21 @@ mod tests {
     }
 
     #[test]
-    fn find_sibling_counts_as_attempted_not_answered() {
+    fn legacy_find_sibling_rows_count_as_misses() {
         let conn = test_db();
         record_event_with(&conn, EventKind::FindHit, "/tmp/project", 0).unwrap();
-        record_event_with(&conn, EventKind::FindSibling, "/tmp/project", 0).unwrap();
+        conn.execute(
+            "INSERT INTO events (timestamp, event_kind, project_path, token_impact)
+             VALUES ('2026-10-26T00:00:00+00:00', 'find_sibling', '/tmp/project', 0)",
+            [],
+        )
+        .unwrap();
 
         let stats = gain_stats_with(&conn, None).unwrap();
 
-        assert_eq!(stats.find_sibling, 1);
+        assert_eq!(stats.find_misses, 1);
         assert!((stats.find_hit_rate - 50.0).abs() < f64::EPSILON);
-        assert!(stats.to_string().contains("Find sibling:"));
+        assert!(!stats.to_string().contains("Find sibling:"));
     }
 
     #[test]
@@ -1071,7 +1060,6 @@ mod tests {
             find_misses: 0,
             find_ranked: 0,
             find_possible: 0,
-            find_sibling: 0,
             find_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
@@ -1103,7 +1091,6 @@ mod tests {
             find_misses: 0,
             find_ranked: 0,
             find_possible: 0,
-            find_sibling: 0,
             find_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
@@ -1147,7 +1134,6 @@ mod tests {
             find_misses: 0,
             find_ranked: 0,
             find_possible: 0,
-            find_sibling: 0,
             find_hit_rate: 0.0,
             first_edit_count: 0,
             avg_first_edit_secs: 0.0,
@@ -1179,7 +1165,6 @@ mod tests {
             find_misses: 0,
             find_ranked: 0,
             find_possible: 0,
-            find_sibling: 0,
             find_hit_rate: 0.0,
             first_edit_count: 3,
             avg_first_edit_secs: 42.0,
