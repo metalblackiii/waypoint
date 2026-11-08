@@ -27,7 +27,8 @@ printf '%s\n' '#!/bin/bash' \
   '  scan) env | grep "^WAYPOINT_EXP_" | sed "s/^/scan /" >> "$log" || true ;;' \
   '  ask) flags=$(env | grep "^WAYPOINT_EXP_" | sort | tr "\n" " " || true)' \
   '       echo "ask ${flags:-none}" >> "$log"' \
-  '       echo '"'"'[{"path":"src/a.rs","score":0.9},{"path":"src/b.rs","score":0.5}]'"'"' ;;' \
+  '       if [ -n "${STUB_STRONG:-}" ]; then label=",\"strong\":$STUB_STRONG"; else label=""; fi' \
+  '       echo "[{\"path\":\"src/a.rs\",\"score\":0.9$label},{\"path\":\"src/b.rs\",\"score\":0.5}]" ;;' \
   'esac' > "$T/bin/waypoint"
 chmod +x "$T/bin/waypoint"
 
@@ -102,6 +103,17 @@ if run --dump "$T/plain.jsonl" > /dev/null 2>&1 && grep -q '"prereg":null,"arm":
 else
   fail "plain run writes null prereg and arm"
 fi
+
+# --- the binary's own strong label is recorded and checked against the JS gate ---
+# Stub scores 0.9/0.5 pass the 0.64/0.02 gate on both cases.
+out=$(STUB_STRONG=true run --dump "$T/strong.jsonl" 2>&1)
+check "dump rows carry the binary's strong label" count_is 2 '"strong":true' "$T/strong.jsonl"
+check "agreeing label reports 0 disagreements" grep -q 'binary strong vs gate: 0 disagree' <<<"$out"
+out=$(STUB_STRONG=false run 2>&1)
+check "disagreeing label is counted and named" grep -q 'binary strong vs gate: 2 disagree (#1 #2)' <<<"$out"
+out=$(run --dump "$T/unlabelled.jsonl" 2>&1)
+check "missing label dumps null" count_is 2 '"strong":null' "$T/unlabelled.jsonl"
+check "missing label prints no comparison" bash -c '! grep -q "binary strong" <<<"$1"' _ "$out"
 
 echo "failures: $FAILURES"
 [ "$FAILURES" = 0 ]

@@ -1799,6 +1799,54 @@ fn cli_ask_json_prints_full_precision_scores() {
 }
 
 #[test]
+fn cli_ask_json_labels_only_a_confident_top_strong() {
+    let project = setup_phrase_project();
+
+    let output = waypoint()
+        .args(["ask", "writing skills", "--json"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let results: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    // 1.0 over a 0.75 runner-up clears the 0.64/0.02 bar, as `find` labels it.
+    assert_eq!(results[0]["strong"], true);
+    assert_eq!(results[1]["strong"], false);
+
+    let output = waypoint()
+        .args(["ask", "alpha beta gamma", "--json"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let results: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    // 0.562 is under the 0.64 score bar.
+    assert_eq!(results[0]["strong"], false);
+}
+
+#[test]
+fn cli_ask_json_strong_holds_with_limit_one() {
+    let project = setup_phrase_project();
+
+    // The lead needs the runner-up even when only one row is printed.
+    let output = waypoint()
+        .args(["ask", "writing skills", "--json", "--limit", "1"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let results: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(results.as_array().unwrap().len(), 1);
+    assert_eq!(results[0]["strong"], true);
+}
+
+#[test]
 fn cli_help_hides_ask() {
     waypoint()
         .arg("--help")

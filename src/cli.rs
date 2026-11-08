@@ -82,7 +82,8 @@ pub enum Command {
         /// Show matched query terms per file
         #[arg(long)]
         explain: bool,
-        /// Print results as JSON with full-precision scores (for `scripts/ask-eval.mjs`)
+        /// Print results as JSON with full-precision scores and `find`'s `strong` label on the
+        /// top file (for `scripts/ask-eval.mjs`)
         #[arg(long, conflicts_with = "explain")]
         json: bool,
         /// Resolve project from this path instead of cwd

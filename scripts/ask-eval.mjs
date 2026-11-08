@@ -218,7 +218,8 @@ function rank(c) {
     encoding: 'utf8',
     env: runEnv,
   });
-  return JSON.parse(out).map((r) => ({ path: r.path, score: r.score }));
+  // `strong` is the binary's own label for the top file; binaries before 0.29.0 omit it.
+  return JSON.parse(out).map((r) => ({ path: r.path, score: r.score, strong: r.strong }));
 }
 
 const scored = cases.map((c) => {
@@ -232,6 +233,7 @@ const scored = cases.map((c) => {
     score: top?.score ?? 0,
     margin: top ? top.score - (ranked[1]?.score ?? 0) : 0,
     correct: Boolean(top) && c.verdict !== 'abstain' && c.accept.includes(top.path),
+    binaryStrong: typeof top?.strong === 'boolean' ? top.strong : null,
     correctRank: ranked.findIndex((r) => c.accept.includes(r.path)) + 1 || null,
     correctScore: ranked.find((r) => c.accept.includes(r.path))?.score ?? null,
     listLength: list.length,
@@ -240,6 +242,9 @@ const scored = cases.map((c) => {
   };
 });
 
+// WARNING: mirrors `is_confident` in src/ask.rs, except that a lone result here gets margin =
+// score while Rust checks only the score. The two agree while the lead bar is at most the score
+// bar; `printLabelAgreement` reports any case where they stop agreeing.
 const passes = (c, minScore, minMargin) => Boolean(c.top) && c.score >= minScore && c.margin >= minMargin;
 
 function measure(set, minScore, minMargin) {
@@ -293,7 +298,9 @@ function reportFixedGate(minScore, minMargin) {
     prereg: prereg?.hash ?? null,
     arm: prereg?.arm ?? null,
     accept: c.accept,
+    strong: c.binaryStrong,
   }));
+  printLabelAgreement(minScore, minMargin);
   if (flags['--groups']) printMissGroups(minScore, minMargin);
   if (dumpPath) {
     writeDump(rows);
@@ -320,6 +327,16 @@ function writeDump(rows) {
     rmSync(staging, { force: true });
     throw new Error(`could not write --dump ${dumpPath}`, { cause });
   }
+}
+
+// The binary labels its top file itself; this gate mirrors CONFIDENT_SCORE/CONFIDENT_LEAD. With
+// no experiment flag on, any disagreement means the mirror drifted. With a flag that changes
+// labels, the disagreeing cases are the ones the flag changed. Silent when the binary gives no label.
+function printLabelAgreement(minScore, minMargin) {
+  if (!scored.some((c) => c.binaryStrong !== null)) return;
+  const disagree = scored.filter((c) => (c.binaryStrong === true) !== passes(c, minScore, minMargin));
+  const ids = disagree.length ? ` (${disagree.map((c) => `#${c.id}`).join(' ')})` : '';
+  console.log(`binary strong vs gate: ${disagree.length} disagree${ids}`);
 }
 
 // The candidate list `find` prints for a phrase miss: the first LIST_SIZE ranked files at or

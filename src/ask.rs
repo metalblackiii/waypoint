@@ -24,6 +24,9 @@ pub struct AskResult {
     pub reason: String,
     /// Query terms the file covers (for `--explain`).
     pub matched_terms: Vec<String>,
+    /// Whether `find` would label this file `strong`; only ever true for the first result.
+    /// `scripts/ask-eval.mjs` checks it against its mirrored gate to catch drift.
+    pub strong: bool,
 }
 
 const STOP_WORDS: &[&str] = &[
@@ -124,7 +127,15 @@ impl FileTerms {
 ///
 /// Returns at most `limit` files with a nonzero score, highest first; ties break by path.
 pub fn ask(waypoint_dir: &Path, query: &str, limit: usize) -> Result<Vec<AskResult>, AppError> {
-    rank_index(&open_index(waypoint_dir)?, query, limit)
+    // The runner-up decides the lead, so rank at least as deep as `candidates` does.
+    let mut results = rank_index(&open_index(waypoint_dir)?, query, limit.max(CANDIDATE_MAX))?;
+    if is_confident(&results)
+        && let Some(top) = results.first_mut()
+    {
+        top.strong = true;
+    }
+    results.truncate(limit);
+    Ok(results)
 }
 
 fn rank_index(conn: &Connection, query: &str, limit: usize) -> Result<Vec<AskResult>, AppError> {
@@ -496,6 +507,7 @@ fn rank_files(
                 score,
                 reason: truncate_description(&file.description, REASON_MAX_LEN),
                 matched_terms,
+                strong: false,
             })
         })
         .collect();
@@ -769,6 +781,7 @@ mod tests {
                 score,
                 reason: String::new(),
                 matched_terms: Vec::new(),
+                strong: false,
             })
             .collect()
     }
