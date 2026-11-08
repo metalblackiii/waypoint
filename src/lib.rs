@@ -114,24 +114,13 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
             let limit = limit.max(1);
             let project_root = project::resolve_with_context(context.as_deref())?;
             let wp_dir = project::require_waypoint_dir(&project_root)?;
-            let results = map::index::find_symbols(&wp_dir, &query, limit)?;
+            let mut results = map::index::find_symbols(&wp_dir, &query, limit)?;
             if results.is_empty() {
-                // Symbol miss — fall back to file-path lookup so symbol-less
-                // files (markdown, manifests, jq) are still findable by name.
+                // Symbol-name miss — try file paths, so symbol-less files (markdown,
+                // manifests, jq) are findable by name, then declaration text as the last
+                // name-based lookup: a path holding the name beats a constant quoting it.
                 let file_hits = map::index::find_files(&wp_dir, &query, limit)?;
-                if file_hits.is_empty() && query.split_whitespace().nth(1).is_some() {
-                    // Agents send `find` phrases ("auto-review unattended mode") far more
-                    // often than they call `ask`, so a phrase miss answers with ranked
-                    // candidate files, labelled so a lead is never mistaken for the answer.
-                    print_phrase_candidates(&wp_dir, &project_root, &query, limit)?;
-                } else if file_hits.is_empty() {
-                    let _ = ledger::record_event(
-                        ledger::EventKind::FindMiss,
-                        project_root.to_string_lossy().as_ref(),
-                        0,
-                    );
-                    println!("No symbols found: {query}");
-                } else {
+                if !file_hits.is_empty() {
                     let _ = ledger::record_event(
                         ledger::EventKind::FindHit,
                         project_root.to_string_lossy().as_ref(),
@@ -140,27 +129,44 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                     for path in &file_hits {
                         println!("  {:6}  {path}", "file");
                     }
+                    return Ok(());
                 }
-            } else {
-                let _ = ledger::record_event(
-                    ledger::EventKind::FindHit,
-                    project_root.to_string_lossy().as_ref(),
-                    0,
-                );
-                for row in &results {
-                    println!(
-                        "  {:6}  {:<30}  {}:{}",
-                        row.kind, row.name, row.file_path, row.line_start
+                results = map::index::find_signatures(&wp_dir, &query, limit)?;
+            }
+            if results.is_empty() {
+                if query.split_whitespace().nth(1).is_some() {
+                    // Agents send `find` phrases ("auto-review unattended mode") far more
+                    // often than they call `ask`, so a phrase miss answers with ranked
+                    // candidate files, labelled so a lead is never mistaken for the answer.
+                    print_phrase_candidates(&wp_dir, &project_root, &query, limit)?;
+                } else {
+                    let _ = ledger::record_event(
+                        ledger::EventKind::FindMiss,
+                        project_root.to_string_lossy().as_ref(),
+                        0,
                     );
+                    println!("No symbols found: {query}");
                 }
-                for (file_path, siblings) in map::index::find_siblings(&wp_dir, &results)? {
-                    let listing = siblings
-                        .iter()
-                        .map(|s| format!("{} {}:{}", s.kind, s.name, s.line_start))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    println!("\nsee also ({file_path}):\n  {listing}");
-                }
+                return Ok(());
+            }
+            let _ = ledger::record_event(
+                ledger::EventKind::FindHit,
+                project_root.to_string_lossy().as_ref(),
+                0,
+            );
+            for row in &results {
+                println!(
+                    "  {:6}  {:<30}  {}:{}",
+                    row.kind, row.name, row.file_path, row.line_start
+                );
+            }
+            for (file_path, siblings) in map::index::find_siblings(&wp_dir, &results)? {
+                let listing = siblings
+                    .iter()
+                    .map(|s| format!("{} {}:{}", s.kind, s.name, s.line_start))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!("\nsee also ({file_path}):\n  {listing}");
             }
             Ok(())
         }

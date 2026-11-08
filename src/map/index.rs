@@ -1094,13 +1094,42 @@ pub fn find_symbols(
         return Ok(rank_candidates(&enriched, &conn, limit));
     }
 
-    // Fallback: LIKE search with widened pool, then re-rank
+    // Fallback: name LIKE with widened pool, then re-rank. Signature text is searched separately
+    // by `find_signatures`, after file paths: hyphenated names always land here (FTS5 rejects
+    // `ar-sweep` as syntax), and a constant whose value mentions a name is weaker evidence than
+    // a path holding it (observed 2026-11-08: `find ar-sweep` showed string constants and hid
+    // `skills/ar-sweep/SKILL.md`).
+    like_symbols(&conn, "name LIKE ?1", query, pool_size, limit)
+}
+
+/// Symbols whose declaration text contains `query` — `find`'s last name-based lookup, after
+/// symbol names and file paths both miss.
+pub fn find_signatures(
+    waypoint_dir: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SymbolRow>, AppError> {
+    let conn = open_index(waypoint_dir)?;
+    #[allow(clippy::cast_possible_wrap)]
+    let pool_size = (limit.saturating_mul(3)).clamp(20, 60) as i64;
+    like_symbols(&conn, "signature LIKE ?1", query, pool_size, limit)
+}
+
+/// Symbols matching `%query%` under `condition` (a fixed SQL predicate on `?1`), widened to
+/// `pool_size` and re-ranked to `limit`.
+fn like_symbols(
+    conn: &Connection,
+    condition: &str,
+    query: &str,
+    pool_size: i64,
+    limit: usize,
+) -> Result<Vec<SymbolRow>, AppError> {
     let pattern = format!("%{query}%");
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT file_path, name, kind, signature, line_start, line_end, exported \
-         FROM symbols WHERE name LIKE ?1 OR signature LIKE ?1 \
-         ORDER BY exported DESC, name LIMIT ?2",
-    )?;
+         FROM symbols WHERE {condition} \
+         ORDER BY exported DESC, name LIMIT ?2"
+    ))?;
     let rows = stmt.query_map(params![pattern, pool_size], |row| {
         Ok(SymbolRow {
             file_path: row.get(0)?,
@@ -1113,7 +1142,7 @@ pub fn find_symbols(
         })
     })?;
     let candidates: Vec<SymbolRow> = rows.collect::<Result<Vec<_>, _>>()?;
-    Ok(rank_candidates(&candidates, &conn, limit))
+    Ok(rank_candidates(&candidates, conn, limit))
 }
 
 /// Fallback for `find` when no symbols match: exact/substring file-path lookup
@@ -1364,6 +1393,26 @@ mod tests {
 
         let results = find_symbols(tmp.path(), "extract", 10).unwrap();
         assert!(results.iter().any(|r| r.name == "extract_description"));
+    }
+
+    #[test]
+    fn signature_only_match_is_left_to_find_signatures() {
+        let tmp = TempDir::new().unwrap();
+        let syms = vec![Symbol {
+            file_path: "src/roles.js".into(),
+            name: "REVIEWER_ROLE".into(),
+            kind: "const".into(),
+            signature: "export const REVIEWER_ROLE = \"ar-sweep-reviewer\"".into(),
+            line_start: 1,
+            line_end: 1,
+            exported: true,
+        }];
+        rebuild_symbols(tmp.path(), &syms).unwrap();
+
+        assert!(find_symbols(tmp.path(), "ar-sweep", 10).unwrap().is_empty());
+        let by_signature = find_signatures(tmp.path(), "ar-sweep", 10).unwrap();
+        assert_eq!(by_signature.len(), 1);
+        assert_eq!(by_signature[0].name, "REVIEWER_ROLE");
     }
 
     #[test]

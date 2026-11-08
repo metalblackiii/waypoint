@@ -1846,6 +1846,52 @@ fn cli_ask_json_strong_holds_with_limit_one() {
     assert_eq!(results[0]["strong"], true);
 }
 
+/// A skill directory named `ar-sweep` plus a constant whose string value mentions it — the
+/// shape that hid `skills/ar-sweep/SKILL.md` behind the constant (ptek-ai-playbook, 2026-11-08).
+fn setup_kebab_name_project() -> TempDir {
+    let project = setup_project();
+    fs::create_dir_all(project.path().join("skills/ar-sweep")).unwrap();
+    fs::write(
+        project.path().join("skills/ar-sweep/SKILL.md"),
+        "# AR Sweep\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("src/roles.js"),
+        "export const REVIEWER_ROLE = \"ar-sweep-reviewer\";\n",
+    )
+    .unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+    project
+}
+
+#[test]
+fn cli_find_kebab_name_lists_matching_path_over_signature_text() {
+    let project = setup_kebab_name_project();
+
+    let stdout = find_stdout(&project, "ar-sweep");
+    assert!(
+        stdout.contains("file    skills/ar-sweep/SKILL.md"),
+        "got:\n{stdout}"
+    );
+    assert!(!stdout.contains("REVIEWER_ROLE"), "got:\n{stdout}");
+}
+
+#[test]
+fn cli_find_falls_back_to_signature_text_when_no_path_matches() {
+    let project = setup_kebab_name_project();
+
+    let stdout = find_stdout(&project, "ar-sweep-reviewer");
+    assert!(
+        stdout.contains("REVIEWER_ROLE") && stdout.contains("src/roles.js"),
+        "got:\n{stdout}"
+    );
+}
+
 #[test]
 fn cli_help_hides_ask() {
     waypoint()
