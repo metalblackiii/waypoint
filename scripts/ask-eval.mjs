@@ -16,6 +16,17 @@
 //   2. node scripts/ask-eval.mjs <cases> --bin target/release/waypoint --rescan --cutoff 0.64,0.02 --groups --compare <dir>/control.jsonl
 //   3. node scripts/ask-eval.mjs <cases> --rescan --cutoff 0.64,0.02   (restores indexes with the installed binary)
 // Add --list to steps 1 and 2 to also measure the candidate list `find` shows for a phrase miss.
+//
+// Preregistered experiments: write the prereg file (arms and pass bar) before any run, then add
+// `--prereg <file> --arm <name>` to steps 1 and 2, one arm each. Each arm's WAYPOINT_EXP_* flags
+// reach every waypoint call, and --compare refuses a control made under a different prereg file
+// or with the arm under test; any other arm of the same file may serve as the control.
+// Changing the arms or bar after a run means a new prereg file, not an edit.
+// WARNING: the script only checks the flag name's shape; the binary reports nothing about which
+// flags it read. A misspelled or not-yet-implemented flag runs the arm as an unchanged control,
+// so a "changed answers vs control: 0" result means check the flag name in src/ first.
+//   {"id": "kind-prior-v1", "bar": "<decision rule>",
+//    "arms": [{"name": "control", "env": {}}, {"name": "prior", "env": {"WAYPOINT_EXP_KIND_PRIOR": "0.5"}}]}
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, openSync, closeSync, renameSync, rmSync, existsSync, realpathSync, mkdtempSync } from 'node:fs';
@@ -25,10 +36,11 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 
 const USAGE =
   'usage: node scripts/ask-eval.mjs <cases.json> [--bin <waypoint>] [--rescan] [--target 0.8] [--misses] [--swap]\n' +
-  '       node scripts/ask-eval.mjs <cases.json> [--bin <waypoint>] [--rescan] --cutoff score,lead [--list] [--groups] [--dump <out.jsonl>] [--compare <control.jsonl>]';
-const VALUE_FLAGS = new Set(['--bin', '--target', '--cutoff', '--dump', '--compare']);
+  '       node scripts/ask-eval.mjs <cases.json> [--bin <waypoint>] [--rescan] --cutoff score,lead [--list] [--groups] [--dump <out.jsonl>] [--compare <control.jsonl>]\n' +
+  '         [--prereg <prereg.json> --arm <name>]';
+const VALUE_FLAGS = new Set(['--bin', '--target', '--cutoff', '--dump', '--compare', '--prereg', '--arm']);
 const SWITCH_FLAGS = new Set(['--rescan', '--misses', '--swap', '--groups', '--list']);
-const FIXED_GATE_ONLY = ['--groups', '--dump', '--compare', '--list'];
+const FIXED_GATE_ONLY = ['--groups', '--dump', '--compare', '--list', '--prereg', '--arm'];
 const TUNING_ONLY = ['--target', '--misses', '--swap'];
 
 function failUsage(message) {
@@ -73,6 +85,44 @@ if ('--target' in flags && !UNIT_NUMBER.test(flags['--target'])) {
 const target = Number(flags['--target'] ?? '0.8');
 const listMode = Boolean(flags['--list']);
 
+// Only WAYPOINT_EXP_* keys are accepted, so a prereg file cannot redirect PATH, the ledger, or
+// anything else in the binary's environment.
+const EXP_FLAG = /^WAYPOINT_EXP_[A-Z0-9_]+$/;
+function readPrereg(path, armName) {
+  const bad = (why) => failUsage(`--prereg ${path}: ${why}`);
+  let bytes;
+  try {
+    bytes = readFileSync(path);
+  } catch (cause) {
+    bad(`cannot read it (${cause.code ?? cause.message})`);
+  }
+  let spec;
+  try {
+    spec = JSON.parse(bytes.toString('utf8'));
+  } catch (cause) {
+    bad(`not valid JSON (${cause.message})`);
+  }
+  if (typeof spec?.id !== 'string' || !spec.id) bad('needs a non-empty "id"');
+  if (typeof spec.bar !== 'string' || !spec.bar.trim()) bad('needs a non-empty "bar": write the decision rule before running');
+  if (!Array.isArray(spec.arms) || spec.arms.length === 0) bad('needs a non-empty "arms" array');
+  const names = new Set();
+  for (const arm of spec.arms) {
+    if (typeof arm?.name !== 'string' || !arm.name) bad('every arm needs a non-empty "name"');
+    if (names.has(arm.name)) bad(`arm "${arm.name}" appears twice`);
+    names.add(arm.name);
+    if (typeof arm.env !== 'object' || arm.env === null || Array.isArray(arm.env)) bad(`arm "${arm.name}" needs an "env" object`);
+    for (const [key, value] of Object.entries(arm.env)) {
+      if (!EXP_FLAG.test(key)) bad(`arm "${arm.name}" sets ${key}; only WAYPOINT_EXP_* flags are allowed`);
+      if (typeof value !== 'string') bad(`arm "${arm.name}" ${key} must be a string`);
+    }
+  }
+  const arm = spec.arms.find((a) => a.name === armName);
+  if (!arm) bad(`no arm named "${armName}" (arms: ${[...names].join(', ')})`);
+  return { id: spec.id, hash: createHash('sha256').update(bytes).digest('hex'), arm: arm.name, env: arm.env };
+}
+if (('--prereg' in flags) !== ('--arm' in flags)) failUsage('--prereg and --arm go together: a prereg run names its arm');
+const prereg = flags['--prereg'] ? readPrereg(flags['--prereg'], flags['--arm']) : null;
+
 // WARNING: mirrors `CANDIDATE_FLOOR` and `CANDIDATE_MAX` in src/ask.rs; change both together or
 // --list stops describing the candidate list `find` shows.
 const LIST_FLOOR = 0.4;
@@ -90,7 +140,7 @@ if (dumpPath) {
   if (dumpPath === REPO_ROOT || dumpPath.startsWith(REPO_ROOT + sep)) {
     failUsage('--dump rows carry private case paths; write them outside this repo');
   }
-  const inputs = [casesPath, flags['--compare']].filter(Boolean).map(canonical);
+  const inputs = [casesPath, flags['--compare'], flags['--prereg']].filter(Boolean).map(canonical);
   if (inputs.includes(dumpPath)) failUsage('--dump would overwrite an input file; pick another path');
 }
 
@@ -134,12 +184,22 @@ function readControl(path) {
     if (JSON.stringify(row.cutoff) !== JSON.stringify(fixedCutoff)) mismatch(`cutoff ${JSON.stringify(row.cutoff)}, this run ${fixedCutoff.join(',')}`);
     // Controls written before --list existed carry no `list` field; they measured no list.
     if ((row.list ?? false) !== listMode) mismatch(`list ${row.list ?? false}, this run ${listMode}`);
+    // Controls written before --prereg existed carry no `prereg` field; they ran under none.
+    if ((row.prereg ?? null) !== (prereg?.hash ?? null)) mismatch('made under a different --prereg file (or none)');
+    // A control from the arm under test would report every difference as zero.
+    if (prereg && typeof row.arm !== 'string') mismatch(`case #${c.id} names no arm`);
+    if (prereg && row.arm === prereg.arm) mismatch(`control was made with arm "${row.arm}", the arm under test`);
   }
   return byId;
 }
 const scratchLedger = mkdtempSync(join(tmpdir(), 'wp-ask-eval-'));
 process.on('exit', () => rmSync(scratchLedger, { recursive: true, force: true }));
-const runEnv = { ...process.env, WAYPOINT_DATA_DIR: scratchLedger };
+// WARNING: inherited WAYPOINT_EXP_* flags are dropped, so a stray shell export cannot turn a
+// control run into a treatment run; only the selected arm's flags reach the binary.
+const droppedFlags = Object.keys(process.env).filter((key) => key.startsWith('WAYPOINT_EXP_'));
+if (droppedFlags.length) console.error(`ignoring inherited ${droppedFlags.join(', ')}: only --prereg/--arm set WAYPOINT_EXP_* flags`);
+const inheritedEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('WAYPOINT_EXP_')));
+const runEnv = { ...inheritedEnv, ...(prereg?.env ?? {}), WAYPOINT_DATA_DIR: scratchLedger };
 /// How deep to look for the correct file when reporting where it ranked.
 const RANK_DEPTH = 20;
 const caseRoot = (c) => (c.root ? c.root.replace(/^~/, homedir()) : join(homedir(), 'repos', c.project));
@@ -207,6 +267,7 @@ const row = (label, m) =>
   );
 
 console.log(binVersion);
+if (prereg) console.log(`prereg ${prereg.id} (${prereg.hash.slice(0, 12)}), arm ${prereg.arm}`);
 if (fixedCutoff) reportFixedGate(...fixedCutoff);
 else reportTunedGate();
 
@@ -229,6 +290,8 @@ function reportFixedGate(minScore, minMargin) {
     correctRank: c.correctRank,
     list: listMode,
     listed: listMode ? c.listed : null,
+    prereg: prereg?.hash ?? null,
+    arm: prereg?.arm ?? null,
     accept: c.accept,
   }));
   if (flags['--groups']) printMissGroups(minScore, minMargin);

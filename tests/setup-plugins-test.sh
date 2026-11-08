@@ -5,7 +5,7 @@
 # ptek-jira-cli/tests/setup-plugins-test.sh — no fake-CLI matrix here because
 # waypoint's install paths are structurally identical to the tested upstream;
 # only the waypoint-specific state mutations get local coverage.
-# Not wired into `just test` (that recipe is Rust-only) — run directly.
+# Run with `just test-scripts` (`just test` is Rust-only).
 #
 # shellcheck disable=SC1090  # dynamic `source "$SCRIPT"` resolves to setup-plugins.sh at repo root
 # shellcheck disable=SC2030,SC2031  # HOME is deliberately scoped to each subshell so tests never leak into the real $HOME

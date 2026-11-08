@@ -39,6 +39,11 @@ fmt:
 test:
     cargo test
 
+# Run the shell suites for setup-plugins.sh and scripts/ask-eval.mjs
+test-scripts:
+    bash tests/setup-plugins-test.sh
+    bash tests/ask-eval-test.sh
+
 # Run the pi adapter tests (Node >= 22.18 for .ts type stripping)
 test-pi:
     node --test plugins/waypoint/pi/*-test.mjs

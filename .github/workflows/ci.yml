@@ -90,3 +90,26 @@ jobs:
 
       - name: Run pi adapter tests
         run: node --test plugins/waypoint/pi/*-test.mjs
+
+  test-scripts:
+    name: Test shell suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # WHY: tests/ask-eval-test.sh runs scripts/ask-eval.mjs, which needs Node 22+ (import.meta.dirname)
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Run setup-plugins suite
+        run: bash tests/setup-plugins-test.sh
+
+      - name: Run ask-eval suite
+        run: bash tests/ask-eval-test.sh
