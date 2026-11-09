@@ -1892,6 +1892,66 @@ fn cli_find_falls_back_to_signature_text_when_no_path_matches() {
     );
 }
 
+/// A skill directory named `peer-review` nested deeper than a test script whose name merely
+/// contains it — the shape that listed `skills/peer-review/SKILL.md` 5th (ptek-ai-playbook,
+/// 2026-11-08).
+fn setup_segment_name_project() -> TempDir {
+    let project = setup_project();
+    fs::create_dir_all(project.path().join("plugins/ptek/skills/peer-review")).unwrap();
+    fs::create_dir_all(project.path().join("tests")).unwrap();
+    fs::write(
+        project
+            .path()
+            .join("plugins/ptek/skills/peer-review/SKILL.md"),
+        "# Peer Review\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("tests/peer-review-chain.test.sh"),
+        "#!/bin/sh\n",
+    )
+    .unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+    project
+}
+
+#[test]
+fn cli_find_lists_whole_segment_path_before_substring_path() {
+    let project = setup_segment_name_project();
+
+    let stdout = find_stdout(&project, "peer-review");
+    let skill = stdout.find("plugins/ptek/skills/peer-review/SKILL.md");
+    let script = stdout.find("tests/peer-review-chain.test.sh");
+    assert!(
+        matches!((skill, script), (Some(s), Some(t)) if s < t),
+        "got:\n{stdout}"
+    );
+}
+
+#[test]
+fn cli_find_ranks_whole_segment_path_before_applying_limit() {
+    let project = setup_segment_name_project();
+
+    let output = waypoint()
+        .args(["find", "peer-review", "--limit", "1"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(
+        stdout.contains("plugins/ptek/skills/peer-review/SKILL.md")
+            && !stdout.contains("tests/peer-review-chain.test.sh"),
+        "got:\n{stdout}"
+    );
+}
+
 #[test]
 fn cli_help_hides_ask() {
     waypoint()

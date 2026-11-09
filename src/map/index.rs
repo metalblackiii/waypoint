@@ -1149,18 +1149,34 @@ fn like_symbols(
 /// against map entries. Covers files that never produce symbols (markdown,
 /// JSON manifests, jq scripts) so indexed paths are still reachable by name
 /// (observed miss 2026-08-13: plugin manifests invisible to `find`).
-/// Shortest paths first — a shorter matching path is the more exact hit.
+/// Paths with a directory or file name equal to the query come first, then
+/// paths that merely contain it; shortest first within each tier.
 pub fn find_files(waypoint_dir: &Path, query: &str, limit: usize) -> Result<Vec<String>, AppError> {
     let conn = open_index(waypoint_dir)?;
     let pattern = format!("%{query}%");
-    #[allow(clippy::cast_possible_wrap)]
-    let limit = limit as i64;
+    // WARNING: no SQL LIMIT — the whole-name tier is ranked in Rust, and truncating first
+    // would drop a deep `skills/<query>/SKILL.md` behind shorter substring hits.
     let mut stmt = conn.prepare(
         "SELECT path FROM map_entries WHERE path LIKE ?1 \
-         ORDER BY length(path), path LIMIT ?2",
+         ORDER BY length(path), path",
     )?;
-    let rows = stmt.query_map(params![pattern, limit], |row| row.get::<_, String>(0))?;
-    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    let rows = stmt.query_map(params![pattern], |row| row.get::<_, String>(0))?;
+    let mut paths = rows.collect::<Result<Vec<_>, _>>()?;
+    // Stable sort keeps the SQL shortest-first order inside each tier.
+    paths.sort_by_key(|path| !path_names_query(path, query));
+    paths.truncate(limit);
+    Ok(paths)
+}
+
+/// True when a directory in `path`, or its file name up to the first dot, equals `query`
+/// (ASCII case-insensitive, matching SQLite `LIKE`). `skills/peer-review/SKILL.md` and
+/// `tests/peer-review.test.sh` name `peer-review`; `tests/peer-review-chain.test.sh` does not.
+/// A query holding `/` (`skills/peer-review`) spans segments, so it never ranks in this tier.
+fn path_names_query(path: &str, query: &str) -> bool {
+    let mut segments = path.split('/');
+    let file_name = segments.next_back().unwrap_or_default();
+    let file_prefix = file_name.split('.').next().unwrap_or_default();
+    file_prefix.eq_ignore_ascii_case(query) || segments.any(|dir| dir.eq_ignore_ascii_case(query))
 }
 
 /// Sibling display cap per file in the `find` "see also:" footer (FR-1).
@@ -1393,6 +1409,26 @@ mod tests {
 
         let results = find_symbols(tmp.path(), "extract", 10).unwrap();
         assert!(results.iter().any(|r| r.name == "extract_description"));
+    }
+
+    #[test]
+    fn path_names_query_matches_whole_names_only() {
+        assert!(path_names_query(
+            "skills/peer-review/SKILL.md",
+            "peer-review"
+        ));
+        assert!(path_names_query("tests/peer-review.test.sh", "peer-review"));
+        assert!(path_names_query("bin/peer-review", "peer-review"));
+        assert!(path_names_query("Skills/Peer-Review/x.md", "peer-review"));
+        assert!(!path_names_query(
+            "tests/peer-review-chain.test.sh",
+            "peer-review"
+        ));
+        assert!(!path_names_query("docs/peer-review.md/x", "peer-review"));
+        assert!(!path_names_query(
+            "skills/peer-review/SKILL.md",
+            "skills/peer-review"
+        ));
     }
 
     #[test]
