@@ -1952,6 +1952,76 @@ fn cli_find_ranks_whole_segment_path_before_applying_limit() {
     );
 }
 
+/// A skill directory named `orchestrate` holding a script whose functions mention the word
+/// only through their path — the shape that listed six `state.mjs` functions for
+/// `find orchestrate` and never reached the SKILL.md (ptek-ai-playbook, 2026-11-08).
+fn setup_word_in_path_project() -> TempDir {
+    let project = setup_project();
+    let skill = project.path().join("skills/orchestrate");
+    fs::create_dir_all(skill.join("scripts")).unwrap();
+    fs::create_dir_all(skill.join("assets")).unwrap();
+    fs::write(skill.join("SKILL.md"), "# Orchestrate\n").unwrap();
+    fs::write(skill.join("assets/a.md"), "# A\n").unwrap();
+    fs::write(skill.join("assets/b.md"), "# B\n").unwrap();
+    fs::write(
+        skill.join("scripts/state.mjs"),
+        "export function parseLedger(text) {\n  return text;\n}\n",
+    )
+    .unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+    project
+}
+
+#[test]
+fn cli_find_lists_up_to_three_named_files_above_symbol_hits() {
+    let project = setup_word_in_path_project();
+
+    let stdout = find_stdout(&project, "orchestrate");
+    let lines: Vec<&str> = stdout.lines().take(4).collect();
+    assert_eq!(
+        lines,
+        [
+            "  file    skills/orchestrate/SKILL.md",
+            "  file    skills/orchestrate/assets/a.md",
+            "  file    skills/orchestrate/assets/b.md",
+            "  fn      parseLedger                     skills/orchestrate/scripts/state.mjs:1",
+        ],
+        "got:\n{stdout}"
+    );
+}
+
+#[test]
+fn cli_find_limit_caps_named_files_and_symbols_together() {
+    let project = setup_word_in_path_project();
+
+    let output = waypoint()
+        .args(["find", "orchestrate", "--limit", "2"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "  file    skills/orchestrate/SKILL.md\n  file    skills/orchestrate/assets/a.md\n"
+    );
+}
+
+#[test]
+fn cli_find_skips_named_file_already_holding_a_symbol_hit() {
+    let project = setup_word_in_path_project();
+
+    assert_eq!(
+        find_stdout(&project, "state"),
+        "  fn      parseLedger                     skills/orchestrate/scripts/state.mjs:1\n"
+    );
+}
+
 #[test]
 fn cli_help_hides_ask() {
     waypoint()

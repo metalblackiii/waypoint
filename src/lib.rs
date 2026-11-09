@@ -154,6 +154,19 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                 project_root.to_string_lossy().as_ref(),
                 0,
             );
+            let files_unreached_by_symbols: Vec<String> =
+                map::index::find_named_files(&wp_dir, &query)?
+                    .into_iter()
+                    .filter(|path| !results.iter().any(|row| &row.file_path == path))
+                    .take(limit.min(NAMED_FILES_ABOVE_SYMBOLS))
+                    .collect();
+            for path in &files_unreached_by_symbols {
+                println!("  {:6}  {path}", "file");
+            }
+            results.truncate(limit - files_unreached_by_symbols.len());
+            if results.is_empty() {
+                return Ok(());
+            }
             for row in &results {
                 println!(
                     "  {:6}  {:<30}  {}:{}",
@@ -301,6 +314,11 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
         },
     }
 }
+
+/// Cap on `file` lines `find` prints above symbol hits, so a directory named like the query
+/// (`src/hook/`) cannot push the symbols off screen. Files already holding a listed symbol
+/// are skipped: the symbol line already points there. File lines count toward `--limit`.
+const NAMED_FILES_ABOVE_SYMBOLS: usize = 3;
 
 /// `find`'s answer to a multi-word query matching no symbol or path: up to 3 labelled
 /// candidate files, or a miss line pointing to `rg`.

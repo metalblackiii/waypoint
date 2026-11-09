@@ -1152,20 +1152,36 @@ fn like_symbols(
 /// Paths with a directory or file name equal to the query come first, then
 /// paths that merely contain it; shortest first within each tier.
 pub fn find_files(waypoint_dir: &Path, query: &str, limit: usize) -> Result<Vec<String>, AppError> {
+    let mut paths = paths_containing(waypoint_dir, query)?;
+    // Stable sort keeps the shortest-first order inside each tier.
+    paths.sort_by_key(|path| !path_names_query(path, query));
+    paths.truncate(limit);
+    Ok(paths)
+}
+
+/// Paths whose directory or file name equals the query, shortest first. `find` lists these
+/// above symbol hits: symbol full-text search also matches the `file_path` column, so
+/// `find orchestrate` returned functions under `skills/orchestrate/` and never the SKILL.md
+/// (observed 2026-11-08). A name-only search was rejected — it hid a module's own functions
+/// (`find ledger` lost `src/ledger.rs`).
+pub fn find_named_files(waypoint_dir: &Path, query: &str) -> Result<Vec<String>, AppError> {
+    let mut paths = paths_containing(waypoint_dir, query)?;
+    paths.retain(|path| path_names_query(path, query));
+    Ok(paths)
+}
+
+/// Every indexed path containing `query` (SQLite `LIKE`), shortest first.
+// WARNING: no SQL LIMIT — callers rank or filter in Rust, and truncating first would drop
+// a deep `skills/<query>/SKILL.md` behind shorter substring hits.
+fn paths_containing(waypoint_dir: &Path, query: &str) -> Result<Vec<String>, AppError> {
     let conn = open_index(waypoint_dir)?;
     let pattern = format!("%{query}%");
-    // WARNING: no SQL LIMIT — the whole-name tier is ranked in Rust, and truncating first
-    // would drop a deep `skills/<query>/SKILL.md` behind shorter substring hits.
     let mut stmt = conn.prepare(
         "SELECT path FROM map_entries WHERE path LIKE ?1 \
          ORDER BY length(path), path",
     )?;
     let rows = stmt.query_map(params![pattern], |row| row.get::<_, String>(0))?;
-    let mut paths = rows.collect::<Result<Vec<_>, _>>()?;
-    // Stable sort keeps the SQL shortest-first order inside each tier.
-    paths.sort_by_key(|path| !path_names_query(path, query));
-    paths.truncate(limit);
-    Ok(paths)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 /// True when a directory in `path`, or its file name up to the first dot, equals `query`
