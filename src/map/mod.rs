@@ -189,8 +189,7 @@ pub fn write_map(waypoint_dir: &Path, entries: &[MapEntry]) -> Result<(), AppErr
                 let density_suffix = entry
                     .density
                     .and_then(density_label)
-                    .map(|l| format!(", {l}"))
-                    .unwrap_or_default();
+                    .map_or_default(|l| format!(", {l}"));
                 writeln!(
                     file,
                     "- `{filename}` — {} (~{} tok{})",

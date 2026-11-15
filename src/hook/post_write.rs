@@ -272,8 +272,7 @@ fn collect_stale_siblings(
 ) -> Vec<String> {
     let dir_prefix = Path::new(current_relative)
         .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
+        .map_or_default(|p| p.to_string_lossy().to_string());
 
     let Ok(siblings) = index::entries_in_dir(wp_dir, &dir_prefix) else {
         return Vec::new();
