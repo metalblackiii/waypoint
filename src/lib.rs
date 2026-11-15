@@ -331,7 +331,7 @@ fn print_miss_scope_hint(project_root: &std::path::Path, query: &str) {
         std::ffi::OsStr::to_string_lossy,
     );
     println!(
-        "Searched only the {name} index. Another repo: waypoint find -C <repo> {query:?}. \
+        "Searched only the {name} index. Another indexed repo: waypoint find -C <repo> {query:?}. \
          Plugin caches and ~/.codex are not indexed; use rg there."
     );
 }

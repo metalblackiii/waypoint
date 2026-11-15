@@ -620,6 +620,31 @@ fn cli_find_miss_hint_names_context_project() {
         ));
 }
 
+#[test]
+fn cli_find_hit_prints_no_miss_hint() {
+    let project = setup_scanned_project();
+
+    waypoint()
+        .args(["find", "main"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Searched only").not());
+}
+
+#[test]
+fn cli_find_miss_hint_names_the_c_escape() {
+    let project = setup_scanned_project();
+
+    waypoint()
+        .args(["find", "xyzzy_nonexistent_symbol_42"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("waypoint find -C <repo>"))
+        .stdout(predicate::str::contains("Another indexed repo"));
+}
+
 // ── AC-12: -C with nonexistent path returns clear error ─────────
 
 #[test]
@@ -1566,7 +1591,7 @@ fn find_stdout_in(dir: &std::path::Path, query: &str) -> String {
 fn miss_hint(project: impl AsRef<std::path::Path>, query: &str) -> String {
     let name = project.as_ref().file_name().unwrap().to_string_lossy();
     format!(
-        "Searched only the {name} index. Another repo: waypoint find -C <repo> {query:?}. \
+        "Searched only the {name} index. Another indexed repo: waypoint find -C <repo> {query:?}. \
          Plugin caches and ~/.codex are not indexed; use rg there.\n"
     )
 }
