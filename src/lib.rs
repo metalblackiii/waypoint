@@ -146,6 +146,7 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
                         0,
                     );
                     println!("No symbols found: {query}");
+                    print_miss_scope_hint(&project_root, &query);
                 }
                 return Ok(());
             }
@@ -320,6 +321,21 @@ pub fn run(cli: Cli) -> Result<(), AppError> {
 /// are skipped: the symbol line already points there. File lines count toward `--limit`.
 const NAMED_FILES_ABOVE_SYMBOLS: usize = 3;
 
+/// Last line of every `find` miss: the index that was searched and where to look instead.
+// WHY: Codex sessions started in neb-polaris ran `find` for code in other repos and for skill
+// files in plugin caches; 92% of those finds missed (2026-11-15 transcripts), each costing a
+// full round trip. Naming the index and the `-C` escape lets the next call land.
+fn print_miss_scope_hint(project_root: &std::path::Path, query: &str) {
+    let name = project_root.file_name().map_or_else(
+        || project_root.to_string_lossy(),
+        std::ffi::OsStr::to_string_lossy,
+    );
+    println!(
+        "Searched only the {name} index. Another repo: waypoint find -C <repo> {query:?}. \
+         Plugin caches and ~/.codex are not indexed; use rg there."
+    );
+}
+
 /// `find`'s answer to a multi-word query matching no symbol or path: up to 3 labelled
 /// candidate files, or a miss line pointing to `rg`.
 fn print_phrase_candidates(
@@ -341,6 +357,7 @@ fn print_phrase_candidates(
     // into another repo, which costs more than this pointer to `rg`.
     if candidates.is_empty() {
         println!("No match for {query:?}: no file matched enough of these words. Use rg.");
+        print_miss_scope_hint(project_root, query);
         return Ok(());
     }
     println!("No symbol or file named {query:?}. Files ranked by matching words:");

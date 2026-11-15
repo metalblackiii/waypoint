@@ -599,6 +599,27 @@ fn cli_find_with_context_flag() {
         .success();
 }
 
+#[test]
+fn cli_find_miss_hint_names_context_project() {
+    let project_a = setup_scanned_project();
+    let project_b = setup_scanned_project();
+
+    waypoint()
+        .args([
+            "find",
+            "-C",
+            project_b.path().to_str().unwrap(),
+            "xyzzy_nonexistent_symbol_42",
+        ])
+        .current_dir(project_a.path())
+        .assert()
+        .success()
+        .stdout(format!(
+            "No symbols found: xyzzy_nonexistent_symbol_42\n{}",
+            miss_hint(project_b.path(), "xyzzy_nonexistent_symbol_42")
+        ));
+}
+
 // ── AC-12: -C with nonexistent path returns clear error ─────────
 
 #[test]
@@ -791,7 +812,10 @@ fn cli_find_miss_records_ledger_event() {
         .current_dir(project.path())
         .assert()
         .success()
-        .stdout("No symbols found: xyzzy_nonexistent_symbol_42\n");
+        .stdout(format!(
+            "No symbols found: xyzzy_nonexistent_symbol_42\n{}",
+            miss_hint(project.path(), "xyzzy_nonexistent_symbol_42")
+        ));
 
     // "Find rate:" only renders when find_hits + find_misses > 0,
     // so its presence proves a FindMiss event was actually recorded.
@@ -1538,6 +1562,15 @@ fn find_stdout_in(dir: &std::path::Path, query: &str) -> String {
     String::from_utf8(output).unwrap()
 }
 
+/// The line every `find` miss ends with: which index was searched and where to look instead.
+fn miss_hint(project: impl AsRef<std::path::Path>, query: &str) -> String {
+    let name = project.as_ref().file_name().unwrap().to_string_lossy();
+    format!(
+        "Searched only the {name} index. Another repo: waypoint find -C <repo> {query:?}. \
+         Plugin caches and ~/.codex are not indexed; use rg there.\n"
+    )
+}
+
 /// The count on a `waypoint gain` row such as `Find ranked:` for `project`.
 fn gain_count(project: impl AsRef<std::path::Path>, row: &str) -> i64 {
     let output = waypoint()
@@ -1623,9 +1656,10 @@ fn cli_find_local_miss_ignores_strong_file_in_sibling_repo() {
         .current_dir(&local)
         .assert()
         .success()
-        .stdout(
-            "No match for \"auto review unattended mode\": no file matched enough of these words. Use rg.\n",
-        )
+        .stdout(format!(
+            "No match for \"auto review unattended mode\": no file matched enough of these words. Use rg.\n{}",
+            miss_hint(&local, "auto review unattended mode")
+        ))
         .stderr("");
     assert_eq!(gain_count(&local, "Find misses:"), 1);
 }
@@ -1681,11 +1715,17 @@ fn cli_find_phrase_below_floor_points_to_rg() {
 
     assert_eq!(
         find_stdout(&project, "writing zebra"),
-        "No match for \"writing zebra\": no file matched enough of these words. Use rg.\n"
+        format!(
+            "No match for \"writing zebra\": no file matched enough of these words. Use rg.\n{}",
+            miss_hint(&project, "writing zebra")
+        )
     );
     assert_eq!(
         find_stdout(&project, "the and of"),
-        "No match for \"the and of\": no file matched enough of these words. Use rg.\n"
+        format!(
+            "No match for \"the and of\": no file matched enough of these words. Use rg.\n{}",
+            miss_hint(&project, "the and of")
+        )
     );
     assert_eq!(gain_count(&project, "Find misses:"), 2);
 }
@@ -1775,7 +1815,10 @@ fn cli_find_escapes_quotes_in_query() {
     );
     assert_eq!(
         find_stdout(&project, "zebra \"quux\nline"),
-        "No match for \"zebra \\\"quux\\nline\": no file matched enough of these words. Use rg.\n"
+        format!(
+            "No match for \"zebra \\\"quux\\nline\": no file matched enough of these words. Use rg.\n{}",
+            miss_hint(&project, "zebra \"quux\nline")
+        )
     );
 }
 

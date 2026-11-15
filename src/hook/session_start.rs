@@ -63,7 +63,7 @@ pub fn run() -> Result<(), AppError> {
 /// context never reaches Task-tool subagents (separate hook, separate fresh
 /// context per Claude Code's subagent-isolation model), so they need their
 /// own delivery of this text via `SubagentStart`.
-pub(crate) const COMMAND_DIGEST: &str = "waypoint CLI on PATH — run `waypoint find` (names or phrases)/`callers`/`impact` (see `waypoint --help`) before grep/rg/reading.";
+pub(crate) const COMMAND_DIGEST: &str = "waypoint CLI on PATH — in this repo, run `waypoint find` (names or phrases)/`callers`/`impact` (see `waypoint --help`) before grep/rg/reading; add `-C <repo>` for another indexed repo.";
 
 /// Emit session context: arch summary (for large projects) + command digest (always).
 ///
@@ -271,5 +271,11 @@ mod tests {
     #[test]
     fn digest_says_find_takes_phrases() {
         assert!(COMMAND_DIGEST.contains("phrases"), "{COMMAND_DIGEST}");
+    }
+
+    #[test]
+    fn digest_scopes_lookups_to_this_repo_with_context_flag() {
+        assert!(COMMAND_DIGEST.contains("in this repo"), "{COMMAND_DIGEST}");
+        assert!(COMMAND_DIGEST.contains("-C <repo>"), "{COMMAND_DIGEST}");
     }
 }
