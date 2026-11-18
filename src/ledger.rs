@@ -347,15 +347,16 @@ impl GainStats {
 ///
 /// WARNING: integration tests spawn the real `waypoint` binary as a
 /// subprocess, so a plain `#[cfg(test)]` override doesn't reach it — the
-/// override must be a runtime env var. `WAYPOINT_DATA_DIR`, when set, replaces
-/// the whole `dirs::data_dir()/waypoint` directory (not just appended),
-/// keeping test runs out of the user's real ledger at
+/// override must be a runtime env var. `WAYPOINT_DATA_DIR`, when set and
+/// non-empty, replaces the whole `dirs::data_dir()/waypoint` directory (not
+/// just appended), keeping test runs out of the user's real ledger at
 /// `~/Library/Application Support/waypoint/ledger.db` (or platform equivalent).
+/// An empty value falls back to the default rather than resolving to a
+/// cwd-relative `ledger.db`.
 fn db_path() -> Option<PathBuf> {
-    let dir = if let Some(override_dir) = std::env::var_os("WAYPOINT_DATA_DIR") {
-        PathBuf::from(override_dir)
-    } else {
-        dirs::data_dir()?.join("waypoint")
+    let dir = match std::env::var_os("WAYPOINT_DATA_DIR") {
+        Some(override_dir) if !override_dir.is_empty() => PathBuf::from(override_dir),
+        _ => dirs::data_dir()?.join("waypoint"),
     };
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join("ledger.db"))
@@ -697,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn db_path_honors_data_dir_override() {
+    fn db_path_honors_data_dir_override_unless_empty() {
         // This is the only test in this binary that touches WAYPOINT_DATA_DIR
         // or calls dirs::data_dir() (via db_path()), so no other thread can
         // race this env mutation.
@@ -705,12 +706,20 @@ mod tests {
         unsafe {
             std::env::set_var("WAYPOINT_DATA_DIR", dir.path());
         }
-        let path = db_path();
+        let overridden = db_path();
+        unsafe {
+            std::env::set_var("WAYPOINT_DATA_DIR", "");
+        }
+        let empty_override = db_path();
         unsafe {
             std::env::remove_var("WAYPOINT_DATA_DIR");
         }
 
-        assert_eq!(path.unwrap(), dir.path().join("ledger.db"));
+        assert_eq!(overridden.unwrap(), dir.path().join("ledger.db"));
+        assert_eq!(
+            empty_override.unwrap(),
+            dirs::data_dir().unwrap().join("waypoint/ledger.db")
+        );
     }
 
     #[test]
