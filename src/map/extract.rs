@@ -3365,6 +3365,15 @@ export class Service {
     }
 
     #[test]
+    fn resolve_js_specifier_to_tsx_source() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/view.tsx"), "").unwrap();
+        let result = resolve_import_path("src/main.ts", "./view.js", "ts", tmp.path());
+        assert_eq!(result, Some("src/view.tsx".to_string()));
+    }
+
+    #[test]
     fn resolve_jsx_specifier_to_tsx_source() {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
