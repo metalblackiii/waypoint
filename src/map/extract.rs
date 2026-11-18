@@ -2094,6 +2094,20 @@ fn resolve_js_import(source_file: &str, raw_path: &str, root: &Path) -> Option<S
     let joined = source_dir.join(raw_path);
     let normalized = normalize_path(&joined);
 
+    // WHY: NodeNext and bundler-mode TypeScript import a `.ts` source by its
+    // emitted `.js` name, and tsc resolves that specifier to the source first.
+    let ts_source_extensions: &[&str] = match normalized.extension().and_then(|e| e.to_str()) {
+        Some("js") => &["ts", "tsx"],
+        Some("jsx") => &["tsx"],
+        _ => &[],
+    };
+    for ts_ext in ts_source_extensions {
+        let candidate = normalized.with_extension(ts_ext);
+        if root.join(&candidate).is_file() {
+            return Some(candidate.display().to_string());
+        }
+    }
+
     let extensions = ["", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
     let index_files = ["index.ts", "index.tsx", "index.js", "index.jsx"];
 
@@ -3339,6 +3353,43 @@ export class Service {
         std::fs::write(tmp.path().join("src/utils/index.ts"), "").unwrap();
         let result = resolve_import_path("src/main.ts", "./utils", "ts", tmp.path());
         assert_eq!(result, Some("src/utils/index.ts".to_string()));
+    }
+
+    #[test]
+    fn resolve_js_specifier_to_ts_source() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/utils.ts"), "").unwrap();
+        let result = resolve_import_path("src/main.ts", "./utils.js", "ts", tmp.path());
+        assert_eq!(result, Some("src/utils.ts".to_string()));
+    }
+
+    #[test]
+    fn resolve_jsx_specifier_to_tsx_source() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/view.tsx"), "").unwrap();
+        let result = resolve_import_path("src/main.tsx", "./view.jsx", "tsx", tmp.path());
+        assert_eq!(result, Some("src/view.tsx".to_string()));
+    }
+
+    #[test]
+    fn resolve_js_specifier_prefers_ts_over_emitted_js() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/utils.ts"), "").unwrap();
+        std::fs::write(tmp.path().join("src/utils.js"), "").unwrap();
+        let result = resolve_import_path("src/main.ts", "./utils.js", "ts", tmp.path());
+        assert_eq!(result, Some("src/utils.ts".to_string()));
+    }
+
+    #[test]
+    fn resolve_js_specifier_without_ts_source_keeps_js() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/utils.js"), "").unwrap();
+        let result = resolve_import_path("src/main.js", "./utils.js", "js", tmp.path());
+        assert_eq!(result, Some("src/utils.js".to_string()));
     }
 
     #[test]

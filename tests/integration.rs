@@ -1809,6 +1809,40 @@ fn cli_callers_finds_rust_module_qualified_calls() {
 }
 
 #[test]
+fn cli_callers_finds_ts_importers_with_js_and_ts_specifiers() {
+    let project = setup_project();
+    fs::write(
+        project.path().join("src/greet.ts"),
+        "export function greet(): void {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("src/app.ts"),
+        "import { greet } from './greet.js';\ngreet();\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("src/greet.test.ts"),
+        "import { greet } from './greet.ts';\ngreet();\n",
+    )
+    .unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["callers", "greet"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 file(s) import greet:"))
+        .stdout(predicate::str::contains("src/app.ts:1"))
+        .stdout(predicate::str::contains("src/greet.test.ts:1"));
+}
+
+#[test]
 fn cli_find_help_mentions_ranked_candidates() {
     waypoint()
         .args(["find", "--help"])
