@@ -197,7 +197,7 @@ Remaining work to improve ranking via import/call graph signals:
 
 ## C# and VB6 Language Support
 
-**Status**: Proposed (2026-11-24). Not scheduled.
+**Status**: ✅ Refactor, C#, and VB6 procedure symbols delivered in v0.32.0. VB6 form controls, types, `.vbp` imports, and calls remain (see Scope).
 
 **Problem**: Symbol, import, and call extraction covers Rust, TS/TSX, JS, Python, and Go only. On anything else `find`, `callers`, and `impact` return nothing useful. A legacy VB6 product codebase (3,733 tracked files: 675 `.frm`, 232 `.cls`, 118 `.bas`, 109 `.dob`, 80 `.vbp`) scans to `Scanned 126 files, 0 symbols, 0 imports, 0 calls`, with arch reporting xml 51%, HTML 17%, txt 12%, Markdown 10%. Every VB6 source file is skipped. A companion C# codebase (~490 MB) would index the same way: `.cs` is neither scannable nor extractable.
 
@@ -253,12 +253,14 @@ Remaining work to improve ranking via import/call graph signals:
 
 ### Scope
 
-**In**: refactor; C# symbols/imports/calls; VB6 symbols/controls/`.vbp` imports/same-file calls; non-UTF-8 decoding for VB6.
-**Out**: VB.NET (`.vb`, different grammar, not requested); `.csproj` project references; cross-file call resolution (that is trace v2's resolver work, and it applies here unchanged).
+**Delivered (v0.32.0)**:
+- `Lang` enum refactor (`src/map/lang.rs`).
+- C# symbols, `using` directives (unresolved), and same-file calls. On a 288-file C# codebase: 924/924 type declarations and 1,432/1,432 `using` directives indexed. Release binary grew 11.2 MB → 18.5 MB; edit-hook time on non-C# files is unchanged.
+- VB6 `Sub`/`Function`/`Property` symbols qualified by `VB_Name`, first-line detection, and Windows-1252 decoding (`src/map/vb6.rs`). Scan, the edit hook, and the session-start drift check share one reader (`read_source`), so they agree on which files are text. On the VB6 codebase: 1,260 files mapped (was 126), 21,015/21,015 procedures indexed, scan in 1.3 s.
 
-**Order**: refactor commit → C# (minor bump) → VB6 (minor bump if on a separate branch), each with tests.
+**Remaining for VB6** (deferred: `find` was the research need; add these if `callers`/`trace` are missed): form controls, `Type`/`Enum` blocks, `.vbp` imports, same-file calls (the bullets above describe each).
 
-**Estimated effort**: refactor ~1 day; C# ~1–2 days; VB6 ~2–3 days (custom extractor and decoding).
+**Out**: VB.NET (`.vb`, different grammar, not requested); `.csproj` project references; cross-file call resolution (that is trace v2's resolver work, and it applies here unchanged); a C# namespace-to-files index for resolving `using`.
 
 ---
 

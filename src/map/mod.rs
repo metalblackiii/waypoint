@@ -2,6 +2,7 @@ pub mod extract;
 pub mod index;
 pub mod lang;
 pub mod scan;
+pub mod vb6;
 
 use std::collections::BTreeMap;
 use std::fmt;

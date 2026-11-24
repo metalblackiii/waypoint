@@ -181,7 +181,7 @@ pub fn has_mtime_drift<S: std::hash::BuildHasher>(
                 // Read content to mirror its trim().is_empty() check — avoids
                 // perpetual rescans for whitespace-only files scan_project skips.
                 let would_index = meta.as_ref().is_some_and(|m| m.len() > 0)
-                    && std::fs::read_to_string(entry.path()).is_ok_and(|s| !s.trim().is_empty());
+                    && map::scan::read_source(entry.path()).is_some_and(|s| !s.trim().is_empty());
                 if would_index {
                     return true;
                 }

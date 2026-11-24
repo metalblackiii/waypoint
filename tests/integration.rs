@@ -610,6 +610,30 @@ fn cli_scan_indexes_csharp_methods() {
 }
 
 #[test]
+fn cli_scan_indexes_windows_1252_vb6_module() {
+    let project = setup_project();
+    // 0xE9 (`é` in Windows-1252) makes this invalid UTF-8, as many VB6 files are.
+    fs::write(
+        project.path().join("src/modBilling.bas"),
+        b"Attribute VB_Name = \"modBilling\"\r\n' caf\xe9\r\nPublic Sub PostCharges()\r\nEnd Sub\r\n",
+    )
+    .unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["find", "PostCharges"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("modBilling::PostCharges"))
+        .stdout(predicate::str::contains("src/modBilling.bas:3"));
+}
+
+#[test]
 fn cli_find_with_context_flag() {
     let project_a = setup_scanned_project();
     let project_b = setup_scanned_project();

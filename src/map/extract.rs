@@ -5,10 +5,11 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::lang::Lang;
+use super::vb6;
 
 /// Compile a regex from a string literal. Panics on invalid syntax.
 #[allow(clippy::unwrap_used)]
-fn re(pattern: &str) -> Regex {
+pub(crate) fn re(pattern: &str) -> Regex {
     Regex::new(pattern).unwrap()
 }
 
@@ -36,6 +37,12 @@ pub fn extract_description(path: &Path, content: &str) -> String {
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     if let Some(desc) = known_file_description(filename) {
+        return desc;
+    }
+
+    if Lang::from_ext(ext) == Some(Lang::Vb6)
+        && let Some(desc) = vb6::description(content)
+    {
         return desc;
     }
 
@@ -163,6 +170,7 @@ fn extract_declaration(node: tree_sitter::Node, lang: Lang, source: &str) -> Opt
         Lang::Python => extract_python(node, kind, source),
         Lang::Go => extract_go(node, kind, source),
         Lang::CSharp => extract_csharp(node, kind, source),
+        Lang::Vb6 => None,
     }
 }
 
@@ -1085,6 +1093,9 @@ pub fn extract_symbols(path: &Path, content: &str) -> Vec<Symbol> {
     let Some(lang) = Lang::from_path(path) else {
         return Vec::new();
     };
+    if lang == Lang::Vb6 {
+        return vb6::symbols(content);
+    }
     let Some(tree) = lang.parse(content) else {
         return Vec::new();
     };
@@ -1118,6 +1129,7 @@ fn collect_node_symbol(
         Lang::Python => collect_python_symbols(node, source, symbols),
         Lang::Go => collect_go_symbols(node, source, symbols),
         Lang::CSharp => collect_csharp_symbols(node, None, true, source, symbols),
+        Lang::Vb6 => {}
     }
 }
 
@@ -1767,6 +1779,7 @@ pub fn extract_imports(path: &Path, content: &str) -> Vec<Import> {
             Lang::Python => import_from_python(child, content, &mut imports),
             Lang::Go => import_from_go(child, content, &mut imports),
             Lang::CSharp => import_from_csharp(child, content, &mut imports),
+            Lang::Vb6 => {}
         }
     }
     if lang == Lang::Rust {
@@ -2225,7 +2238,7 @@ pub fn resolve_import_path(
         Lang::Rust => resolve_rust_import(&crate_relative(source_file, raw_path)?, project_root),
         // WHY: C# namespaces don't map to file paths; resolving a `using` needs
         // a namespace-to-files index built at scan time.
-        Lang::Go | Lang::CSharp => None,
+        Lang::Go | Lang::CSharp | Lang::Vb6 => None,
     }
 }
 
@@ -2468,6 +2481,7 @@ fn collect_calls_recursive(
         Lang::Python => extract_python_callee(node, source),
         Lang::Go => extract_go_callee(node, source),
         Lang::CSharp => extract_csharp_callee(node, source),
+        Lang::Vb6 => None,
     };
 
     if let Some(name) = callee {

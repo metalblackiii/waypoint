@@ -14,6 +14,8 @@ pub enum Lang {
     Python,
     Go,
     CSharp,
+    /// Line-based extraction in `vb6.rs`; there is no usable tree-sitter grammar.
+    Vb6,
 }
 
 impl Lang {
@@ -27,6 +29,7 @@ impl Lang {
             "py" => Some(Self::Python),
             "go" => Some(Self::Go),
             "cs" => Some(Self::CSharp),
+            "frm" | "cls" | "bas" | "dob" | "ctl" => Some(Self::Vb6),
             _ => None,
         }
     }
@@ -47,6 +50,7 @@ impl Lang {
             Self::Python => "Python",
             Self::Go => "Go",
             Self::CSharp => "C#",
+            Self::Vb6 => "VB6",
         }
     }
 
@@ -54,7 +58,8 @@ impl Lang {
         matches!(self, Self::TypeScript | Self::Tsx | Self::JavaScript)
     }
 
-    /// Parse `content` with this language's tree-sitter grammar.
+    /// Parse `content` with this language's tree-sitter grammar. `None` for VB6,
+    /// which has no grammar, so the tree-sitter extraction paths yield nothing.
     pub(crate) fn parse(self, content: &str) -> Option<tree_sitter::Tree> {
         let grammar = match self {
             Self::Rust => tree_sitter_rust::LANGUAGE,
@@ -64,6 +69,7 @@ impl Lang {
             Self::Python => tree_sitter_python::LANGUAGE,
             Self::Go => tree_sitter_go::LANGUAGE,
             Self::CSharp => tree_sitter_c_sharp::LANGUAGE,
+            Self::Vb6 => return None,
         };
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&grammar.into()).ok()?;

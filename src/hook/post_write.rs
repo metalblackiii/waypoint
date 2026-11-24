@@ -5,7 +5,7 @@ use crate::map::extract::{
     extract_calls, extract_description, extract_imports, extract_symbols, resolve_import_path,
 };
 use crate::map::lang::Lang;
-use crate::map::scan::{content_hash, file_mtime, gzip_density, should_map_file};
+use crate::map::scan::{content_hash, file_mtime, gzip_density, read_source, should_map_file};
 use crate::map::{self, MapEntry, estimate_tokens, index};
 use crate::{AppError, project};
 
@@ -114,7 +114,7 @@ fn update_existing_file(
     relative: &str,
     warnings: &mut Vec<String>,
 ) -> Result<(), AppError> {
-    let Ok(content) = std::fs::read_to_string(abs_path) else {
+    let Some(content) = read_source(abs_path) else {
         // Unreadable file (binary, permissions) — skip silently
         return Ok(());
     };

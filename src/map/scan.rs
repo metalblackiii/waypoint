@@ -11,6 +11,7 @@ use super::extract::{
     resolve_import_path,
 };
 use super::lang::Lang;
+use super::vb6;
 use super::{MapEntry, estimate_tokens};
 use crate::AppError;
 
@@ -124,7 +125,7 @@ pub fn scan_project(project_root: &Path) -> Result<ScanOutput, AppError> {
             continue;
         }
 
-        let Ok(content) = std::fs::read_to_string(path) else {
+        let Some(content) = read_source(path) else {
             continue;
         };
 
@@ -205,6 +206,20 @@ fn has_excluded_component(path: &Path) -> bool {
         let name = c.as_os_str().to_string_lossy();
         EXCLUDED_COMPONENTS.contains(&name.as_ref())
     })
+}
+
+/// Read a file as text, or `None` if it is unreadable or not text.
+///
+/// VB6 sources are decoded as Windows-1252, the encoding the VB6 IDE writes;
+/// every other file must be valid UTF-8. Scanning, the edit hook, and the
+/// session-start drift check must all agree on which files are text, so all
+/// three read through here.
+pub(crate) fn read_source(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    if Lang::from_path(path) == Some(Lang::Vb6) && vb6::is_source(&bytes) {
+        return Some(vb6::decode(&bytes));
+    }
+    String::from_utf8(bytes).ok()
 }
 
 /// Check if a file is a text file we should scan, based on extension or known name.
