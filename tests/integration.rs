@@ -587,6 +587,29 @@ fn setup_scanned_project() -> TempDir {
 // ── AC-4: find -C targets foreign project ───────────────────────
 
 #[test]
+fn cli_scan_indexes_csharp_methods() {
+    let project = setup_project();
+    fs::write(
+        project.path().join("src/Claim.cs"),
+        "namespace Acme;\npublic class Claim\n{\n    public void Submit() {}\n}\n",
+    )
+    .unwrap();
+    waypoint()
+        .arg("scan")
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    waypoint()
+        .args(["find", "Submit"])
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Claim::Submit"))
+        .stdout(predicate::str::contains("src/Claim.cs:4"));
+}
+
+#[test]
 fn cli_find_with_context_flag() {
     let project_a = setup_scanned_project();
     let project_b = setup_scanned_project();

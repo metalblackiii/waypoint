@@ -228,13 +228,13 @@ Remaining work to improve ranking via import/call graph signals:
 
 **Grammar**: `tree-sitter-c-sharp` 0.24.0 (tree-sitter org, published 2026-11-18). It exports `LANGUAGE: LanguageFn` through `tree-sitter-language ^0.1`, the same way the current grammar crates link. **Verified**: it resolves and builds against `tree-sitter =0.26.7` and parses a sample containing a namespace, interface, record struct, enum, partial class, constructor, `init` property, and `using` directives with zero error nodes.
 
-**Symbols**: `class_declaration`, `interface_declaration`, `struct_declaration`, `record_declaration`, `enum_declaration`, `delegate_declaration`; `method_declaration`, `constructor_declaration`, `property_declaration` (accessors are not separate symbols). Use the `Type::member` qualified form the other extractors already use. Exported = `public` or `internal`, plus interface members (implicitly public). Partial classes yield one type row per file, which is fine.
+**Symbols**: `class_declaration`, `interface_declaration`, `struct_declaration`, `record_declaration`, `enum_declaration`, `delegate_declaration`; `method_declaration`, `constructor_declaration`, `property_declaration` (accessors are not separate symbols). Use the `Type::member` qualified form the other extractors already use. Exported = visible outside the file: `public`, `internal`, or `protected`, plus the C# defaults that make an unmarked declaration visible (top-level types are `internal`, interface members are `public`). Partial classes yield one type row per file, which is fine.
 
 **Imports**: `using X.Y;`, `using static X.Y;`, `using A = X.Y;`, `global using`. Namespaces don't map to file paths, so v1 records the raw namespace with an empty `target_path` (the existing behavior for unresolved imports). V2: build a namespace→files index from block and file-scoped `namespace` declarations at scan time. That resolution is coarse (one `using` matches every file in the namespace), so `callers` would need to intersect it with symbol names to be useful.
 
 **Calls**: `invocation_expression`; the callee is the identifier, or the `name` field of a `member_access_expression`. Same-file only, matching v1 trace.
 
-**Encoding**: strip a leading UTF-8 BOM before parsing. UTF-16 `.cs` files are out of scope until one shows up.
+**Encoding**: the grammar skips a leading UTF-8 BOM on its own (tested). UTF-16 `.cs` files are out of scope until one shows up.
 
 **Open question**: skip generated `*.Designer.cs` files (large, machine-written WinForms layouts), or index them with a distinct kind?
 

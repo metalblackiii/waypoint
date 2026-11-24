@@ -122,8 +122,7 @@ fn tree_sitter_extract(ext: &str, content: &str) -> Option<String> {
 
     // Pass 2: collect declarations from top-level nodes.
     let mut declarations: Vec<Declaration> = Vec::new();
-    let mut cursor = root.walk();
-    for child in root.children(&mut cursor) {
+    for child in top_level_nodes(root, lang) {
         if let Some(decl) = extract_declaration(child, lang, content) {
             declarations.push(decl);
             if declarations.len() >= COLLECTION_CAP {
@@ -163,7 +162,25 @@ fn extract_declaration(node: tree_sitter::Node, lang: Lang, source: &str) -> Opt
         Lang::TypeScript | Lang::Tsx | Lang::JavaScript => extract_js(node, kind, source),
         Lang::Python => extract_python(node, kind, source),
         Lang::Go => extract_go(node, kind, source),
+        Lang::CSharp => extract_csharp(node, kind, source),
     }
+}
+
+/// Children of `root` that can hold top-level declarations. C# block
+/// namespaces nest their types one level down, so their bodies are flattened.
+fn top_level_nodes(root: tree_sitter::Node, lang: Lang) -> Vec<tree_sitter::Node> {
+    let mut nodes = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if lang == Lang::CSharp && child.kind() == "namespace_declaration" {
+            if let Some(body) = child.child_by_field_name("body") {
+                nodes.extend(top_level_nodes(body, lang));
+            }
+        } else {
+            nodes.push(child);
+        }
+    }
+    nodes
 }
 
 // ---------------------------------------------------------------------------
@@ -731,6 +748,67 @@ fn extract_go(node: tree_sitter::Node, kind: &str, source: &str) -> Option<Decla
 }
 
 // ---------------------------------------------------------------------------
+// C#
+// ---------------------------------------------------------------------------
+
+/// The keyword for a C# type declaration node, or `None` for any other node.
+fn csharp_type_keyword(kind: &str) -> Option<&'static str> {
+    match kind {
+        "class_declaration" => Some("class"),
+        "interface_declaration" => Some("interface"),
+        "struct_declaration" => Some("struct"),
+        "record_declaration" => Some("record"),
+        "enum_declaration" => Some("enum"),
+        "delegate_declaration" => Some("delegate"),
+        _ => None,
+    }
+}
+
+/// Whether a C# declaration is visible outside its own file.
+///
+/// WHY: C# access defaults depend on position. Top-level types default to
+/// `internal` (visible to every file in the assembly) and interface members to
+/// `public`, while class and struct members default to `private`. The caller
+/// passes the default for the position via `visible_by_default`.
+fn csharp_exported(node: tree_sitter::Node, source: &str, visible_by_default: bool) -> bool {
+    let mut has_restricting_modifier = false;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "modifier" {
+            continue;
+        }
+        match node_text(child, source) {
+            "public" | "internal" | "protected" => return true,
+            "private" | "file" => has_restricting_modifier = true,
+            _ => {}
+        }
+    }
+    !has_restricting_modifier && visible_by_default
+}
+
+fn extract_csharp(node: tree_sitter::Node, kind: &str, source: &str) -> Option<Declaration> {
+    let keyword = csharp_type_keyword(kind)?;
+    let name = node_text(node.child_by_field_name("name")?, source).to_string();
+    let exported = csharp_exported(node, source, true);
+    let text = if has_modifier(node, "public", source) {
+        format!("public {keyword} {name}")
+    } else {
+        format!("{keyword} {name}")
+    };
+    Some(Declaration {
+        name,
+        text,
+        exported,
+    })
+}
+
+fn has_modifier(node: tree_sitter::Node, modifier: &str, source: &str) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .any(|c| c.kind() == "modifier" && node_text(c, source) == modifier)
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1039,6 +1117,7 @@ fn collect_node_symbol(
         }
         Lang::Python => collect_python_symbols(node, source, symbols),
         Lang::Go => collect_go_symbols(node, source, symbols),
+        Lang::CSharp => collect_csharp_symbols(node, None, true, source, symbols),
     }
 }
 
@@ -1566,6 +1645,66 @@ fn collect_go_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<S
     }
 }
 
+/// Collect a C# declaration and, for types, its members. Members and nested
+/// types are qualified with `Owner::` like Rust impl methods, so same-file
+/// call resolution's `::name` suffix match works unchanged.
+fn collect_csharp_symbols(
+    node: tree_sitter::Node,
+    owner: Option<&str>,
+    visible_by_default: bool,
+    source: &str,
+    symbols: &mut Vec<Symbol>,
+) {
+    if node.kind() == "namespace_declaration" {
+        if let Some(body) = node.child_by_field_name("body") {
+            let mut cursor = body.walk();
+            for child in body.children(&mut cursor) {
+                collect_csharp_symbols(child, None, true, source, symbols);
+            }
+        }
+        return;
+    }
+    let type_keyword = csharp_type_keyword(node.kind());
+    let kind = match (type_keyword, node.kind()) {
+        (Some(keyword), _) => keyword,
+        (None, "method_declaration" | "constructor_declaration") => "method",
+        (None, "property_declaration") => "property",
+        _ => return,
+    };
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let name = node_text(name_node, source);
+    let qualified = match owner {
+        Some(owner) => format!("{owner}::{name}"),
+        None => name.to_string(),
+    };
+    let exported = csharp_exported(node, source, visible_by_default);
+    symbols.push(build_symbol(
+        qualified.clone(),
+        kind,
+        node,
+        source,
+        exported,
+    ));
+
+    if type_keyword.is_some()
+        && let Some(body) = node.child_by_field_name("body")
+    {
+        let members_visible_by_default = kind == "interface";
+        let mut cursor = body.walk();
+        for child in body.children(&mut cursor) {
+            collect_csharp_symbols(
+                child,
+                Some(&qualified),
+                members_visible_by_default,
+                source,
+                symbols,
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Call extraction
 // ---------------------------------------------------------------------------
@@ -1627,6 +1766,7 @@ pub fn extract_imports(path: &Path, content: &str) -> Vec<Import> {
             }
             Lang::Python => import_from_python(child, content, &mut imports),
             Lang::Go => import_from_go(child, content, &mut imports),
+            Lang::CSharp => import_from_csharp(child, content, &mut imports),
         }
     }
     if lang == Lang::Rust {
@@ -2030,6 +2170,42 @@ fn import_go_spec(node: tree_sitter::Node, content: &str, imports: &mut Vec<Impo
     imports.push(build_raw_import(raw_path, pkg_name, line));
 }
 
+/// `using X.Y;`, `using static X.Y;`, `using A = X.Y;`, and `global using`,
+/// including directives inside block namespaces. The raw path is the
+/// namespace or type; the imported name is the alias or the last segment.
+#[allow(clippy::cast_possible_wrap)]
+fn import_from_csharp(node: tree_sitter::Node, source: &str, imports: &mut Vec<Import>) {
+    match node.kind() {
+        "namespace_declaration" => {
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut cursor = body.walk();
+                for child in body.children(&mut cursor) {
+                    import_from_csharp(child, source, imports);
+                }
+            }
+        }
+        "using_directive" => {
+            let alias = node.child_by_field_name("name");
+            let mut cursor = node.walk();
+            let Some(target) = node
+                .named_children(&mut cursor)
+                .filter(|c| Some(c.id()) != alias.map(|a| a.id()))
+                .last()
+            else {
+                return;
+            };
+            let raw_path: String = node_text(target, source).split_whitespace().collect();
+            let imported_name = match alias {
+                Some(alias) => node_text(alias, source).to_string(),
+                None => raw_path.rsplit('.').next().unwrap_or(&raw_path).to_string(),
+            };
+            let line = node.start_position().row as i64 + 1;
+            imports.push(build_raw_import(&raw_path, &imported_name, line));
+        }
+        _ => {}
+    }
+}
+
 // --- Import path resolution ---
 
 /// Resolve a raw import path to a relative file path within the project.
@@ -2047,7 +2223,9 @@ pub fn resolve_import_path(
         }
         Lang::Python => resolve_python_import(source_file, raw_path, project_root),
         Lang::Rust => resolve_rust_import(&crate_relative(source_file, raw_path)?, project_root),
-        Lang::Go => None,
+        // WHY: C# namespaces don't map to file paths; resolving a `using` needs
+        // a namespace-to-files index built at scan time.
+        Lang::Go | Lang::CSharp => None,
     }
 }
 
@@ -2289,6 +2467,7 @@ fn collect_calls_recursive(
         Lang::TypeScript | Lang::Tsx | Lang::JavaScript => extract_js_callee(node, source),
         Lang::Python => extract_python_callee(node, source),
         Lang::Go => extract_go_callee(node, source),
+        Lang::CSharp => extract_csharp_callee(node, source),
     };
 
     if let Some(name) = callee {
@@ -2449,6 +2628,34 @@ fn extract_go_callee(node: tree_sitter::Node, source: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Callee name of a C# `invocation_expression`: `Foo()`, `obj.Foo()`,
+/// `Foo<T>()`, and `obj?.Foo()`.
+fn extract_csharp_callee(node: tree_sitter::Node, source: &str) -> Option<String> {
+    if node.kind() != "invocation_expression" {
+        return None;
+    }
+    let function = node.child_by_field_name("function")?;
+    let name_node = match function.kind() {
+        "identifier" | "generic_name" => function,
+        "member_access_expression" => function.child_by_field_name("name")?,
+        "conditional_access_expression" => {
+            let mut cursor = function.walk();
+            let binding = function
+                .named_children(&mut cursor)
+                .find(|c| c.kind() == "member_binding_expression")?;
+            binding.child_by_field_name("name")?
+        }
+        _ => return None,
+    };
+    let name_node = if name_node.kind() == "generic_name" {
+        name_node.named_child(0)?
+    } else {
+        name_node
+    };
+    let name = node_text(name_node, source);
+    (name != "nameof").then(|| name.to_string())
 }
 
 #[cfg(test)]
@@ -3763,5 +3970,166 @@ fn caller() {
             calls.is_empty(),
             "ambiguous method should produce no call edges, got: {calls:?}"
         );
+    }
+
+    mod csharp {
+        use super::*;
+
+        const FILE_SCOPED: &str = r"
+global using System.Linq;
+using System;
+using static System.Math;
+using Json = Newtonsoft.Json;
+namespace Acme.Billing;
+
+public class Claim
+{
+    public int Id { get; init; }
+    public Claim(int id) { Id = id; }
+    internal void Submit() { Validate(); this.Audit<int>(1); log?.Flush(); }
+    void Validate() {}
+    void Audit<T>(T value) {}
+    private class Inner { public void Deep() {} }
+}
+
+class Ledger {}
+";
+
+        const BLOCK_NAMESPACES: &str = r"
+namespace Outer
+{
+    using Inner.Things;
+    namespace Nested
+    {
+        public interface IThing { void Do(); }
+        struct Point {}
+        public enum Color { Red }
+        record Person(string Name);
+        public delegate void Done(int code);
+    }
+}
+";
+
+        fn symbol<'a>(symbols: &'a [Symbol], name: &str) -> &'a Symbol {
+            symbols
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("no symbol {name} in {symbols:?}"))
+        }
+
+        #[test]
+        fn types_and_members_are_qualified_by_owner() {
+            let symbols = extract_symbols(Path::new("Claim.cs"), FILE_SCOPED);
+            assert_eq!(symbol(&symbols, "Claim").kind, "class");
+            assert_eq!(symbol(&symbols, "Claim::Id").kind, "property");
+            assert_eq!(symbol(&symbols, "Claim::Claim").kind, "method");
+            assert_eq!(symbol(&symbols, "Claim::Submit").kind, "method");
+            assert_eq!(symbol(&symbols, "Claim::Inner").kind, "class");
+            assert_eq!(symbol(&symbols, "Claim::Inner::Deep").kind, "method");
+            assert_eq!(symbol(&symbols, "Claim::Submit").line_start, 12);
+        }
+
+        #[test]
+        fn exported_follows_csharp_access_defaults() {
+            let symbols = extract_symbols(Path::new("Claim.cs"), FILE_SCOPED);
+            assert!(symbol(&symbols, "Claim").exported);
+            assert!(
+                symbol(&symbols, "Ledger").exported,
+                "top-level types default to internal"
+            );
+            assert!(symbol(&symbols, "Claim::Submit").exported, "internal");
+            assert!(
+                !symbol(&symbols, "Claim::Validate").exported,
+                "members default to private"
+            );
+            assert!(!symbol(&symbols, "Claim::Inner").exported);
+
+            let symbols = extract_symbols(Path::new("Things.cs"), BLOCK_NAMESPACES);
+            assert!(
+                symbol(&symbols, "IThing::Do").exported,
+                "interface members default to public"
+            );
+        }
+
+        #[test]
+        fn block_namespaces_are_descended() {
+            let symbols = extract_symbols(Path::new("Things.cs"), BLOCK_NAMESPACES);
+            for (name, kind) in [
+                ("IThing", "interface"),
+                ("Point", "struct"),
+                ("Color", "enum"),
+                ("Person", "record"),
+                ("Done", "delegate"),
+            ] {
+                assert_eq!(symbol(&symbols, name).kind, kind);
+            }
+        }
+
+        #[test]
+        fn using_directives_record_namespace_and_name() {
+            let imports = extract_imports(Path::new("Claim.cs"), FILE_SCOPED);
+            let pairs: Vec<(&str, &str)> = imports
+                .iter()
+                .map(|i| (i.raw_path.as_str(), i.imported_name.as_str()))
+                .collect();
+            assert_eq!(
+                pairs,
+                [
+                    ("System.Linq", "Linq"),
+                    ("System", "System"),
+                    ("System.Math", "Math"),
+                    ("Newtonsoft.Json", "Json"),
+                ]
+            );
+        }
+
+        #[test]
+        fn using_inside_block_namespace_is_found() {
+            let imports = extract_imports(Path::new("Things.cs"), BLOCK_NAMESPACES);
+            assert_eq!(imports.len(), 1);
+            assert_eq!(imports[0].raw_path, "Inner.Things");
+        }
+
+        #[test]
+        fn using_is_left_unresolved() {
+            let tmp = tempfile::tempdir().unwrap();
+            assert_eq!(
+                resolve_import_path("Claim.cs", "System", Lang::CSharp, tmp.path()),
+                None
+            );
+        }
+
+        #[test]
+        fn same_file_calls_cover_plain_member_and_generic_forms() {
+            let path = Path::new("Claim.cs");
+            let symbols = extract_symbols(path, FILE_SCOPED);
+            let calls = extract_calls(path, FILE_SCOPED, &symbols);
+            let edges: Vec<(&str, &str)> = calls
+                .iter()
+                .map(|c| (c.source_symbol.as_str(), c.target_symbol.as_str()))
+                .collect();
+            assert_eq!(
+                edges,
+                [
+                    ("Claim::Submit", "Claim::Validate"),
+                    ("Claim::Submit", "Claim::Audit"),
+                ],
+                "log?.Flush() targets no local symbol and is dropped"
+            );
+        }
+
+        #[test]
+        fn description_lists_types_inside_namespaces() {
+            let desc = extract_description(Path::new("Things.cs"), BLOCK_NAMESPACES);
+            assert!(desc.contains("public interface IThing"), "got: {desc}");
+            assert!(desc.contains("struct Point"), "got: {desc}");
+        }
+
+        #[test]
+        fn byte_order_mark_does_not_hide_symbols() {
+            let src = "\u{feff}class A { void B() {} }";
+            let symbols = extract_symbols(Path::new("A.cs"), src);
+            assert_eq!(symbol(&symbols, "A::B").kind, "method");
+        }
     }
 }

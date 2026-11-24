@@ -13,6 +13,7 @@ pub enum Lang {
     JavaScript,
     Python,
     Go,
+    CSharp,
 }
 
 impl Lang {
@@ -25,6 +26,7 @@ impl Lang {
             "js" | "jsx" | "mjs" | "cjs" => Some(Self::JavaScript),
             "py" => Some(Self::Python),
             "go" => Some(Self::Go),
+            "cs" => Some(Self::CSharp),
             _ => None,
         }
     }
@@ -44,6 +46,7 @@ impl Lang {
             Self::JavaScript => "JavaScript",
             Self::Python => "Python",
             Self::Go => "Go",
+            Self::CSharp => "C#",
         }
     }
 
@@ -60,6 +63,7 @@ impl Lang {
             Self::JavaScript => tree_sitter_javascript::LANGUAGE,
             Self::Python => tree_sitter_python::LANGUAGE,
             Self::Go => tree_sitter_go::LANGUAGE,
+            Self::CSharp => tree_sitter_c_sharp::LANGUAGE,
         };
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&grammar.into()).ok()?;
@@ -94,6 +98,7 @@ mod tests {
             Lang::JavaScript,
             Lang::Python,
             Lang::Go,
+            Lang::CSharp,
         ] {
             assert!(lang.parse("").is_some(), "{lang:?}");
         }

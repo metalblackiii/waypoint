@@ -974,6 +974,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-c-sharp"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54b3cdb7aeae9018e60908aa18937708de29338c83ecf3701de534b23d365c30"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-go"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1177,7 +1187,7 @@ dependencies = [
 
 [[package]]
 name = "waypoint"
-version = "0.31.1"
+version = "0.32.0"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -1195,6 +1205,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tree-sitter",
+ "tree-sitter-c-sharp",
  "tree-sitter-go",
  "tree-sitter-javascript",
  "tree-sitter-python",
