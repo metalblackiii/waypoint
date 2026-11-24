@@ -10,6 +10,7 @@ use super::extract::{
     Call, Import, Symbol, extract_calls, extract_description, extract_imports, extract_symbols,
     resolve_import_path,
 };
+use super::lang::Lang;
 use super::{MapEntry, estimate_tokens};
 use crate::AppError;
 
@@ -143,12 +144,7 @@ pub fn scan_project(project_root: &Path) -> Result<ScanOutput, AppError> {
         let hash = content_hash(content.as_bytes());
         let mtime = file_mtime(path);
 
-        // Extract structured symbols and imports from tree-sitter-supported files
-        let ext = path.extension().and_then(|e| e.to_str());
-        if matches!(
-            ext,
-            Some("rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "go")
-        ) {
+        if let Some(lang) = Lang::from_path(path) {
             let mut file_symbols = extract_symbols(path, &content);
             for sym in &mut file_symbols {
                 sym.file_path.clone_from(&relative);
@@ -164,12 +160,11 @@ pub fn scan_project(project_root: &Path) -> Result<ScanOutput, AppError> {
 
             symbols.extend(file_symbols);
 
-            let ext_str = ext.unwrap_or("");
             let mut file_imports = extract_imports(path, &content);
             for imp in &mut file_imports {
                 imp.source_file.clone_from(&relative);
                 if let Some(resolved) =
-                    resolve_import_path(&relative, &imp.raw_path, ext_str, project_root)
+                    resolve_import_path(&relative, &imp.raw_path, lang, project_root)
                 {
                     imp.target_path = resolved;
                 }
@@ -236,59 +231,51 @@ pub(crate) fn is_scannable(path: &Path) -> bool {
         );
     };
 
-    matches!(
-        ext,
-        "rs" | "ts"
-            | "tsx"
-            | "js"
-            | "jsx"
-            | "mjs"
-            | "cjs"
-            | "py"
-            | "go"
-            | "rb"
-            | "java"
-            | "kt"
-            | "swift"
-            | "c"
-            | "cpp"
-            | "h"
-            | "hpp"
-            | "sh"
-            | "bash"
-            | "zsh"
-            | "fish"
-            | "json"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "xml"
-            | "ini"
-            | "conf"
-            | "cfg"
-            | "md"
-            | "mdx"
-            | "txt"
-            | "rst"
-            | "adoc"
-            | "html"
-            | "htm"
-            | "css"
-            | "scss"
-            | "sass"
-            | "less"
-            | "sql"
-            | "graphql"
-            | "gql"
-            | "jq"
-            | "tf"
-            | "tfvars"
-            | "hcl"
-            | "proto"
-            | "thrift"
-            | "avsc"
-            | "vue"
-            | "svelte"
-            | "lock"
-    )
+    Lang::from_ext(ext).is_some()
+        || matches!(
+            ext,
+            "rb" | "java"
+                | "kt"
+                | "swift"
+                | "c"
+                | "cpp"
+                | "h"
+                | "hpp"
+                | "sh"
+                | "bash"
+                | "zsh"
+                | "fish"
+                | "json"
+                | "yaml"
+                | "yml"
+                | "toml"
+                | "xml"
+                | "ini"
+                | "conf"
+                | "cfg"
+                | "md"
+                | "mdx"
+                | "txt"
+                | "rst"
+                | "adoc"
+                | "html"
+                | "htm"
+                | "css"
+                | "scss"
+                | "sass"
+                | "less"
+                | "sql"
+                | "graphql"
+                | "gql"
+                | "jq"
+                | "tf"
+                | "tfvars"
+                | "hcl"
+                | "proto"
+                | "thrift"
+                | "avsc"
+                | "vue"
+                | "svelte"
+                | "lock"
+        )
 }

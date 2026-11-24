@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::map::extract::{
     extract_calls, extract_description, extract_imports, extract_symbols, resolve_import_path,
 };
+use crate::map::lang::Lang;
 use crate::map::scan::{content_hash, file_mtime, gzip_density, should_map_file};
 use crate::map::{self, MapEntry, estimate_tokens, index};
 use crate::{AppError, project};
@@ -145,11 +146,7 @@ fn update_existing_file(
     let old_exported = index::exported_symbols_for_file(wp_dir, relative).unwrap_or_default();
 
     // Extract and update symbols (best-effort — don't fail the hook)
-    let ext = abs_path.extension().and_then(|e| e.to_str());
-    if matches!(
-        ext,
-        Some("rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "go")
-    ) {
+    if let Some(lang) = Lang::from_path(abs_path) {
         let mut file_symbols = extract_symbols(abs_path, &content);
         for sym in &mut file_symbols {
             sym.file_path = relative.to_string();
@@ -157,12 +154,11 @@ fn update_existing_file(
         let _ = index::update_file_symbols(wp_dir, relative, &file_symbols);
 
         // Extract and update imports
-        let ext_str = ext.unwrap_or("");
         let mut file_imports = extract_imports(abs_path, &content);
         for imp in &mut file_imports {
             imp.source_file = relative.to_string();
             if let Some(resolved) =
-                resolve_import_path(&imp.source_file, &imp.raw_path, ext_str, project_root)
+                resolve_import_path(&imp.source_file, &imp.raw_path, lang, project_root)
             {
                 imp.target_path = resolved;
             }

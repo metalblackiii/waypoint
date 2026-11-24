@@ -4,6 +4,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use super::lang::Lang;
+
 /// Compile a regex from a string literal. Panics on invalid syntax.
 #[allow(clippy::unwrap_used)]
 fn re(pattern: &str) -> Regex {
@@ -104,27 +106,14 @@ struct Declaration {
 }
 
 fn tree_sitter_extract(ext: &str, content: &str) -> Option<String> {
-    let language = match ext {
-        "rs" => tree_sitter_rust::LANGUAGE,
-        "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-        "tsx" => tree_sitter_typescript::LANGUAGE_TSX,
-        "js" | "jsx" | "mjs" | "cjs" => tree_sitter_javascript::LANGUAGE,
-        "py" => tree_sitter_python::LANGUAGE,
-        "go" => tree_sitter_go::LANGUAGE,
-        _ => return None,
-    };
-
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language.into()).ok()?;
-    let tree = parser.parse(content, None)?;
+    let lang = Lang::from_ext(ext)?;
+    let tree = lang.parse(content)?;
     let root = tree.root_node();
-
-    let is_js = matches!(ext, "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs");
 
     // Pass 1: collect export names from `export { ... }` clauses and
     // `module.exports = { ... }` / `module.exports = Identifier` patterns.
     let mut export_names: HashSet<String> = HashSet::new();
-    if is_js {
+    if lang.is_js_family() {
         let mut cursor = root.walk();
         for child in root.children(&mut cursor) {
             collect_export_names(child, content, &mut export_names);
@@ -135,7 +124,7 @@ fn tree_sitter_extract(ext: &str, content: &str) -> Option<String> {
     let mut declarations: Vec<Declaration> = Vec::new();
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
-        if let Some(decl) = extract_declaration(child, ext, content) {
+        if let Some(decl) = extract_declaration(child, lang, content) {
             declarations.push(decl);
             if declarations.len() >= COLLECTION_CAP {
                 break;
@@ -167,14 +156,13 @@ fn tree_sitter_extract(ext: &str, content: &str) -> Option<String> {
     Some(result.join(", "))
 }
 
-fn extract_declaration(node: tree_sitter::Node, ext: &str, source: &str) -> Option<Declaration> {
+fn extract_declaration(node: tree_sitter::Node, lang: Lang, source: &str) -> Option<Declaration> {
     let kind = node.kind();
-    match ext {
-        "rs" => extract_rust(node, kind, source),
-        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => extract_js(node, kind, source),
-        "py" => extract_python(node, kind, source),
-        "go" => extract_go(node, kind, source),
-        _ => None,
+    match lang {
+        Lang::Rust => extract_rust(node, kind, source),
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript => extract_js(node, kind, source),
+        Lang::Python => extract_python(node, kind, source),
+        Lang::Go => extract_go(node, kind, source),
     }
 }
 
@@ -1016,23 +1004,10 @@ pub struct Symbol {
 /// Returns an empty vec for unsupported languages or parse failures.
 #[must_use]
 pub fn extract_symbols(path: &Path, content: &str) -> Vec<Symbol> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-    let language = match ext {
-        "rs" => tree_sitter_rust::LANGUAGE,
-        "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-        "tsx" => tree_sitter_typescript::LANGUAGE_TSX,
-        "js" | "jsx" | "mjs" | "cjs" => tree_sitter_javascript::LANGUAGE,
-        "py" => tree_sitter_python::LANGUAGE,
-        "go" => tree_sitter_go::LANGUAGE,
-        _ => return Vec::new(),
-    };
-
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(&language.into()).is_err() {
+    let Some(lang) = Lang::from_path(path) else {
         return Vec::new();
-    }
-    let Some(tree) = parser.parse(content, None) else {
+    };
+    let Some(tree) = lang.parse(content) else {
         return Vec::new();
     };
 
@@ -1040,12 +1015,12 @@ pub fn extract_symbols(path: &Path, content: &str) -> Vec<Symbol> {
     let root = tree.root_node();
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
-        collect_node_symbol(child, ext, content, &mut symbols);
+        collect_node_symbol(child, lang, content, &mut symbols);
     }
     // Deferred pass: mark symbols exported by local `export { X }` statements.
     // Runs after full collection so source order doesn't matter — a symbol declared
     // after its export clause is still flipped correctly.
-    if matches!(ext, "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx") {
+    if lang.is_js_family() {
         mark_js_local_exports(root, content, &mut symbols);
     }
     symbols
@@ -1053,16 +1028,17 @@ pub fn extract_symbols(path: &Path, content: &str) -> Vec<Symbol> {
 
 fn collect_node_symbol(
     node: tree_sitter::Node,
-    ext: &str,
+    lang: Lang,
     source: &str,
     symbols: &mut Vec<Symbol>,
 ) {
-    match ext {
-        "rs" => collect_rust_symbols(node, source, symbols),
-        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => collect_js_symbols(node, source, symbols),
-        "py" => collect_python_symbols(node, source, symbols),
-        "go" => collect_go_symbols(node, source, symbols),
-        _ => {}
+    match lang {
+        Lang::Rust => collect_rust_symbols(node, source, symbols),
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
+            collect_js_symbols(node, source, symbols);
+        }
+        Lang::Python => collect_python_symbols(node, source, symbols),
+        Lang::Go => collect_go_symbols(node, source, symbols),
     }
 }
 
@@ -1632,23 +1608,10 @@ pub struct Import {
 /// Returns imports with `source_file` and `target_path` empty — callers fill these.
 #[must_use]
 pub fn extract_imports(path: &Path, content: &str) -> Vec<Import> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-    let language = match ext {
-        "rs" => tree_sitter_rust::LANGUAGE,
-        "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-        "tsx" => tree_sitter_typescript::LANGUAGE_TSX,
-        "js" | "jsx" | "mjs" | "cjs" => tree_sitter_javascript::LANGUAGE,
-        "py" => tree_sitter_python::LANGUAGE,
-        "go" => tree_sitter_go::LANGUAGE,
-        _ => return Vec::new(),
-    };
-
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(&language.into()).is_err() {
+    let Some(lang) = Lang::from_path(path) else {
         return Vec::new();
-    }
-    let Some(tree) = parser.parse(content, None) else {
+    };
+    let Some(tree) = lang.parse(content) else {
         return Vec::new();
     };
 
@@ -1657,17 +1620,16 @@ pub fn extract_imports(path: &Path, content: &str) -> Vec<Import> {
     let mut cursor = root.walk();
 
     for child in root.children(&mut cursor) {
-        match ext {
-            "rs" => import_from_rust(child, content, &mut imports),
-            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => {
+        match lang {
+            Lang::Rust => import_from_rust(child, content, &mut imports),
+            Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
                 import_from_js(child, content, &mut imports);
             }
-            "py" => import_from_python(child, content, &mut imports),
-            "go" => import_from_go(child, content, &mut imports),
-            _ => {}
+            Lang::Python => import_from_python(child, content, &mut imports),
+            Lang::Go => import_from_go(child, content, &mut imports),
         }
     }
-    if ext == "rs" {
+    if lang == Lang::Rust {
         imports_from_rust_qualified_calls(root, content, &mut imports);
     }
 
@@ -2076,16 +2038,16 @@ fn import_go_spec(node: tree_sitter::Node, content: &str, imports: &mut Vec<Impo
 pub fn resolve_import_path(
     source_file: &str,
     raw_path: &str,
-    ext: &str,
+    lang: Lang,
     project_root: &Path,
 ) -> Option<String> {
-    match ext {
-        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => {
+    match lang {
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
             resolve_js_import(source_file, raw_path, project_root)
         }
-        "py" => resolve_python_import(source_file, raw_path, project_root),
-        "rs" => resolve_rust_import(&crate_relative(source_file, raw_path)?, project_root),
-        _ => None,
+        Lang::Python => resolve_python_import(source_file, raw_path, project_root),
+        Lang::Rust => resolve_rust_import(&crate_relative(source_file, raw_path)?, project_root),
+        Lang::Go => None,
     }
 }
 
@@ -2245,23 +2207,10 @@ fn normalize_path(path: &Path) -> std::path::PathBuf {
 /// dynamic dispatch, macros) are silently dropped.
 #[must_use]
 pub fn extract_calls(path: &Path, content: &str, symbols: &[Symbol]) -> Vec<Call> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-    let language = match ext {
-        "rs" => tree_sitter_rust::LANGUAGE,
-        "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-        "tsx" => tree_sitter_typescript::LANGUAGE_TSX,
-        "js" | "jsx" | "mjs" | "cjs" => tree_sitter_javascript::LANGUAGE,
-        "py" => tree_sitter_python::LANGUAGE,
-        "go" => tree_sitter_go::LANGUAGE,
-        _ => return Vec::new(),
-    };
-
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(&language.into()).is_err() {
+    let Some(lang) = Lang::from_path(path) else {
         return Vec::new();
-    }
-    let Some(tree) = parser.parse(content, None) else {
+    };
+    let Some(tree) = lang.parse(content) else {
         return Vec::new();
     };
 
@@ -2273,7 +2222,7 @@ pub fn extract_calls(path: &Path, content: &str, symbols: &[Symbol]) -> Vec<Call
 
     // Collect raw call sites from AST: (callee_name, line_number)
     let mut raw_calls: Vec<(String, i64)> = Vec::new();
-    collect_calls_recursive(tree.root_node(), ext, content, &mut raw_calls);
+    collect_calls_recursive(tree.root_node(), lang, content, &mut raw_calls);
 
     // Resolve each call: attribute to enclosing symbol, filter to same-file callees
     let mut calls = Vec::new();
@@ -2331,16 +2280,15 @@ fn resolve_same_file_callee<'a>(callable: &[&'a Symbol], callee: &str) -> Option
 #[allow(clippy::cast_possible_wrap)]
 fn collect_calls_recursive(
     node: tree_sitter::Node,
-    ext: &str,
+    lang: Lang,
     source: &str,
     calls: &mut Vec<(String, i64)>,
 ) {
-    let callee = match ext {
-        "rs" => extract_rust_callee(node, source),
-        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => extract_js_callee(node, source),
-        "py" => extract_python_callee(node, source),
-        "go" => extract_go_callee(node, source),
-        _ => None,
+    let callee = match lang {
+        Lang::Rust => extract_rust_callee(node, source),
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript => extract_js_callee(node, source),
+        Lang::Python => extract_python_callee(node, source),
+        Lang::Go => extract_go_callee(node, source),
     };
 
     if let Some(name) = callee {
@@ -2351,7 +2299,7 @@ fn collect_calls_recursive(
     // Recurse into children
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_calls_recursive(child, ext, source, calls);
+        collect_calls_recursive(child, lang, source, calls);
     }
 }
 
@@ -3276,27 +3224,27 @@ export class Service {
         std::fs::write(tmp.path().join("src/hook/util.rs"), "").unwrap();
         let root = tmp.path();
         assert_eq!(
-            resolve_import_path("src/lib.rs", "self::project", "rs", root),
+            resolve_import_path("src/lib.rs", "self::project", Lang::Rust, root),
             Some("src/project.rs".to_string())
         );
         assert_eq!(
-            resolve_import_path("src/hook/mod.rs", "self::util", "rs", root),
+            resolve_import_path("src/hook/mod.rs", "self::util", Lang::Rust, root),
             Some("src/hook/util.rs".to_string())
         );
         assert_eq!(
-            resolve_import_path("src/hook/session_start.rs", "super::util", "rs", root),
+            resolve_import_path("src/hook/session_start.rs", "super::util", Lang::Rust, root),
             Some("src/hook/util.rs".to_string())
         );
         assert_eq!(
-            resolve_import_path("src/hook/mod.rs", "super::project", "rs", root),
+            resolve_import_path("src/hook/mod.rs", "super::project", Lang::Rust, root),
             Some("src/project.rs".to_string())
         );
         assert_eq!(
-            resolve_import_path("src/lib.rs", "self::std::fs", "rs", root),
+            resolve_import_path("src/lib.rs", "self::std::fs", Lang::Rust, root),
             None
         );
         assert_eq!(
-            resolve_import_path("tests/integration.rs", "self::project", "rs", root),
+            resolve_import_path("tests/integration.rs", "self::project", Lang::Rust, root),
             None
         );
     }
@@ -3342,7 +3290,7 @@ export class Service {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/utils.js"), "").unwrap();
-        let result = resolve_import_path("src/main.js", "./utils", "js", tmp.path());
+        let result = resolve_import_path("src/main.js", "./utils", Lang::JavaScript, tmp.path());
         assert_eq!(result, Some("src/utils.js".to_string()));
     }
 
@@ -3351,7 +3299,7 @@ export class Service {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("src/utils")).unwrap();
         std::fs::write(tmp.path().join("src/utils/index.ts"), "").unwrap();
-        let result = resolve_import_path("src/main.ts", "./utils", "ts", tmp.path());
+        let result = resolve_import_path("src/main.ts", "./utils", Lang::TypeScript, tmp.path());
         assert_eq!(result, Some("src/utils/index.ts".to_string()));
     }
 
@@ -3360,7 +3308,7 @@ export class Service {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/utils.ts"), "").unwrap();
-        let result = resolve_import_path("src/main.ts", "./utils.js", "ts", tmp.path());
+        let result = resolve_import_path("src/main.ts", "./utils.js", Lang::TypeScript, tmp.path());
         assert_eq!(result, Some("src/utils.ts".to_string()));
     }
 
@@ -3369,7 +3317,7 @@ export class Service {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/view.tsx"), "").unwrap();
-        let result = resolve_import_path("src/main.ts", "./view.js", "ts", tmp.path());
+        let result = resolve_import_path("src/main.ts", "./view.js", Lang::TypeScript, tmp.path());
         assert_eq!(result, Some("src/view.tsx".to_string()));
     }
 
@@ -3378,7 +3326,7 @@ export class Service {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/view.tsx"), "").unwrap();
-        let result = resolve_import_path("src/main.tsx", "./view.jsx", "tsx", tmp.path());
+        let result = resolve_import_path("src/main.tsx", "./view.jsx", Lang::Tsx, tmp.path());
         assert_eq!(result, Some("src/view.tsx".to_string()));
     }
 
@@ -3388,7 +3336,7 @@ export class Service {
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/utils.ts"), "").unwrap();
         std::fs::write(tmp.path().join("src/utils.js"), "").unwrap();
-        let result = resolve_import_path("src/main.ts", "./utils.js", "ts", tmp.path());
+        let result = resolve_import_path("src/main.ts", "./utils.js", Lang::TypeScript, tmp.path());
         assert_eq!(result, Some("src/utils.ts".to_string()));
     }
 
@@ -3397,7 +3345,7 @@ export class Service {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/utils.js"), "").unwrap();
-        let result = resolve_import_path("src/main.js", "./utils.js", "js", tmp.path());
+        let result = resolve_import_path("src/main.js", "./utils.js", Lang::JavaScript, tmp.path());
         assert_eq!(result, Some("src/utils.js".to_string()));
     }
 
@@ -3406,7 +3354,7 @@ export class Service {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/utils.py"), "").unwrap();
-        let result = resolve_import_path("src/main.py", ".utils", "py", tmp.path());
+        let result = resolve_import_path("src/main.py", ".utils", Lang::Python, tmp.path());
         assert_eq!(result, Some("src/utils.py".to_string()));
     }
 
@@ -3415,14 +3363,15 @@ export class Service {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("src/map")).unwrap();
         std::fs::write(tmp.path().join("src/map/scan.rs"), "").unwrap();
-        let result = resolve_import_path("src/lib.rs", "crate::map::scan", "rs", tmp.path());
+        let result = resolve_import_path("src/lib.rs", "crate::map::scan", Lang::Rust, tmp.path());
         assert_eq!(result, Some("src/map/scan.rs".to_string()));
     }
 
     #[test]
     fn resolve_unresolvable_returns_none() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let result = resolve_import_path("src/main.js", "./nonexistent", "js", tmp.path());
+        let result =
+            resolve_import_path("src/main.js", "./nonexistent", Lang::JavaScript, tmp.path());
         assert!(result.is_none());
     }
 

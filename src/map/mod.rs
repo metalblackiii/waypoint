@@ -1,5 +1,6 @@
 pub mod extract;
 pub mod index;
+pub mod lang;
 pub mod scan;
 
 use std::collections::BTreeMap;

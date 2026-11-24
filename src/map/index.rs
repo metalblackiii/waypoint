@@ -4,6 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::MapEntry;
 use super::extract::{Call, Import, Symbol};
+use super::lang::Lang;
 use crate::AppError;
 
 const INDEX_FILENAME: &str = "map_index.db";
@@ -761,12 +762,10 @@ pub fn get_arch_summary(waypoint_dir: &Path) -> Result<Option<ArchSummary>, AppE
 
 /// Map file extension to human-readable language name.
 fn ext_to_lang(ext: &str) -> &str {
+    if let Some(lang) = Lang::from_ext(ext) {
+        return lang.display_name();
+    }
     match ext {
-        "rs" => "Rust",
-        "ts" | "tsx" => "TypeScript",
-        "js" | "jsx" | "mjs" | "cjs" => "JavaScript",
-        "py" => "Python",
-        "go" => "Go",
         "rb" => "Ruby",
         "java" => "Java",
         "kt" => "Kotlin",
