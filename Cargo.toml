@@ -1,7 +1,10 @@
 [package]
 name = "waypoint"
-version = "0.32.1"
+version = "0.32.2"
 edition = "2024"
+# The newest std API the code uses (Option::map_or_default). Clippy's
+# incompatible_msrv fails on anything newer; raise this and SETUP.md together.
+rust-version = "1.98"
 license = "MIT"
 
 [lib]
