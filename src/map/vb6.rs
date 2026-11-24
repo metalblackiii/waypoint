@@ -124,9 +124,9 @@ static HEADER: LazyLock<Regex> = LazyLock::new(|| {
 });
 static END: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^\s*end\s+(?:sub|function|property)\b"));
 /// A whole procedure on one line, `Sub A(): End Sub`: the `:`-separated last
-/// statement is the End, optionally followed by a comment.
+/// statement is the End, optionally followed by a `'` or `Rem` comment.
 static INLINE_END: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(?i):\s*end\s+(?:sub|function|property)\s*(?:'.*)?$"));
+    LazyLock::new(|| re(r"(?i):\s*end\s+(?:sub|function|property)\s*(?:(?:'|rem\b).*)?$"));
 static VB_NAME: LazyLock<Regex> = LazyLock::new(|| re(r#"(?m)^Attribute VB_Name = "([^"]+)""#));
 
 fn module_name(content: &str) -> Option<&str> {
@@ -325,11 +325,14 @@ End Sub\r\n";
         let module = "Attribute VB_Name = \"modA\"\r\n\
 Sub Noop(): End Sub\r\n\
 Function One() As Long: One = 1: End Function ' done\r\n\
+Property Get Two() As Long: Two = 2: End Property Rem done\r\n\
+Sub Wrapped(ByVal a As Long, _\r\n\
+            ByVal b As Long): End Sub\r\n\
 Sub Later()\r\n\
 End Sub\r\n";
         let symbols = symbols(module);
         let spans: Vec<(i64, i64)> = symbols.iter().map(|s| (s.line_start, s.line_end)).collect();
-        assert_eq!(spans, [(2, 2), (3, 3), (4, 5)]);
+        assert_eq!(spans, [(2, 2), (3, 3), (4, 4), (5, 6), (7, 8)]);
     }
 
     #[test]
