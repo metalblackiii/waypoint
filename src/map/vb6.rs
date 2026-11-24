@@ -66,10 +66,14 @@ pub fn symbols(content: &str) -> Vec<Symbol> {
         let exported = !header
             .name("access")
             .is_some_and(|a| a.as_str().eq_ignore_ascii_case("private"));
-        let line_end = lines[index + 1..]
-            .iter()
-            .find(|l| END.is_match(&l.text))
-            .map_or(line.last_physical, |l| l.first_physical);
+        let line_end = if INLINE_END.is_match(&line.text) {
+            line.last_physical
+        } else {
+            lines[index + 1..]
+                .iter()
+                .find(|l| END.is_match(&l.text))
+                .map_or(line.last_physical, |l| l.first_physical)
+        };
         symbols.push(Symbol {
             file_path: String::new(),
             name: match module {
@@ -119,6 +123,10 @@ static HEADER: LazyLock<Regex> = LazyLock::new(|| {
     )
 });
 static END: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^\s*end\s+(?:sub|function|property)\b"));
+/// A whole procedure on one line, `Sub A(): End Sub`: the `:`-separated last
+/// statement is the End, optionally followed by a comment.
+static INLINE_END: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i):\s*end\s+(?:sub|function|property)\s*(?:'.*)?$"));
 static VB_NAME: LazyLock<Regex> = LazyLock::new(|| re(r#"(?m)^Attribute VB_Name = "([^"]+)""#));
 
 fn module_name(content: &str) -> Option<&str> {
@@ -310,6 +318,18 @@ End Sub\r\n";
         assert!(form[2].exported, "no modifier defaults to Public");
         let module = symbols(MODULE);
         assert!(module[0].exported, "Friend is project-wide");
+    }
+
+    #[test]
+    fn single_line_procedure_ends_on_its_own_line() {
+        let module = "Attribute VB_Name = \"modA\"\r\n\
+Sub Noop(): End Sub\r\n\
+Function One() As Long: One = 1: End Function ' done\r\n\
+Sub Later()\r\n\
+End Sub\r\n";
+        let symbols = symbols(module);
+        let spans: Vec<(i64, i64)> = symbols.iter().map(|s| (s.line_start, s.line_end)).collect();
+        assert_eq!(spans, [(2, 2), (3, 3), (4, 5)]);
     }
 
     #[test]
