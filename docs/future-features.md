@@ -195,6 +195,73 @@ Remaining work to improve ranking via import/call graph signals:
 
 ---
 
+## C# and VB6 Language Support
+
+**Status**: Proposed (2026-11-24). Not scheduled.
+
+**Problem**: Symbol, import, and call extraction covers Rust, TS/TSX, JS, Python, and Go only. On anything else `find`, `callers`, and `impact` return nothing useful. A legacy VB6 product codebase (3,733 tracked files: 675 `.frm`, 232 `.cls`, 118 `.bas`, 109 `.dob`, 80 `.vbp`) scans to `Scanned 126 files, 0 symbols, 0 imports, 0 calls`, with arch reporting xml 51%, HTML 17%, txt 12%, Markdown 10%. Every VB6 source file is skipped. A companion C# codebase (~490 MB) would index the same way: `.cs` is neither scannable nor extractable.
+
+**Evidence**:
+- No VB6 or C# extension appears in `is_scannable` (`src/map/scan.rs`), so these files never get a map entry, let alone symbols.
+- Both read paths (`scan_project` in `src/map/scan.rs`, `update_existing_file` in `src/hook/post_write.rs`) use `std::fs::read_to_string` and silently skip non-UTF-8 files. 207 of the 1,525 VB6 sources (14%) contain Windows-1252 bytes, so adding the extensions alone would still drop them without a warning.
+- Ripgrep counts 21,015 `Sub`/`Function`/`Property` headers and 14,736 form-control `Begin` blocks in that VB6 codebase. That is the yield to aim for.
+
+### Preparatory refactor (separate commit, before any language)
+
+**Smell: Shotgun Surgery.** Today adding a language means editing every one of these, and missing one fails silently (symbols on scan but not on hook update, or a map entry with no symbols):
+
+| Site | Location |
+|---|---|
+| Scannable extensions | `is_scannable`, `src/map/scan.rs` |
+| Extractable extensions | `scan_project`, `src/map/scan.rs`; `update_existing_file`, `src/hook/post_write.rs` (duplicate `matches!` lists) |
+| Language display names | `ext_to_lang`, `src/map/index.rs` |
+| Grammar tables (×4) | `tree_sitter_extract`, `extract_symbols`, `extract_imports`, `extract_calls`, `src/map/extract.rs` |
+| Per-language dispatch (×3) | node extraction, symbol collection, callee extraction, `src/map/extract.rs` |
+| JS-family checks | `is_js` in `tree_sitter_extract`; the JS branch in `extract_symbols` |
+| Import resolution | `resolve_import_path`, `src/map/extract.rs` |
+
+**Proposal**: one `Lang` enum with `Lang::from_ext(&str) -> Option<Lang>`, `grammar(self) -> Option<Language>` (`None` for line-based languages), and `display_name(self)`. Every site above becomes `Lang::from_ext` once, then a `match lang`. Because the match is exhaustive, the compiler lists every place a new variant must be handled, so adding a language becomes a compiler-guided task. `is_scannable` keeps its wider docs/config list but takes source extensions from `Lang`. `ext_to_lang` keeps its arms for languages that are counted but not extracted (Ruby, Java, …).
+
+**Rejected**: a table of structs holding function pointers, keyed by extension. It adds a layer of indirection and loses the exhaustiveness check, and VB6 has no grammar to put in the table anyway.
+
+### C#
+
+**Grammar**: `tree-sitter-c-sharp` 0.24.0 (tree-sitter org, published 2026-11-18). It exports `LANGUAGE: LanguageFn` through `tree-sitter-language ^0.1`, the same way the current grammar crates link. **Verified**: it resolves and builds against `tree-sitter =0.26.7` and parses a sample containing a namespace, interface, record struct, enum, partial class, constructor, `init` property, and `using` directives with zero error nodes.
+
+**Symbols**: `class_declaration`, `interface_declaration`, `struct_declaration`, `record_declaration`, `enum_declaration`, `delegate_declaration`; `method_declaration`, `constructor_declaration`, `property_declaration` (accessors are not separate symbols). Use the `Type::member` qualified form the other extractors already use. Exported = `public` or `internal`, plus interface members (implicitly public). Partial classes yield one type row per file, which is fine.
+
+**Imports**: `using X.Y;`, `using static X.Y;`, `using A = X.Y;`, `global using`. Namespaces don't map to file paths, so v1 records the raw namespace with an empty `target_path` (the existing behavior for unresolved imports). V2: build a namespace→files index from block and file-scoped `namespace` declarations at scan time. That resolution is coarse (one `using` matches every file in the namespace), so `callers` would need to intersect it with symbol names to be useful.
+
+**Calls**: `invocation_expression`; the callee is the identifier, or the `name` field of a `member_access_expression`. Same-file only, matching v1 trace.
+
+**Encoding**: strip a leading UTF-8 BOM before parsing. UTF-16 `.cs` files are out of scope until one shows up.
+
+**Open question**: skip generated `*.Designer.cs` files (large, machine-written WinForms layouts), or index them with a distinct kind?
+
+### VB6
+
+**Grammar: rejected.** Both Rust crates were tested, `tree-sitter-vb6` 0.0.2 (intuit/infigraph) and `wicked-estate-tree-sitter-vb6` 0.1.1 (vendored from joannefan/tree-sitter-vb6). Both build against tree-sitter 0.26.7 and produce identical trees. Across all 1,134 real `.frm`/`.cls`/`.bas`/`.dob` files, 1,119 parse with errors (1.48M error nodes), and only 3,662 definitions are recovered against the 21,015 routine headers ripgrep finds. Converting CRLF to LF changes nothing, and a 10-line LF module still produces 4 error nodes. VBA grammars (e.g. harumiWeb/tree-sitter-vba) were not tested; revisit them only if the line-based extractor proves too weak.
+
+**Line-based extractor** (no tree-sitter):
+- **Detection by content, not just extension.** `.cls` is also a LaTeX class file and `.bas` is used by other BASICs. In the sample every `.frm`/`.dob` starts with `VERSION 5.00`, every `.cls` with `VERSION 1.0 CLASS`, and every `.bas` with `Attribute VB_Name`. Require that first line.
+- **Decoding**: Windows-1252 via `encoding_rs` (new dependency). Skip the binary companion files `.frx`, `.dsx`, `.ctx`, `.dox`. `.Dsr` designers (text) are out of v1.
+- **Symbols**: `^\s*(Public|Private|Friend)?\s*(Static)?\s*(Sub|Function|Property (Get|Let|Set))\s+(\w+)`, case-insensitive. Join ` _` line continuations first, because long headers span several lines. The symbol range runs to the matching `End Sub|Function|Property`. Exported = not `Private` (procedures default to `Public`). Don't emit `Attribute VB_Name` as a symbol; use its value as the qualifier (`Module.Proc`) instead. Also `Type`/`Enum` blocks as types.
+- **Form controls**: `Begin <Lib>.<Control> <name>` blocks in the designer header of `.frm`/`.dob`/`.ctl` (above the first `Attribute VB_Name`), emitted with their own `control` kind so they can be filtered. Event handlers are named `<control>_<Event>`, which lets `find cmdSave` return both the control and its handlers. Control arrays repeat a name with an `Index` property; deduplicate them.
+- **Imports**: `.vbp` lines `Form=`, `Module=Name; path`, `Class=Name; path`, `UserDocument=`, `UserControl=` give real file edges (relative to the `.vbp`, backslash separators). `Reference=` and `Object=` are COM type libraries keyed by GUID; record them unresolved. `.bas`/`.cls`/`.frm` have no import statements because cross-module references are implicit through the project, so the `.vbp` is the only import source.
+- **Calls**: v1 is same-file only, so tokenize procedure bodies (skipping string literals and `'`/`Rem` comments) and intersect the tokens with the file's own procedure names. This covers `Call Foo(...)`, bare `Foo arg`, and `x = Foo(...)` without parsing expressions.
+- **Tests**: synthetic fixtures next to the existing extractor tests (a CRLF Windows-1252 module, a form with a designer header and control array, a multi-line continued header, a `.vbp`). Validate against a real codebase by hand: the routine count should be close to the ripgrep count above, and a known routine deep in a 12k-line form should come back from `find`.
+
+### Scope
+
+**In**: refactor; C# symbols/imports/calls; VB6 symbols/controls/`.vbp` imports/same-file calls; non-UTF-8 decoding for VB6.
+**Out**: VB.NET (`.vb`, different grammar, not requested); `.csproj` project references; cross-file call resolution (that is trace v2's resolver work, and it applies here unchanged).
+
+**Order**: refactor commit → C# (minor bump) → VB6 (minor bump if on a separate branch), each with tests.
+
+**Estimated effort**: refactor ~1 day; C# ~1–2 days; VB6 ~2–3 days (custom extractor and decoding).
+
+---
+
 ## Delivered Baseline
 
 Implemented and now considered baseline behavior. Use this when evaluating future features to avoid reopening settled decisions without new evidence.
