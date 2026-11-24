@@ -2,7 +2,7 @@
 
 ## 1. Install Rust
 
-Waypoint requires Rust 1.85+ (edition 2024). If you don't have Rust installed (or need to upgrade):
+Waypoint requires Rust 1.89+ (edition 2024; `rusqlite` 0.43 sets the floor). If you don't have Rust installed (or need to upgrade):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

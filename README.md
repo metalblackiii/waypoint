@@ -11,7 +11,8 @@ Project intelligence for Claude Code or Codex. Gives your AI assistant a file ma
 
 ## Language support
 
-- First-class parsing (tree-sitter): Rust, TypeScript, JavaScript, Python, Go.
+- First-class parsing (tree-sitter): Rust, TypeScript, JavaScript, Python, Go, C#.
+- VB6 (`.frm`, `.cls`, `.bas`, `.dob`, `.ctl`): `Sub`/`Function`/`Property` symbols from a line-based extractor, with Windows-1252 decoding. No imports or calls yet.
 - Additional formats: regex-based fallback heuristics for many other source/config file types.
 
 ## Quickstart (2 minutes)
@@ -60,7 +61,7 @@ Session-start arch context details:
 
 ### `waypoint scan`
 
-Walks the project respecting `.gitignore`, extracts descriptions using tree-sitter (Rust, TypeScript, JavaScript, Python, Go) with regex fallback for 15+ other formats. Writes `.waypoint/map.md`.
+Walks the project respecting `.gitignore`, extracts descriptions using tree-sitter (Rust, TypeScript, JavaScript, Python, Go, C#) or the VB6 line extractor, with regex fallback for 15+ other formats. Writes `.waypoint/map.md`.
 
 ```sh
 waypoint scan              # Generate/regenerate the map
