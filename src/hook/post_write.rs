@@ -340,6 +340,29 @@ mod tests {
     }
 
     #[test]
+    fn update_existing_file_indexes_windows_1252_vb6_source() {
+        let tmp = TempDir::new().unwrap();
+        let wp_dir = setup_waypoint_project(&tmp);
+        let abs_path = tmp.path().join("modA.bas");
+        std::fs::write(
+            &abs_path,
+            b"Attribute VB_Name = \"modA\"\r\n' caf\xe9\r\nPublic Sub Go()\r\nEnd Sub\r\n",
+        )
+        .unwrap();
+
+        let mut warnings = Vec::new();
+        update_existing_file(&wp_dir, tmp.path(), &abs_path, "modA.bas", &mut warnings).unwrap();
+
+        let entries = map::read_map(&wp_dir).unwrap();
+        assert_eq!(entries.len(), 1);
+        let exported = index::exported_symbols_for_file(&wp_dir, "modA.bas").unwrap();
+        assert!(
+            exported.iter().any(|s| s.name == "modA::Go"),
+            "{exported:?}"
+        );
+    }
+
+    #[test]
     fn update_entry_replaces_existing() {
         let tmp = TempDir::new().unwrap();
         let wp_dir = setup_waypoint_project(&tmp);

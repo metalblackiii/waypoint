@@ -21,7 +21,8 @@ pub enum Lang {
 impl Lang {
     #[must_use]
     pub fn from_ext(ext: &str) -> Option<Self> {
-        match ext {
+        // WHY case-insensitive: legacy Windows trees keep `Form1.FRM` and `Mod.BAS`.
+        match ext.to_ascii_lowercase().as_str() {
             "rs" => Some(Self::Rust),
             "ts" => Some(Self::TypeScript),
             "tsx" => Some(Self::Tsx),
@@ -87,6 +88,12 @@ mod tests {
             assert_eq!(Lang::from_ext(ext), Some(Lang::JavaScript));
         }
         assert_eq!(Lang::from_ext("tsx"), Some(Lang::Tsx));
+    }
+
+    #[test]
+    fn extension_match_ignores_case() {
+        assert_eq!(Lang::from_ext("FRM"), Some(Lang::Vb6));
+        assert_eq!(Lang::from_path(Path::new("Foo.CS")), Some(Lang::CSharp));
     }
 
     #[test]

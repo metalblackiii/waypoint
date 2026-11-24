@@ -184,6 +184,8 @@ fn top_level_nodes(root: tree_sitter::Node, lang: Lang) -> Vec<tree_sitter::Node
             if let Some(body) = child.child_by_field_name("body") {
                 nodes.extend(top_level_nodes(body, lang));
             }
+        } else if lang == Lang::CSharp && is_csharp_conditional(child.kind()) {
+            nodes.extend(top_level_nodes(child, lang));
         } else {
             nodes.push(child);
         }
@@ -772,6 +774,12 @@ fn csharp_type_keyword(kind: &str) -> Option<&'static str> {
     }
 }
 
+/// `#if` / `#elif` / `#else` wrap declarations as sibling nodes, so every
+/// C# walk descends into them: multi-target code keeps real members there.
+fn is_csharp_conditional(kind: &str) -> bool {
+    matches!(kind, "preproc_if" | "preproc_elif" | "preproc_else")
+}
+
 /// Whether a C# declaration is visible outside its own file.
 ///
 /// WHY: C# access defaults depend on position. Top-level types default to
@@ -1128,7 +1136,7 @@ fn collect_node_symbol(
         }
         Lang::Python => collect_python_symbols(node, source, symbols),
         Lang::Go => collect_go_symbols(node, source, symbols),
-        Lang::CSharp => collect_csharp_symbols(node, None, true, source, symbols),
+        Lang::CSharp => collect_csharp_symbols(node, None, true, true, source, symbols),
         Lang::Vb6 => {}
     }
 }
@@ -1660,9 +1668,13 @@ fn collect_go_symbols(node: tree_sitter::Node, source: &str, symbols: &mut Vec<S
 /// Collect a C# declaration and, for types, its members. Members and nested
 /// types are qualified with `Owner::` like Rust impl methods, so same-file
 /// call resolution's `::name` suffix match works unchanged.
+///
+/// A member is exported only when its owning type is too: `public` inside a
+/// private class is not visible outside the file.
 fn collect_csharp_symbols(
     node: tree_sitter::Node,
     owner: Option<&str>,
+    owner_exported: bool,
     visible_by_default: bool,
     source: &str,
     symbols: &mut Vec<Symbol>,
@@ -1671,8 +1683,22 @@ fn collect_csharp_symbols(
         if let Some(body) = node.child_by_field_name("body") {
             let mut cursor = body.walk();
             for child in body.children(&mut cursor) {
-                collect_csharp_symbols(child, None, true, source, symbols);
+                collect_csharp_symbols(child, None, true, true, source, symbols);
             }
+        }
+        return;
+    }
+    if is_csharp_conditional(node.kind()) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect_csharp_symbols(
+                child,
+                owner,
+                owner_exported,
+                visible_by_default,
+                source,
+                symbols,
+            );
         }
         return;
     }
@@ -1691,7 +1717,7 @@ fn collect_csharp_symbols(
         Some(owner) => format!("{owner}::{name}"),
         None => name.to_string(),
     };
-    let exported = csharp_exported(node, source, visible_by_default);
+    let exported = owner_exported && csharp_exported(node, source, visible_by_default);
     symbols.push(build_symbol(
         qualified.clone(),
         kind,
@@ -1709,6 +1735,7 @@ fn collect_csharp_symbols(
             collect_csharp_symbols(
                 child,
                 Some(&qualified),
+                exported,
                 members_visible_by_default,
                 source,
                 symbols,
@@ -2195,6 +2222,12 @@ fn import_from_csharp(node: tree_sitter::Node, source: &str, imports: &mut Vec<I
                 for child in body.children(&mut cursor) {
                     import_from_csharp(child, source, imports);
                 }
+            }
+        }
+        kind if is_csharp_conditional(kind) => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                import_from_csharp(child, source, imports);
             }
         }
         "using_directive" => {
@@ -4063,6 +4096,70 @@ namespace Outer
                 symbol(&symbols, "IThing::Do").exported,
                 "interface members default to public"
             );
+        }
+
+        #[test]
+        fn members_of_private_types_are_not_exported() {
+            let symbols = extract_symbols(
+                Path::new("Hidden.cs"),
+                "public class Outer { private class Hidden { public void Pub() {} } }",
+            );
+            assert!(!symbol(&symbols, "Outer::Hidden::Pub").exported);
+            assert!(!symbol(&symbols, "Outer::Hidden").exported);
+        }
+
+        const CONDITIONAL: &str = r"
+#if NET8_0
+using System.Buffers;
+#endif
+namespace Acme
+{
+#if DEBUG
+    public class Probe
+    {
+        public void Always() { Extra(); }
+#if TRACE
+        public void Traced() {}
+#elif LEGACY
+        public void Legacy() {}
+#else
+        public void Fallback() {}
+#endif
+        void Extra() {}
+    }
+#endif
+}
+#if WINDOWS
+class WinOnly {}
+#endif
+";
+
+        #[test]
+        fn declarations_inside_conditional_compilation_are_indexed() {
+            let path = Path::new("Probe.cs");
+            let symbols = extract_symbols(path, CONDITIONAL);
+            for name in [
+                "Probe",
+                "Probe::Always",
+                "Probe::Traced",
+                "Probe::Legacy",
+                "Probe::Fallback",
+                "WinOnly",
+            ] {
+                symbol(&symbols, name);
+            }
+            assert!(symbol(&symbols, "Probe::Traced").exported);
+
+            let imports = extract_imports(path, CONDITIONAL);
+            assert_eq!(imports.len(), 1);
+            assert_eq!(imports[0].raw_path, "System.Buffers");
+
+            let calls = extract_calls(path, CONDITIONAL, &symbols);
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].source_symbol, "Probe::Always");
+
+            let desc = extract_description(path, CONDITIONAL);
+            assert!(desc.contains("WinOnly"), "got: {desc}");
         }
 
         #[test]

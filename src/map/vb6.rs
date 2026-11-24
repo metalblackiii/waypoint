@@ -136,14 +136,39 @@ struct LogicalLine {
     last_physical: i64,
 }
 
+/// Whether the physical line carries a `'` or `Rem` comment.
+///
+/// WHY: VB6 never continues a comment onto the next line, so a trailing ` _`
+/// in a comment is plain text. Joining it would hide the next line's procedure
+/// header.
+fn has_comment(physical: &str) -> bool {
+    let trimmed = physical.trim_start();
+    let starts_with_rem = trimmed
+        .get(..3)
+        .is_some_and(|word| word.eq_ignore_ascii_case("rem"))
+        && trimmed[3..].chars().next().is_none_or(char::is_whitespace);
+    if starts_with_rem {
+        return true;
+    }
+    let mut in_string = false;
+    for c in physical.chars() {
+        match c {
+            '"' => in_string = !in_string,
+            '\'' if !in_string => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn logical_lines(content: &str) -> Vec<LogicalLine> {
     let mut lines = Vec::new();
     let mut pending: Option<LogicalLine> = None;
     for (number, raw) in (1_i64..).zip(content.lines()) {
         let physical = raw.trim_end_matches('\r');
         let (part, continues) = match physical.strip_suffix(" _") {
-            Some(head) => (head, true),
-            None => (physical, false),
+            Some(head) if !has_comment(physical) => (head, true),
+            _ => (physical, false),
         };
         let line = match pending.take() {
             Some(mut open) => {
@@ -256,6 +281,24 @@ End Sub\r\n";
         assert_eq!(
             symbols[1].signature,
             "Public Function SaveRecord(ByVal id As Long, Optional ByVal force As Boolean = False) As Boolean"
+        );
+    }
+
+    #[test]
+    fn comment_ending_in_continuation_marker_does_not_hide_next_procedure() {
+        let module = "Attribute VB_Name = \"modA\"\r\n\
+' note _\r\n\
+Sub First()\r\n\
+End Sub\r\n\
+Rem remark _\r\n\
+Sub Second() ' trailing _\r\n\
+End Sub\r\n\
+Sub Third(ByVal s As String = \"it's\", _\r\n\
+          ByVal n As Long)\r\n\
+End Sub\r\n";
+        assert_eq!(
+            names(&symbols(module)),
+            ["modA::First", "modA::Second", "modA::Third"]
         );
     }
 

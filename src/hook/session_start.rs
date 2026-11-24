@@ -249,6 +249,26 @@ mod tests {
         assert!(has_mtime_drift(tmp.path(), &stored));
     }
 
+    const WINDOWS_1252_VB6_MODULE: &[u8] =
+        b"Attribute VB_Name = \"modA\"\r\n' caf\xe9\r\nSub Go()\r\nEnd Sub\r\n";
+
+    #[test]
+    fn new_windows_1252_vb6_file_causes_drift() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("modA.bas"), WINDOWS_1252_VB6_MODULE).unwrap();
+        let stored: HashMap<String, i64> = HashMap::new();
+        assert!(has_mtime_drift(tmp.path(), &stored));
+    }
+
+    #[test]
+    fn new_non_utf8_file_scan_skips_does_not_cause_drift() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("main.js"), b"// caf\xe9\r\n").unwrap();
+        std::fs::write(tmp.path().join("notes.bas"), b"not vb6 caf\xe9\r\n").unwrap();
+        let stored: HashMap<String, i64> = HashMap::new();
+        assert!(!has_mtime_drift(tmp.path(), &stored));
+    }
+
     #[test]
     fn deleted_stored_file_causes_drift() {
         let tmp = TempDir::new().unwrap();

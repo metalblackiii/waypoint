@@ -617,7 +617,8 @@ fn rebuild_arch_summary_with(
 
     // Hotspots: directory-level inbound import fan-in
     let mut dir_fan_in: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for imp in imports {
+    // Unresolved imports (C# `using`) have no target file, so they count toward no directory.
+    for imp in imports.iter().filter(|imp| !imp.target_path.is_empty()) {
         let dir = std::path::Path::new(&imp.target_path)
             .parent()
             .map_or_else(String::new, |p| {
@@ -1675,6 +1676,18 @@ mod tests {
             "tied hotspot counts must break alphabetically (src/aaa before src/bbb): {0}",
             summary.hotspots
         );
+    }
+
+    #[test]
+    fn rebuild_arch_summary_ignores_unresolved_imports_in_hotspots() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![sample_entry("src/Claim.cs")];
+        crate::map::write_map(tmp.path(), &entries).unwrap();
+
+        let imports = vec![sample_import("src/Claim.cs", "System", "")];
+        let summary = rebuild_arch_summary(tmp.path(), &entries, &imports).unwrap();
+
+        assert_eq!(summary.hotspots, "");
     }
 
     #[test]
